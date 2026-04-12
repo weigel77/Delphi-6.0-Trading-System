@@ -1,0 +1,142 @@
+{% macro render_nav_button(label, href, key, active_page, secondary=false) -%}
+    {% set is_active = active_page == key or (key == 'journal' and active_page in ['journal', 'real-trades', 'simulated-trades']) %}
+    <a class="button-link{% if secondary %} button-link-secondary{% endif %}{% if is_active %} button-link-active{% endif %}" href="{{ href }}" data-delphi-nav="{{ key }}"{% if is_active %} aria-current="page"{% endif %}{% if key in ['apollo', 'kairos'] %} data-refresh-market-status="true"{% endif %}>{{ label }}</a>
+{%- endmacro %}
+
+{% macro render_delphi_header(active_page, page_heading, page_copy, page_kicker='Delphi 4.3 Dev', page_meta='Delphi workflow shell.', page_version='Version 4.3 Dev', header_variant='subpage', menu_status=None) -%}
+    <img class="delphi-header-backdrop-image" src="{{ url_for('static', filename='delphi-hero.svg') }}" alt="" aria-hidden="true">
+    <div class="delphi-header-backdrop"></div>
+    <div class="delphi-header-content">
+        <div class="delphi-header-top">
+            <div class="delphi-header-brand">
+                <div class="hero-emblem delphi-header-emblem" aria-hidden="true">
+                    <svg viewBox="0 0 120 120" role="presentation">
+                        <defs>
+                            <linearGradient id="delphi-header-fill" x1="0" x2="1" y1="0" y2="1">
+                                <stop offset="0%" stop-color="#d7e8ff" />
+                                <stop offset="100%" stop-color="#58a6ff" />
+                            </linearGradient>
+                        </defs>
+                        <circle cx="60" cy="60" r="55" fill="rgba(255,255,255,0.08)" stroke="rgba(214,230,255,0.55)" stroke-width="2" />
+                        <path d="M36 83c-7-10-11-21-11-35 0-12 4-24 11-34" fill="none" stroke="rgba(215,232,255,0.5)" stroke-width="4" stroke-linecap="round" />
+                        <path d="M84 83c7-10 11-21 11-35 0-12-4-24-11-34" fill="none" stroke="rgba(215,232,255,0.5)" stroke-width="4" stroke-linecap="round" />
+                        <path d="M43 77h34" stroke="url(#delphi-header-fill)" stroke-width="4" stroke-linecap="round" />
+                        <path d="M48 77V49m12 28V43m12 34V53" stroke="url(#delphi-header-fill)" stroke-width="3.5" stroke-linecap="round" />
+                        <path d="M42 47h36l-18-12-18 12Z" fill="url(#delphi-header-fill)" stroke="#d7e8ff" stroke-width="1.6" stroke-linejoin="round" />
+                        <path d="M35 31c9-6 17-9 25-9 8 0 16 3 25 9" fill="none" stroke="rgba(215,232,255,0.4)" stroke-width="2.4" stroke-linecap="round" />
+                    </svg>
+                </div>
+                <div>
+                    <p class="hero-kicker delphi-header-kicker">{{ app_identity.page_kicker if page_kicker in ['Delphi 2.0', 'Delphi', 'Delphi 4.3 Dev'] else page_kicker }}</p>
+                    <h1>{{ page_heading }}</h1>
+                    <p class="hero-copy delphi-header-copy">{{ page_copy }}</p>
+                </div>
+            </div>
+
+            {% if menu_status and menu_status.cards %}
+                <div class="delphi-header-status" aria-label="Universal market status">
+                    {% for card in menu_status.cards %}
+                        <article class="delphi-status-card delphi-status-card-{{ card.label|lower|replace(' ', '-') }}">
+                            <p class="delphi-status-card-label">{{ card.label }}</p>
+                            <p class="delphi-status-card-value delphi-status-card-value-{{ card.value_trend|default('neutral') }}">{{ card.value }}</p>
+                            {% if card.change %}
+                                <p class="delphi-status-card-change delphi-status-card-change-{{ card.value_trend|default('neutral') }}">{{ card.change }}</p>
+                            {% endif %}
+                            <p class="delphi-status-card-meta">{{ card.meta }}</p>
+                            {% if card.label == 'Schwab connection' and menu_status.connection_requires_login %}
+                                <div class="hero-status-action delphi-home-connect">
+                                    <a class="button-link" href="{{ url_for('login') }}">Connect</a>
+                                </div>
+                            {% endif %}
+                        </article>
+                    {% endfor %}
+                </div>
+            {% endif %}
+
+            <div class="delphi-header-meta">
+                <span class="hero-version">{{ app_identity.version_label if page_version in ['Version 2.0', 'Version 4.3 Dev'] else page_version }}</span>
+                <p class="subtle">{{ page_meta }}</p>
+                <div class="delphi-header-actions">
+                    <button
+                        type="button"
+                        class="button-link button-link-secondary button-link-small"
+                        id="delphi-text-status-button"
+                        data-text-status-url="{{ url_for('text_status_api') }}"
+                    >Text Status</button>
+                    <span id="delphi-text-status-feedback" class="delphi-header-feedback subtle" aria-live="polite"></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="delphi-header-nav" aria-label="Primary navigation">
+            {{ render_nav_button('Research', url_for('research'), 'research', active_page) }}
+            {{ render_nav_button('Run Apollo', url_for('run_apollo', autorun=1), 'apollo', active_page) }}
+            {{ render_nav_button('Run Kairos', url_for('kairos_live_page'), 'kairos', active_page) }}
+            {{ render_nav_button('Manage Trades', url_for('open_trade_management_page'), 'management', active_page) }}
+            {{ render_nav_button('Performance', url_for('performance_dashboard'), 'performance', active_page) }}
+            {{ render_nav_button('Journal', url_for('trade_dashboard', trade_mode='real'), 'journal', active_page) }}
+        </div>
+
+        <script>
+            (() => {
+                document.querySelectorAll('[data-refresh-market-status="true"]').forEach((link) => {
+                    if (link.dataset.refreshBound === 'true') {
+                        return;
+                    }
+                    link.dataset.refreshBound = 'true';
+                    link.addEventListener('click', () => {
+                        try {
+                            const url = new URL(link.href, window.location.origin);
+                            url.searchParams.set('header_refresh', Date.now().toString());
+                            link.href = url.toString();
+                        } catch (error) {
+                            // Ignore malformed hrefs and preserve the original navigation path.
+                        }
+                    });
+                });
+
+                const button = document.getElementById('delphi-text-status-button');
+                const feedback = document.getElementById('delphi-text-status-feedback');
+                if (!button || button.dataset.bound === 'true') {
+                    return;
+                }
+
+                const setFeedback = (text, tone = 'neutral') => {
+                    if (!feedback) {
+                        return;
+                    }
+                    feedback.textContent = text || '';
+                    feedback.dataset.tone = tone;
+                };
+
+                button.dataset.bound = 'true';
+                button.addEventListener('click', async () => {
+                    const originalLabel = button.textContent;
+                    button.disabled = true;
+                    button.textContent = 'Sending...';
+                    setFeedback('Sending Delphi 4.3 test alert...', 'neutral');
+
+                    try {
+                        const response = await fetch(button.dataset.textStatusUrl, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({ source: 'header-button' }),
+                        });
+                        const payload = await response.json().catch(() => ({}));
+                        if (!response.ok || !payload.ok) {
+                            throw new Error(payload.error || 'Unable to send Pushover test alert.');
+                        }
+                        setFeedback(payload.message || 'Pushover test alert sent.', 'success');
+                    } catch (error) {
+                        setFeedback(error.message || 'Unable to send Pushover test alert.', 'error');
+                    } finally {
+                        button.disabled = false;
+                        button.textContent = originalLabel;
+                    }
+                });
+            })();
+        </script>
+    </div>
+{%- endmacro %}

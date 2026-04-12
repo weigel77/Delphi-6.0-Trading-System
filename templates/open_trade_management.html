@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Open Trade Management | {{ app_identity.display_name }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    {% from '_delphi_header_macros.html' import render_delphi_header with context %}
+    <main class="page-shell">
+        <section class="hero-card delphi-header-card delphi-shared-header delphi-header-card-subpage">
+            {{ render_delphi_header(
+                active_page='management',
+                page_heading='Open Trade Management',
+                page_copy='Live management board for open Apollo and Kairos positions with controlled Pushover escalation.',
+                page_meta='Dev-only active trade management for open positions and urgent exit alerts.',
+                menu_status=menu_status,
+            ) }}
+
+            {% if info_message %}
+                <div class="message message-{{ info_message.level|default('info') }}">{{ info_message.text }}</div>
+            {% endif %}
+        </section>
+
+        <section class="panel management-dashboard-panel">
+            <div class="result-header">
+                <div>
+                    <h2>Management Engine</h2>
+                    <p class="subtle">Real open trades are evaluated for morning snapshot, status change, action, and end-of-day Pushover notifications. Simulated open trades remain visible on this board for management review, and both modes can send manual status updates in the same format as the scheduled open-positions text.</p>
+                </div>
+                <div class="actions trade-actions">
+                    <form method="post" action="{{ url_for('open_trade_management_toggle_notifications') }}">
+                        <input type="hidden" name="notifications_enabled" value="{{ 'false' if management_payload.notifications_enabled else 'true' }}">
+                        <button type="submit" class="secondary">Notifications: {{ 'ON' if management_payload.notifications_enabled else 'OFF' }}</button>
+                    </form>
+                    <form method="post" action="{{ url_for('open_trade_management_status_update', trade_mode='real') }}">
+                        <button type="submit">Send Real Status Update</button>
+                    </form>
+                    <form method="post" action="{{ url_for('open_trade_management_status_update', trade_mode='simulated') }}">
+                        <button type="submit" class="secondary">Send Simulated Status Update</button>
+                    </form>
+                </div>
+            </div>
+
+            <div class="summary-grid trade-summary-grid">
+                <article class="summary-card">
+                    <p class="summary-label">Open Trades</p>
+                    <p class="summary-value">{{ management_payload.open_trade_count }}</p>
+                </article>
+                <article class="summary-card">
+                    <p class="summary-label">Evaluated At</p>
+                    <p class="summary-value management-summary-value">{{ management_payload.evaluated_at_display }}</p>
+                </article>
+                <article class="summary-card">
+                    <p class="summary-label">Notifications</p>
+                    <p class="summary-value">{{ 'ON' if management_payload.notifications_enabled else 'OFF' }}</p>
+                </article>
+                <article class="summary-card">
+                    <p class="summary-label">Alerts Sent This Run</p>
+                    <p class="summary-value">{{ management_payload.alerts_sent }}</p>
+                </article>
+                {% for item in management_payload.status_counts %}
+                    <article class="summary-card">
+                        <p class="summary-label">{{ item.label }}</p>
+                        <p class="summary-value management-status-count management-status-count-{{ item.key }}">{{ item.count }}</p>
+                    </article>
+                {% endfor %}
+            </div>
+
+            {% if management_payload.alert_failures %}
+                <div class="message message-warning message-inline">{{ management_payload.alert_failures|join(' | ') }}</div>
+            {% endif %}
+        </section>
+
+        <section class="panel management-dashboard-panel">
+            <div class="result-header">
+                <div>
+                    <h2>Open Positions</h2>
+                    <p class="subtle">Statuses and action recommendations use the current live option-chain expected move. Delphi 4.3 notifications only apply to real trades, but both real and simulated open positions are listed here.</p>
+                </div>
+            </div>
+
+            {% if management_payload.records %}
+                <div class="table-wrap trade-table-wrap management-table-wrap">
+                    <table class="management-table">
+                        <colgroup>
+                            <col class="management-col-trade-number">
+                            <col class="management-col-system">
+                            <col class="management-col-profile">
+                            <col class="management-col-credit">
+                            <col class="management-col-contracts">
+                            <col class="management-col-premium">
+                            <col class="management-col-status">
+                            <col class="management-col-distance-short">
+                            <col class="management-col-em-multiple">
+                            <col class="management-col-live-em">
+                            <col class="management-col-mark">
+                            <col class="management-col-close-cost">
+                            <col class="management-col-pnl">
+                            <col class="management-col-action">
+                            <col class="management-col-trigger">
+                            <col class="management-col-reason">
+                            <col class="management-col-alert">
+                        </colgroup>
+                        <thead>
+                            <tr>
+                                <th>Trade #</th>
+                                <th>System</th>
+                                <th>Profile</th>
+                                <th>Net Credit</th>
+                                <th>Qty</th>
+                                <th>Premium</th>
+                                <th>Status</th>
+                                <th>Distance to Short</th>
+                                <th>Live EM x</th>
+                                <th>Live EM</th>
+                                <th>Mark</th>
+                                <th>Close Cost</th>
+                                <th>Unrealized</th>
+                                <th>Action</th>
+                                <th>Next Trigger</th>
+                                <th>Reason</th>
+                                <th>Alert Log</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in management_payload.records %}
+                                <tr>
+                                    <td>{{ item.trade_number }}</td>
+                                    <td>{{ item.system_name }}</td>
+                                    <td>{{ item.profile_label }}</td>
+                                    <td>{{ item.net_credit_per_contract_display }}</td>
+                                    <td>{{ item.contracts_display }}</td>
+                                    <td><strong>{{ item.total_premium_display }}</strong></td>
+                                    <td><span class="management-status-pill management-status-pill-{{ item.status_key }}">{{ item.status }}</span></td>
+                                    <td>{{ item.distance_to_short_display }}</td>
+                                    <td><strong>{{ item.current_em_multiple_display }}</strong></td>
+                                    <td>{{ item.current_live_expected_move_display }}</td>
+                                    <td>{{ item.current_spread_mark_display }}</td>
+                                    <td>{{ item.current_total_close_cost_display }}</td>
+                                    <td>{{ item.unrealized_pnl_display }}</td>
+                                    <td>
+                                        <div class="management-reason-wrap">
+                                            <strong>{{ item.action_recommendation }}</strong>
+                                            <form method="post" action="{{ url_for('open_trade_management_prefill_close', trade_id=item.trade_id) }}">
+                                                <button type="submit" class="secondary" {% if not item.send_close_to_journal_enabled %}disabled{% endif %}>Send Close</button>
+                                            </form>
+                                        </div>
+                                    </td>
+                                    <td>{{ item.next_trigger }}</td>
+                                    <td>
+                                        <div class="management-reason-wrap">
+                                            <strong>{{ item.reason }}</strong>
+                                            <span class="subtle">{{ item.trigger_source }} · {{ item.current_structure_grade }}</span>
+                                            <details class="management-debug-details">
+                                                <summary>Debug</summary>
+                                                <div class="management-debug-grid">
+                                                    <span><strong>Status code:</strong> {{ item.status_reason_code }}</span>
+                                                    <span><strong>Thesis code:</strong> {{ item.thesis_reason_code }}</span>
+                                                    <span><strong>Current EM multiple:</strong> {{ item.current_em_multiple_display }}</span>
+                                                    <span><strong>Current live EM:</strong> {{ item.current_live_expected_move_display }}</span>
+                                                    <span><strong>Entry EM multiple:</strong> {{ item.entry_em_multiple_display }}</span>
+                                                    <span><strong>Entry EM:</strong> {{ item.entry_expected_move_display }}</span>
+                                                    <span><strong>Live EM source:</strong> {{ item.current_live_expected_move_source_label }}</span>
+                                                    <span><strong>Live EM formula:</strong> {{ item.current_live_expected_move_formula_label }}</span>
+                                                    <span><strong>Live EM contracts:</strong> {{ item.current_live_expected_move_contracts_label }}</span>
+                                                    <span><strong>Max loss:</strong> {{ item.max_loss_display }}</span>
+                                                    <span><strong>Structure trigger:</strong> {{ 'Yes' if item.structure_trigger_fired else 'No' }}</span>
+                                                    <span><strong>VWAP trigger:</strong> {{ 'Yes' if item.vwap_trigger_fired else 'No' }}</span>
+                                                    <span><strong>Short proximity:</strong> {{ 'Yes' if item.short_proximity_trigger_fired else 'No' }}</span>
+                                                    <span><strong>Long proximity:</strong> {{ 'Yes' if item.long_proximity_trigger_fired else 'No' }}</span>
+                                                    <span><strong>Final stop:</strong> {{ 'Yes' if item.final_stop_trigger_fired else 'No' }}</span>
+                                                    {% if item.invalid_strike_order %}
+                                                        <span><strong>Strike warning:</strong> {{ item.distance_warning }}</span>
+                                                    {% endif %}
+                                                </div>
+                                            </details>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        {% set alert_state = item.alert_state if item.alert_state is defined else {} %}
+                                        <div class="management-alert-cell">
+                                            <strong>{{ alert_state.last_alert_type or 'Not sent' }}</strong>
+                                            <span class="subtle">{{ alert_state.last_alert_priority or 'n/a' }}</span>
+                                            <span class="subtle">{{ alert_state.last_alert_sent_at or 'Never' }}</span>
+                                            <span class="subtle">Count {{ alert_state.alert_count or 0 }}</span>
+                                        </div>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <p class="subtle">No open real or simulated trades are currently available for management.</p>
+            {% endif %}
+        </section>
+    </main>
+</body>
+</html>

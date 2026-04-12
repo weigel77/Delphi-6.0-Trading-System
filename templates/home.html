@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ app_identity.display_name }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    {% from '_delphi_header_macros.html' import render_delphi_header with context %}
+    <main class="page-shell delphi-home-shell">
+        <section class="hero-card delphi-header-card delphi-shared-header delphi-header-card-subpage">
+            {{ render_delphi_header(
+                active_page='home',
+                page_heading=app_identity.display_name,
+                page_copy='Mythic intelligence for modern index research, Apollo decision support, and disciplined journal review.',
+                page_meta='Delphic clarity for research, execution review, and system navigation.',
+                menu_status=menu_status,
+            ) }}
+
+            {% if info_message %}
+                <div class="message message-{{ info_message.level|default('info') }}">{{ info_message.text }}</div>
+            {% endif %}
+
+            {% if menu_status.notes %}
+                <div class="message message-warning">
+                    {% for note in menu_status.notes %}
+                        <div>{{ note }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        </section>
+    </main>
+</body>
+</html>

@@ -1,0 +1,1239 @@
+"""Performance dashboard aggregation for Horme trade analytics."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import math
+from typing import Any, Dict, Iterable, Optional
+
+from .trade_store import (
+    EXPECTED_MOVE_CONFIDENCE_NONE,
+    EXPECTED_MOVE_SOURCE_ESTIMATED,
+    EXPECTED_MOVE_USAGE_ACTUAL,
+    EXPECTED_MOVE_USAGE_ESTIMATED,
+    EXPECTED_MOVE_USAGE_EXCLUDED,
+    TradeStore,
+    classify_closed_trade_outcome,
+    classify_expected_move_usage,
+    expected_move_learning_weight,
+    normalize_candidate_profile,
+    normalize_expected_move_source,
+    normalize_system_name,
+    resolve_trade_credit_model,
+    resolve_trade_distance,
+    resolve_trade_expected_move,
+)
+from .em_policy_engine import build_em_policy_payload
+
+PERFORMANCE_FILTER_GROUPS = {
+    "system": ["Apollo", "Kairos", "Aegis"],
+    "profile": ["Legacy", "Aggressive", "Fortress", "Standard", "Prime"],
+    "result": ["Win", "Loss", "Black Swan", "Scratched"],
+    "trade_mode": ["Real", "Simulated"],
+    "macro_grade": ["None", "Minor", "Major"],
+    "structure_grade": ["Good", "Neutral", "Poor"],
+}
+
+PERFORMANCE_DEFAULT_FILTERS = {
+    "trade_mode": ("real",),
+}
+
+VIX_BUCKETS = ["<18", "18-22", "22-26", "26+"]
+MIN_EXPECTED_MOVE_USED = 1.0
+SAFETY_RATIO_BUCKETS = [
+    {"key": "<1.2", "label": "<1.2x EM", "minimum": None, "maximum": 1.2},
+    {"key": "1.2-1.4", "label": "1.2-1.4x EM", "minimum": 1.2, "maximum": 1.4},
+    {"key": "1.4-1.6", "label": "1.4-1.6x EM", "minimum": 1.4, "maximum": 1.6},
+    {"key": "1.6-1.8", "label": "1.6-1.8x EM", "minimum": 1.6, "maximum": 1.8},
+    {"key": "1.8-2.0", "label": "1.8-2.0x EM", "minimum": 1.8, "maximum": 2.0},
+    {"key": "2.0-2.2", "label": "2.0-2.2x EM", "minimum": 2.0, "maximum": 2.2},
+    {"key": "2.2+", "label": "2.2+x EM", "minimum": 2.2, "maximum": None},
+]
+PROFILE_EM_VIX_REGIMES = [
+    {"key": "vix_ge_19", "label": "VIX >= 19", "minimum": 19.0, "maximum": None},
+    {"key": "vix_lt_19", "label": "VIX < 19", "minimum": None, "maximum": 19.0},
+]
+PROFILE_EM_VIEW_REAL_ONLY = "real_only"
+PROFILE_EM_VIEW_REAL_PLUS_SIMULATED = "real_plus_simulated"
+MIN_PROFILE_EM_RECOMMENDATION_SCORED_TRADES = 2
+
+
+@dataclass(frozen=True)
+class PerformanceFilters:
+    system: tuple[str, ...]
+    profile: tuple[str, ...]
+    result: tuple[str, ...]
+    trade_mode: tuple[str, ...]
+    macro_grade: tuple[str, ...]
+    structure_grade: tuple[str, ...]
+
+    def as_dict(self) -> Dict[str, list[str]]:
+        return {
+            "system": list(self.system),
+            "profile": list(self.profile),
+            "result": list(self.result),
+            "trade_mode": list(self.trade_mode),
+            "macro_grade": list(self.macro_grade),
+            "structure_grade": list(self.structure_grade),
+        }
+
+
+@dataclass(frozen=True)
+class OutcomeSummary:
+    open_records: tuple[Dict[str, Any], ...]
+    closed_records: tuple[Dict[str, Any], ...]
+    wins: tuple[Dict[str, Any], ...]
+    losses: tuple[Dict[str, Any], ...]
+    black_swans: tuple[Dict[str, Any], ...]
+    scratched: tuple[Dict[str, Any], ...]
+
+    @property
+    def loss_events(self) -> tuple[Dict[str, Any], ...]:
+        return self.losses + self.black_swans
+
+    @property
+    def scored_outcomes(self) -> tuple[Dict[str, Any], ...]:
+        return self.wins + self.loss_events
+
+    @property
+    def closed_outcomes(self) -> tuple[Dict[str, Any], ...]:
+        return self.wins + self.losses + self.black_swans + self.scratched
+
+    def outcome_count(self, label: str) -> int:
+        if label == "Win":
+            return len(self.wins)
+        if label == "Loss":
+            return len(self.losses)
+        if label == "Black Swan":
+            return len(self.black_swans)
+        if label == "Scratched":
+            return len(self.scratched)
+        return 0
+
+
+class PerformanceDashboardService:
+    """Build filter-aware dashboard payloads from the shared trade database."""
+
+    def __init__(self, store: TradeStore) -> None:
+        self.store = store
+
+    def build_dashboard(self, filters: Optional[Dict[str, Iterable[str]]] = None) -> Dict[str, Any]:
+        records = self.load_records()
+        return build_dashboard_payload(records, filters=filters)
+
+    def load_records(self) -> list[Dict[str, Any]]:
+        records: list[Dict[str, Any]] = []
+        for trade_mode in ("real", "simulated"):
+            for trade in self.store.list_trades(trade_mode):
+                records.append(build_performance_record(trade))
+        return records
+
+
+def build_dashboard_payload(records: list[Dict[str, Any]], filters: Optional[Dict[str, Iterable[str]]] = None) -> Dict[str, Any]:
+    normalized_filters = normalize_performance_filters(filters)
+    filtered_records = apply_performance_filters(records, normalized_filters)
+    outcome_summary = summarize_outcomes(filtered_records)
+    safety_optimization = build_safety_ratio_optimization(filtered_records)
+    metrics = build_metric_payload(filtered_records, outcomes=outcome_summary)
+    chart_data = build_chart_payload(filtered_records, outcomes=outcome_summary, safety_optimization=safety_optimization)
+    learning = build_learning_payload(filtered_records, outcomes=outcome_summary, safety_optimization=safety_optimization)
+    learning["profile_em_safety_distance"] = build_profile_em_safety_distance_payload(records, filters=normalized_filters)
+    return {
+        "filters": normalized_filters.as_dict(),
+        "filter_groups": PERFORMANCE_FILTER_GROUPS,
+        "records_total": len(records),
+        "records_filtered": len(filtered_records),
+        "metrics": metrics,
+        "charts": chart_data,
+        "learning": learning,
+    }
+
+
+def normalize_performance_filters(filters: Optional[Dict[str, Iterable[str]]] = None) -> PerformanceFilters:
+    filters = filters or {}
+    normalized: Dict[str, tuple[str, ...]] = {}
+    for key, options in PERFORMANCE_FILTER_GROUPS.items():
+        allowed = {normalize_filter_value(key, option) for option in options}
+        requested_values = filters.get(key)
+        normalized_values = [normalize_filter_value(key, value) for value in (requested_values or []) if normalize_filter_value(key, value) in allowed]
+        if normalized_values:
+            normalized[key] = tuple(normalized_values)
+            continue
+        default_values = tuple(value for value in PERFORMANCE_DEFAULT_FILTERS.get(key, ()) if value in allowed)
+        normalized[key] = default_values or tuple(sorted(allowed))
+    return PerformanceFilters(**normalized)
+
+
+def build_performance_record(trade: Dict[str, Any]) -> Dict[str, Any]:
+    trade_mode = "Real" if str(trade.get("trade_mode") or "").strip().lower() == "real" else "Simulated"
+    profile = normalize_candidate_profile(trade.get("candidate_profile"))
+    system = normalize_system_name(trade.get("system_name"))
+    result = classify_trade_result(trade)
+    gross_pnl = coerce_float(trade.get("gross_pnl") if trade.get("gross_pnl") is not None else trade.get("pnl"))
+    trade_date = pick_trade_date(trade)
+    derived_status = str(trade.get("derived_status_label") or trade.get("status") or "").strip().title() or "Open"
+    expected_move_metadata = resolve_trade_expected_move(trade)
+    expected_move = coerce_float(expected_move_metadata.get("value"))
+    distance_metadata = resolve_trade_distance(trade)
+    distance_to_short = coerce_float(distance_metadata.get("value"))
+    credit_model = resolve_trade_credit_model(trade)
+    actual_entry_credit, entry_credit_source = derive_entry_credit(trade)
+    max_loss = derive_max_loss(trade, actual_entry_credit=actual_entry_credit)
+    roi_on_risk = coerce_float(trade.get("roi_on_risk"))
+    if roi_on_risk is None:
+        roi_on_risk = compute_ratio(gross_pnl, max_loss)
+    vix_at_entry = coerce_float(trade.get("vix_at_entry") if trade.get("vix_at_entry") is not None else trade.get("vix_entry"))
+    expected_move_used = coerce_float(trade.get("expected_move_used"))
+    if expected_move_used is None:
+        expected_move_used = coerce_float(expected_move_metadata.get("used_value"))
+    expected_move_source = normalize_expected_move_source(
+        trade.get("expected_move_source") if trade.get("expected_move_source") not in {None, ""} else expected_move_metadata.get("source")
+    )
+    expected_move_raw_estimate = coerce_float(trade.get("expected_move_raw_estimate"))
+    if expected_move_raw_estimate is None:
+        expected_move_raw_estimate = coerce_float(expected_move_metadata.get("raw_estimate"))
+    expected_move_calibrated = coerce_float(trade.get("expected_move_calibrated"))
+    if expected_move_calibrated is None:
+        expected_move_calibrated = coerce_float(expected_move_metadata.get("calibrated_value"))
+    expected_move_confidence = str(
+        trade.get("expected_move_confidence")
+        or expected_move_metadata.get("confidence")
+        or EXPECTED_MOVE_CONFIDENCE_NONE
+    ).strip().lower()
+    expected_move_usage = classify_expected_move_usage(expected_move_source, expected_move_used)
+    expected_move_weight = expected_move_learning_weight(expected_move_source, expected_move_confidence)
+    safety_ratio = compute_ratio(distance_to_short, expected_move_used)
+    credit_per_point = compute_ratio(actual_entry_credit, distance_to_short)
+    risk_efficiency = compute_risk_efficiency(total_premium=coerce_float(credit_model.get("total_premium")), max_loss=max_loss)
+    credit_efficiency_pct = (risk_efficiency * 100.0) if risk_efficiency is not None else None
+    actual_distance_to_short = coerce_float(trade.get("actual_distance_to_short"))
+    actual_em_multiple = coerce_float(trade.get("actual_em_multiple"))
+    return {
+        "id": trade.get("id"),
+        "trade_number": trade.get("trade_number"),
+        "system": system,
+        "profile": profile,
+        "result": result,
+        "trade_mode": trade_mode,
+        "macro_grade": normalize_macro_grade(trade.get("macro_grade") if trade.get("macro_grade") is not None else trade.get("macro_flag")),
+        "structure_grade": normalize_structure_grade(trade.get("structure_grade") if trade.get("structure_grade") is not None else trade.get("structure")),
+        "status": derived_status,
+        "gross_pnl": gross_pnl,
+        "trade_date": trade_date,
+        "trade_date_label": trade_date or "—",
+        "journal_name": str(trade.get("journal_name") or "Apollo Main"),
+        "close_reason": str(trade.get("close_reason") or ""),
+        "spx_at_entry": coerce_float(trade.get("spx_at_entry") if trade.get("spx_at_entry") is not None else trade.get("spx_entry")),
+        "short_strike": coerce_float(trade.get("short_strike")),
+        "expected_move": expected_move,
+        "expected_move_source": expected_move_source,
+        "expected_move_raw_estimate": expected_move_raw_estimate,
+        "expected_move_calibrated": expected_move_calibrated,
+        "expected_move_confidence": expected_move_confidence,
+        "expected_move_usage": expected_move_usage,
+        "expected_move_weight": expected_move_weight,
+        "distance_to_short": distance_to_short,
+        "distance_source": distance_metadata.get("source"),
+        "distance_has_material_discrepancy": bool(distance_metadata.get("discrepancy_is_material")),
+        "actual_entry_credit": actual_entry_credit,
+        "entry_credit_source": entry_credit_source,
+        "premium_per_contract": coerce_float(credit_model.get("premium_per_contract")),
+        "total_premium": coerce_float(credit_model.get("total_premium")),
+        "max_loss": max_loss,
+        "roi_on_risk": roi_on_risk,
+        "vix_at_entry": vix_at_entry,
+        "vix_bucket": classify_vix_bucket(vix_at_entry),
+        "safety_ratio": safety_ratio,
+        "credit_per_point": credit_per_point,
+        "risk_efficiency": risk_efficiency,
+        "credit_efficiency_pct": credit_efficiency_pct,
+        "expected_move_used": expected_move_used,
+        "em_multiple_floor": coerce_float(trade.get("em_multiple_floor")),
+        "percent_floor": coerce_float(trade.get("percent_floor")),
+        "boundary_rule_used": str(trade.get("boundary_rule_used") or ""),
+        "actual_distance_to_short": actual_distance_to_short,
+        "actual_em_multiple": actual_em_multiple,
+        "fallback_used": str(trade.get("fallback_used") or "no").strip().lower() or "no",
+        "fallback_rule_name": str(trade.get("fallback_rule_name") or ""),
+        "realized_pnl": gross_pnl,
+        "vix_entry": vix_at_entry,
+    }
+
+
+def apply_performance_filters(records: list[Dict[str, Any]], filters: PerformanceFilters) -> list[Dict[str, Any]]:
+    active = filters.as_dict()
+    filtered: list[Dict[str, Any]] = []
+    for record in records:
+        if normalize_filter_value("system", record.get("system")) not in active["system"]:
+            continue
+        if normalize_filter_value("profile", record.get("profile")) not in active["profile"]:
+            continue
+        result_key = normalize_filter_value("result", record.get("result"))
+        if result_key and result_key not in active["result"]:
+            continue
+        if normalize_filter_value("trade_mode", record.get("trade_mode")) not in active["trade_mode"]:
+            continue
+        if normalize_filter_value("macro_grade", record.get("macro_grade")) not in active["macro_grade"]:
+            continue
+        if normalize_filter_value("structure_grade", record.get("structure_grade")) not in active["structure_grade"]:
+            continue
+        filtered.append(record)
+    return filtered
+
+
+def summarize_outcomes(records: list[Dict[str, Any]]) -> OutcomeSummary:
+    open_records = []
+    closed_records = []
+    wins = []
+    losses = []
+    black_swans = []
+    scratched = []
+
+    for record in records:
+        if record["status"] in {"Open", "Reduced"}:
+            open_records.append(record)
+            continue
+
+        closed_records.append(record)
+        if record["result"] == "Win":
+            wins.append(record)
+        elif record["result"] == "Loss":
+            losses.append(record)
+        elif record["result"] == "Black Swan":
+            black_swans.append(record)
+        elif record["result"] == "Scratched":
+            scratched.append(record)
+
+    return OutcomeSummary(
+        open_records=tuple(open_records),
+        closed_records=tuple(closed_records),
+        wins=tuple(wins),
+        losses=tuple(losses),
+        black_swans=tuple(black_swans),
+        scratched=tuple(scratched),
+    )
+
+
+def build_metric_payload(records: list[Dict[str, Any]], *, outcomes: Optional[OutcomeSummary] = None) -> Dict[str, Any]:
+    outcomes = outcomes or summarize_outcomes(records)
+    total_trades = len(records)
+    open_trades = len(outcomes.open_records)
+    closed_trades = len(outcomes.closed_records)
+    win_count = len(outcomes.wins)
+    loss_count = len(outcomes.losses)
+    black_swan_count = len(outcomes.black_swans)
+    scratched_count = len(outcomes.scratched)
+    total_loss_outcomes = len(outcomes.loss_events)
+    scored_outcomes = len(outcomes.scored_outcomes)
+    win_rate = (win_count / scored_outcomes) if scored_outcomes else 0.0
+    loss_rate = (total_loss_outcomes / scored_outcomes) if scored_outcomes else 0.0
+    net_pnl = sum(record["gross_pnl"] or 0.0 for record in records)
+    average_win = average(record["gross_pnl"] for record in outcomes.wins)
+    average_loss = abs(average(record["gross_pnl"] for record in outcomes.losses))
+    average_black_swan_loss = abs(average(record["gross_pnl"] for record in outcomes.black_swans))
+    expectancy_average_loss = abs(average(record["gross_pnl"] for record in outcomes.loss_events))
+    expectancy = calculate_expectancy(win_rate=win_rate, average_win=average_win, loss_rate=loss_rate, average_loss=expectancy_average_loss)
+    black_swan_impact = sum(record["gross_pnl"] or 0.0 for record in outcomes.black_swans)
+    absolute_loss_total = abs(sum(record["gross_pnl"] or 0.0 for record in outcomes.loss_events))
+    expectancy_scale = max(50.0, abs(expectancy) * 1.75, average_win, average_loss, average_black_swan_loss)
+    real_closed_wins = [record for record in outcomes.wins if str(record.get("trade_mode") or "").strip().lower() == "real"]
+    real_closed_losses = [record for record in outcomes.losses if str(record.get("trade_mode") or "").strip().lower() == "real"]
+    real_closed_black_swans = [record for record in outcomes.black_swans if str(record.get("trade_mode") or "").strip().lower() == "real"]
+    average_win_roi = average(record.get("roi_on_risk") for record in real_closed_wins)
+    average_loss_roi = abs(average(record.get("roi_on_risk") for record in real_closed_losses))
+    average_black_swan_roi = abs(average(record.get("roi_on_risk") for record in real_closed_black_swans))
+    credit_efficiency_records = [record for record in records if record.get("credit_efficiency_pct") is not None]
+
+    return {
+        "totals": {
+            "total_trades": total_trades,
+            "open_trades": open_trades,
+            "closed_trades": closed_trades,
+            "closed_outcomes": scored_outcomes,
+            "all_closed_trades": closed_trades,
+            "wins": win_count,
+            "losses": loss_count,
+            "loss_outcomes": total_loss_outcomes,
+            "black_swan_count": black_swan_count,
+            "scratched_count": scratched_count,
+        },
+        "win_rate": {
+            "value": round(win_rate * 100, 2),
+            "ratio": round(win_rate, 4),
+            "wins": win_count,
+            "losses": total_loss_outcomes,
+            "closed_outcomes": scored_outcomes,
+            "scratched_excluded": scratched_count,
+        },
+        "expectancy": {
+            "value": round(expectancy, 2),
+            "scale": round(expectancy_scale, 2),
+        },
+        "net_pnl": {
+            "value": round(net_pnl, 2),
+        },
+        "outcome_mix": {
+            "win_roi": round(average_win_roi * 100, 2),
+            "loss_roi": round(average_loss_roi * 100, 2),
+            "black_swan_roi": round(average_black_swan_roi * 100, 2),
+            "win_count": len(real_closed_wins),
+            "loss_count": len(real_closed_losses),
+            "black_swan_count": len(real_closed_black_swans),
+            "closed_real_outcomes": len(real_closed_wins) + len(real_closed_losses) + len(real_closed_black_swans),
+            "source": "Average ROI by outcome category using real closed trades only",
+        },
+        "credit_efficiency": {
+            "value": round(average(record.get("credit_efficiency_pct") for record in credit_efficiency_records), 2) if credit_efficiency_records else 0.0,
+            "qualified_trade_count": len(credit_efficiency_records),
+            "formula": "Premium received ÷ max theoretical loss",
+            "source": "Uses actual entry credit when available; otherwise falls back to candidate credit estimate.",
+        },
+        "average_win_loss": {
+            "average_win": round(average_win, 2),
+            "average_loss": round(average_loss, 2),
+            "average_black_swan_loss": round(average_black_swan_loss, 2),
+            "ratio": round((average_win / average_loss), 2) if average_loss else None,
+            "win_count": win_count,
+            "loss_count": loss_count,
+            "black_swan_count": black_swan_count,
+        },
+        "black_swan": {
+            "count": black_swan_count,
+            "impact": round(black_swan_impact, 2),
+            "impact_ratio": round((abs(black_swan_impact) / absolute_loss_total), 4) if absolute_loss_total else 0.0,
+        },
+    }
+
+
+def build_chart_payload(
+    records: list[Dict[str, Any]],
+    *,
+    outcomes: Optional[OutcomeSummary] = None,
+    safety_optimization: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    outcomes = outcomes or summarize_outcomes(records)
+    safety_optimization = safety_optimization or build_safety_ratio_optimization(records)
+    safety_ratio_records = summarize_safety_ratio_records(records)["included_records"]
+    return {
+        "equity_curve": build_equity_curve(records),
+        "profile_avg_pnl": build_group_average_pnl_chart(records, key="profile", labels=PERFORMANCE_FILTER_GROUPS["profile"]),
+        "macro_avg_pnl": build_group_average_pnl_chart(records, key="macro_grade", labels=PERFORMANCE_FILTER_GROUPS["macro_grade"]),
+        "structure_avg_pnl": build_group_average_pnl_chart(records, key="structure_grade", labels=PERFORMANCE_FILTER_GROUPS["structure_grade"]),
+        "outcome_composition": build_outcome_composition(outcomes),
+        "credit_efficiency_by_system": build_credit_efficiency_breakdown(records, group_key="system", labels=PERFORMANCE_FILTER_GROUPS["system"]),
+        "credit_efficiency_by_profile": build_credit_efficiency_breakdown(records, group_key="profile", labels=PERFORMANCE_FILTER_GROUPS["profile"]),
+        "credit_efficiency_by_vix_bucket": build_credit_efficiency_breakdown(records, group_key="vix_bucket", labels=VIX_BUCKETS),
+        "safety_ratio_by_system": build_group_average_chart(safety_ratio_records, group_key="system", value_key="safety_ratio", labels=PERFORMANCE_FILTER_GROUPS["system"]),
+        "premium_em_by_profile": build_group_premium_em_summary(records, group_key="profile", labels=PERFORMANCE_FILTER_GROUPS["profile"]),
+        "premium_em_by_vix_bucket": build_group_premium_em_summary(records, group_key="vix_bucket", labels=VIX_BUCKETS),
+        "safety_ratio_expectancy_curve": build_safety_ratio_expectancy_curve(safety_optimization),
+    }
+
+
+def build_learning_payload(
+    records: list[Dict[str, Any]],
+    *,
+    outcomes: Optional[OutcomeSummary] = None,
+    safety_optimization: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    outcomes = outcomes or summarize_outcomes(records)
+    safety_optimization = safety_optimization or build_safety_ratio_optimization(records)
+    safety_ratio_summary = summarize_safety_ratio_records(records)
+    premium_em_records = [record for record in safety_ratio_summary["included_records"] if record.get("premium_per_contract") is not None]
+    em_policy = build_em_policy_payload(records)
+    risk_efficiency_fallback_count = sum(1 for record in records if record.get("entry_credit_source") == "candidate_credit_estimate")
+    credit_efficiency_records = [record for record in records if record.get("credit_efficiency_pct") is not None]
+    return {
+        "overview": {
+            "avg_safety_ratio": average(record.get("safety_ratio") for record in safety_ratio_summary["included_records"]),
+            "avg_premium_per_em": average(compute_ratio(record.get("premium_per_contract"), record.get("expected_move_used")) for record in premium_em_records),
+            "avg_risk_efficiency": average(record.get("risk_efficiency") for record in records),
+            "avg_credit_efficiency_pct": average(record.get("credit_efficiency_pct") for record in credit_efficiency_records),
+            "qualified_credit_efficiency_trades": len(credit_efficiency_records),
+            "classified_vix_trades": sum(1 for record in premium_em_records if record.get("vix_bucket") is not None),
+            "safety_ratio_summary": {
+                "included_trade_count": safety_ratio_summary["included_trade_count"],
+                "excluded_trade_count": safety_ratio_summary["excluded_trade_count"],
+                "exclusion_summary": safety_ratio_summary["exclusion_summary"],
+            },
+            "expected_move_usage_summary": summarize_expected_move_usage(outcomes.closed_records),
+            "expected_move_weighting": {
+                "actual_manual": 1.0,
+                "calibrated_estimated": 0.6,
+            },
+            "risk_efficiency_definition": "Premium collected divided by maximum theoretical risk at entry.",
+            "risk_efficiency_credit_note": "Uses actual entry credit when available; otherwise falls back to candidate credit estimate.",
+            "risk_efficiency_fallback_count": risk_efficiency_fallback_count,
+            "credit_efficiency_definition": "Premium received ÷ max theoretical loss",
+            "credit_efficiency_credit_note": "Uses actual entry credit when available; otherwise falls back to candidate credit estimate.",
+            "credit_efficiency_fallback_count": risk_efficiency_fallback_count,
+        },
+        "safety_optimization": safety_optimization,
+        "adaptive_safety_guidance": safety_optimization.get("adaptive_guidance") or {},
+        "em_policy": em_policy,
+        "trade_mode_split": build_trade_mode_split(records),
+        "result_audit": {
+            "counts": {
+                "open": len(outcomes.open_records),
+                "win": len(outcomes.wins),
+                "loss": len(outcomes.losses),
+                "black_swan": len(outcomes.black_swans),
+                "scratched": len(outcomes.scratched),
+            },
+            "rules": [
+                "Open and Reduced trades stay outside win-rate and expectancy scoring.",
+                "A closed trade becomes Black Swan when realized loss is greater than 40% of stored maximum theoretical loss.",
+                "Closed trades with explicit win_loss_result of Win, Loss, Black Swan, or Scratched remain the fallback if realized P/L is unavailable.",
+                "Closed trades with positive gross P/L classify as Win and negative gross P/L classify as Loss when the Black Swan threshold is not met.",
+                "Closed trades with zero realized P/L classify as Scratched and are excluded from win-rate and expectancy scoring.",
+            ],
+        },
+    }
+
+
+def build_equity_curve(records: list[Dict[str, Any]]) -> Dict[str, Any]:
+    dated_records = [record for record in records if record["trade_date"] and record["gross_pnl"] is not None]
+    dated_records.sort(key=lambda record: (record["trade_date"], int(record.get("trade_number") or 0), int(record.get("id") or 0)))
+    cumulative = 0.0
+    points = []
+    for record in dated_records:
+        cumulative += record["gross_pnl"] or 0.0
+        points.append(
+            {
+                "label": record["trade_date_label"],
+                "trade_number": record.get("trade_number"),
+                "value": round(record["gross_pnl"] or 0.0, 2),
+                "cumulative": round(cumulative, 2),
+                "result": record.get("result") or "Closed",
+            }
+        )
+    return {"points": points, "min": min((point["cumulative"] for point in points), default=0.0), "max": max((point["cumulative"] for point in points), default=0.0)}
+
+
+def build_group_sum_chart(records: list[Dict[str, Any]], *, key: str, labels: list[str]) -> Dict[str, Any]:
+    items = []
+    for label in labels:
+        value = sum(record["gross_pnl"] or 0.0 for record in records if record.get(key) == label)
+        items.append({"label": label, "value": round(value, 2)})
+    return {"items": items}
+
+
+def build_group_average_chart(records: list[Dict[str, Any]], *, group_key: str, value_key: str, labels: list[str]) -> Dict[str, Any]:
+    items = []
+    for label in labels:
+        values = [record.get(value_key) for record in records if record.get(group_key) == label and record.get(value_key) is not None]
+        items.append({"label": label, "value": round(average(values), 4) if values else 0.0})
+    return {"items": items}
+
+
+def build_credit_efficiency_breakdown(records: list[Dict[str, Any]], *, group_key: str, labels: list[str]) -> Dict[str, Any]:
+    items = []
+    for label in labels:
+        grouped_records = [record for record in records if record.get(group_key) == label and record.get("credit_efficiency_pct") is not None]
+        items.append(
+            {
+                "label": label,
+                "avg_credit_efficiency_pct": round(average(record.get("credit_efficiency_pct") for record in grouped_records), 2) if grouped_records else 0.0,
+                "trade_count": len(grouped_records),
+            }
+        )
+    return {"items": items}
+
+
+def build_group_average_pnl_chart(records: list[Dict[str, Any]], *, key: str, labels: list[str]) -> Dict[str, Any]:
+    items = []
+    for label in labels:
+        grouped_records = [record for record in records if record.get(key) == label and record.get("gross_pnl") is not None]
+        items.append(
+            {
+                "label": label,
+                "value": round(average(record.get("gross_pnl") for record in grouped_records), 2) if grouped_records else 0.0,
+                "trade_count": len(grouped_records),
+            }
+        )
+    return {"items": items}
+
+
+def build_group_expectancy_chart(records: list[Dict[str, Any]], *, group_key: str, labels: list[str]) -> Dict[str, Any]:
+    items = []
+    for label in labels:
+        grouped_records = [record for record in records if record.get(group_key) == label]
+        grouped_outcomes = summarize_outcomes(grouped_records)
+        scored_count = len(grouped_outcomes.scored_outcomes)
+        win_rate = (len(grouped_outcomes.wins) / scored_count) if scored_count else 0.0
+        loss_rate = (len(grouped_outcomes.loss_events) / scored_count) if scored_count else 0.0
+        average_win = average(record.get("gross_pnl") for record in grouped_outcomes.wins)
+        average_loss = abs(average(record.get("gross_pnl") for record in grouped_outcomes.loss_events))
+        expectancy = calculate_expectancy(win_rate=win_rate, average_win=average_win, loss_rate=loss_rate, average_loss=average_loss) if scored_count else 0.0
+        items.append({"label": label, "value": round(expectancy, 2), "trade_count": len(grouped_records)})
+    return {"items": items}
+
+
+def build_group_premium_em_summary(records: list[Dict[str, Any]], *, group_key: str, labels: list[str]) -> Dict[str, Any]:
+    items = []
+    for label in labels:
+        grouped_records = [record for record in records if record.get(group_key) == label]
+        valid_records = [record for record in grouped_records if is_valid_premium_em_record(record)]
+        items.append(
+            {
+                "label": label,
+                "trade_count": len(valid_records),
+                "avg_premium_per_contract": round(average(record.get("premium_per_contract") for record in valid_records), 2) if valid_records else 0.0,
+                "avg_em_multiple": round(average(record.get("safety_ratio") for record in valid_records), 4) if valid_records else 0.0,
+                "premium_per_em": round(average(compute_ratio(record.get("premium_per_contract"), record.get("expected_move_used")) for record in valid_records), 4) if valid_records else 0.0,
+            }
+        )
+    return {"items": items}
+
+
+def build_safety_ratio_expectancy_curve(safety_optimization: Dict[str, Any]) -> Dict[str, Any]:
+    items = [
+        {
+            "label": item["label"],
+            "value": round(item.get("expectancy") or 0.0, 2),
+            "trade_count": item.get("trade_count") or 0,
+            "confidence": item.get("confidence") or "No Confidence",
+        }
+        for item in safety_optimization.get("bucket_results") or []
+    ]
+    return {"items": items}
+
+
+def build_safety_ratio_optimization(records: list[Dict[str, Any]]) -> Dict[str, Any]:
+    safety_ratio_summary = summarize_safety_ratio_records(records, closed_only=True)
+    closed_records = safety_ratio_summary["candidate_records"]
+    eligible_records = safety_ratio_summary["included_records"]
+    excluded_trade_count = safety_ratio_summary["excluded_trade_count"]
+    bucket_results = build_safety_ratio_bucket_results(eligible_records)
+    overall_best_expectancy = select_best_safety_bucket(bucket_results, metric_key="expectancy")
+    overall_best_win_rate = select_best_safety_bucket(bucket_results, metric_key="win_rate")
+
+    vix_eligible_records = [record for record in eligible_records if record.get("vix_bucket") is not None]
+    vix_excluded_count = len(eligible_records) - len(vix_eligible_records)
+    vix_bucket_results = []
+    vix_guidance: Dict[str, Dict[str, Any]] = {}
+    for label in VIX_BUCKETS:
+        grouped_records = [record for record in vix_eligible_records if record.get("vix_bucket") == label]
+        grouped_bucket_results = build_safety_ratio_bucket_results(grouped_records)
+        best_expectancy = select_best_safety_bucket(grouped_bucket_results, metric_key="expectancy")
+        best_win_rate = select_best_safety_bucket(grouped_bucket_results, metric_key="win_rate")
+        guidance_entry = {
+            "vix_bucket": label,
+            "sample_size": len(grouped_records),
+            "recommended_range": best_expectancy.get("key") if best_expectancy else None,
+            "confidence": confidence_label(best_expectancy.get("weighted_trade_count") if best_expectancy else 0),
+            "supporting_trade_count": best_expectancy.get("trade_count") if best_expectancy else 0,
+            "weighted_supporting_trade_count": round(best_expectancy.get("weighted_trade_count") or 0.0, 2) if best_expectancy else 0.0,
+            "best_by_expectancy": build_safety_bucket_pick(best_expectancy),
+            "best_by_win_rate": build_safety_bucket_pick(best_win_rate),
+            "bucket_results": grouped_bucket_results,
+        }
+        vix_bucket_results.append(guidance_entry)
+        vix_guidance[label] = {
+            "recommended_range": guidance_entry["recommended_range"],
+            "confidence": normalize_confidence_key(guidance_entry["confidence"]),
+            "supporting_trade_count": guidance_entry["supporting_trade_count"],
+            "weighted_supporting_trade_count": guidance_entry["weighted_supporting_trade_count"],
+            "sample_size": guidance_entry["sample_size"],
+            "best_by_win_rate": best_win_rate.get("key") if best_win_rate else None,
+        }
+
+    recommendation = {
+        "overall_optimal_safety_range": overall_best_expectancy.get("key") if overall_best_expectancy else None,
+        "overall_confidence": normalize_confidence_key(confidence_label(overall_best_expectancy.get("weighted_trade_count") if overall_best_expectancy else 0)),
+        "overall_supporting_trade_count": overall_best_expectancy.get("trade_count") if overall_best_expectancy else 0,
+        "overall_weighted_supporting_trade_count": round(overall_best_expectancy.get("weighted_trade_count") or 0.0, 2) if overall_best_expectancy else 0.0,
+        "overall_best_by_win_rate": overall_best_win_rate.get("key") if overall_best_win_rate else None,
+        "vix_guidance": vix_guidance,
+    }
+
+    return {
+        "bucket_results": bucket_results,
+        "closed_trade_count": len(closed_records),
+        "eligible_trade_count": len(eligible_records),
+        "excluded_trade_count": excluded_trade_count,
+        "distance_source_counts": summarize_distance_sources(closed_records),
+        "expected_move_source_counts": summarize_expected_move_sources(closed_records),
+        "expected_move_usage_summary": summarize_expected_move_usage(closed_records),
+        "exclusion_summary": {
+            **safety_ratio_summary["exclusion_summary"],
+        },
+        "vix_excluded_count": vix_excluded_count,
+        "overall_best_by_expectancy": build_safety_bucket_pick(overall_best_expectancy),
+        "overall_best_by_win_rate": build_safety_bucket_pick(overall_best_win_rate),
+        "vix_bucket_results": vix_bucket_results,
+        "adaptive_guidance": {
+            "overall": build_safety_bucket_pick(overall_best_expectancy),
+            "overall_best_by_win_rate": build_safety_bucket_pick(overall_best_win_rate),
+            "by_vix_bucket": vix_bucket_results,
+            "recommendation": recommendation,
+        },
+    }
+
+
+def build_safety_ratio_bucket_results(records: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    items = []
+    for bucket_order, bucket in enumerate(SAFETY_RATIO_BUCKETS):
+        grouped_records = [record for record in records if classify_safety_ratio_bucket(record.get("safety_ratio")) == bucket["key"]]
+        grouped_outcomes = summarize_outcomes(grouped_records)
+        scored_count = len(grouped_outcomes.scored_outcomes)
+        weighted_trade_count = sum(expected_move_sample_weight(record) for record in grouped_records)
+        weighted_scored_count = sum(expected_move_sample_weight(record) for record in grouped_outcomes.scored_outcomes)
+        win_count = len(grouped_outcomes.wins)
+        loss_count = len(grouped_outcomes.losses)
+        black_swan_count = len(grouped_outcomes.black_swans)
+        scratched_count = len(grouped_outcomes.scratched)
+        average_win = weighted_average(grouped_outcomes.wins, value_key="gross_pnl")
+        average_loss = abs(weighted_average(grouped_outcomes.loss_events, value_key="gross_pnl"))
+        win_rate = (sum(expected_move_sample_weight(record) for record in grouped_outcomes.wins) / weighted_scored_count) if weighted_scored_count else 0.0
+        loss_rate = (sum(expected_move_sample_weight(record) for record in grouped_outcomes.loss_events) / weighted_scored_count) if weighted_scored_count else 0.0
+        expectancy = calculate_expectancy(
+            win_rate=win_rate,
+            average_win=average_win,
+            loss_rate=loss_rate,
+            average_loss=average_loss,
+        ) if weighted_scored_count else 0.0
+        items.append(
+            {
+                "bucket_order": bucket_order,
+                "key": bucket["key"],
+                "label": bucket["label"],
+                "trade_count": len(grouped_records),
+                "weighted_trade_count": round(weighted_trade_count, 2),
+                "scored_trade_count": scored_count,
+                "weighted_scored_trade_count": round(weighted_scored_count, 2),
+                "win_count": win_count,
+                "loss_count": loss_count,
+                "black_swan_count": black_swan_count,
+                "scratched_count": scratched_count,
+                "win_rate": round(win_rate * 100, 2),
+                "avg_win": round(average_win, 2),
+                "avg_loss": round(average_loss, 2),
+                "total_pnl": round(sum(record.get("gross_pnl") or 0.0 for record in grouped_records), 2),
+                "expectancy": round(expectancy, 2),
+                "confidence": confidence_label(weighted_trade_count),
+            }
+        )
+    return items
+
+
+def build_safety_bucket_pick(bucket: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not bucket:
+        return None
+    return {
+        "key": bucket["key"],
+        "label": bucket["label"],
+        "confidence": bucket["confidence"],
+        "supporting_trade_count": bucket["trade_count"],
+        "weighted_supporting_trade_count": round(bucket.get("weighted_trade_count") or 0.0, 2),
+        "sample_size": bucket["trade_count"],
+        "expectancy": bucket["expectancy"],
+        "win_rate": bucket["win_rate"],
+    }
+
+
+def select_best_safety_bucket(bucket_results: list[Dict[str, Any]], *, metric_key: str) -> Optional[Dict[str, Any]]:
+    candidates = [item for item in bucket_results if item.get("weighted_trade_count", 0) > 0 and item.get("weighted_scored_trade_count", 0) > 0]
+    if not candidates:
+        return None
+    if metric_key == "win_rate":
+        return max(candidates, key=lambda item: (item.get("win_rate") or 0.0, item.get("weighted_trade_count") or 0.0, item.get("expectancy") or 0.0, -(item.get("bucket_order") or 0)))
+    return max(candidates, key=lambda item: (item.get("expectancy") or 0.0, item.get("weighted_trade_count") or 0.0, item.get("win_rate") or 0.0, -(item.get("bucket_order") or 0)))
+
+
+def classify_safety_ratio_bucket(safety_ratio: Optional[float]) -> Optional[str]:
+    if safety_ratio is None:
+        return None
+    for bucket in SAFETY_RATIO_BUCKETS:
+        minimum = bucket["minimum"]
+        maximum = bucket["maximum"]
+        if minimum is None and maximum is not None and safety_ratio < maximum:
+            return bucket["key"]
+        if minimum is not None and maximum is None and safety_ratio >= minimum:
+            return bucket["key"]
+        if minimum is not None and maximum is not None and minimum <= safety_ratio < maximum:
+            return bucket["key"]
+    return None
+
+
+def confidence_label(sample_size: float) -> str:
+    if sample_size >= 8:
+        return "High Confidence"
+    if sample_size >= 4:
+        return "Medium Confidence"
+    if sample_size >= 1:
+        return "Low Confidence"
+    return "No Confidence"
+
+
+def normalize_confidence_key(label: str) -> str:
+    return str(label or "No Confidence").replace(" Confidence", "").strip().lower() or "no"
+
+
+def build_trade_mode_split(records: list[Dict[str, Any]]) -> Dict[str, Any]:
+    items = []
+    for label in PERFORMANCE_FILTER_GROUPS["trade_mode"]:
+        grouped_records = [record for record in records if record.get("trade_mode") == label]
+        grouped_outcomes = summarize_outcomes(grouped_records)
+        scored_count = len(grouped_outcomes.scored_outcomes)
+        win_rate = (len(grouped_outcomes.wins) / scored_count) if scored_count else 0.0
+        loss_rate = (len(grouped_outcomes.loss_events) / scored_count) if scored_count else 0.0
+        average_win = average(record.get("gross_pnl") for record in grouped_outcomes.wins)
+        average_loss = abs(average(record.get("gross_pnl") for record in grouped_outcomes.loss_events))
+        expectancy = calculate_expectancy(win_rate=win_rate, average_win=average_win, loss_rate=loss_rate, average_loss=average_loss) if scored_count else 0.0
+        items.append(
+            {
+                "label": label,
+                "trade_count": len(grouped_records),
+                "open_trades": len(grouped_outcomes.open_records),
+                "net_pnl": round(sum(record.get("gross_pnl") or 0.0 for record in grouped_records), 2),
+                "win_rate": round(win_rate * 100, 2),
+                "expectancy": round(expectancy, 2),
+            }
+        )
+    return {"items": items}
+
+
+def build_profile_em_safety_distance_payload(records: list[Dict[str, Any]], *, filters: PerformanceFilters) -> Dict[str, Any]:
+    independent_mode_filters = PerformanceFilters(
+        system=filters.system,
+        profile=filters.profile,
+        result=filters.result,
+        trade_mode=tuple(normalize_filter_value("trade_mode", option) for option in PERFORMANCE_FILTER_GROUPS["trade_mode"]),
+        macro_grade=filters.macro_grade,
+        structure_grade=filters.structure_grade,
+    )
+    scoped_records = apply_performance_filters(records, independent_mode_filters)
+    return {
+        "default_view": PROFILE_EM_VIEW_REAL_ONLY,
+        "real_only": build_profile_em_safety_mode_payload(scoped_records, include_simulated=False),
+        "real_plus_simulated": build_profile_em_safety_mode_payload(scoped_records, include_simulated=True),
+    }
+
+
+def build_profile_em_safety_mode_payload(records: list[Dict[str, Any]], *, include_simulated: bool) -> Dict[str, Any]:
+    mode_records = list(records) if include_simulated else [record for record in records if str(record.get("trade_mode") or "").strip().lower() == "real"]
+    closed_records = [record for record in mode_records if record.get("status") not in {"Open", "Reduced"}]
+    eligible_records: list[Dict[str, Any]] = []
+    exclusion_summary = {
+        "open_trade_count": len(mode_records) - len(closed_records),
+        "em_multiple_missing_count": 0,
+        "vix_missing_count": 0,
+    }
+
+    for record in closed_records:
+        entry_em_multiple, entry_source = resolve_profile_entry_em_multiple(record)
+        if entry_em_multiple is None:
+            exclusion_summary["em_multiple_missing_count"] += 1
+            continue
+        regime_key = classify_profile_em_vix_regime(record.get("vix_at_entry"))
+        if regime_key is None:
+            exclusion_summary["vix_missing_count"] += 1
+            continue
+        eligible_records.append(
+            {
+                **record,
+                "entry_em_multiple": entry_em_multiple,
+                "entry_em_multiple_source": entry_source,
+                "profile_em_vix_regime": regime_key,
+            }
+        )
+
+    profile_items = []
+    for profile_label in determine_profile_em_labels(eligible_records):
+        profile_records = [record for record in eligible_records if record.get("profile") == profile_label]
+        if not profile_records:
+            continue
+        regime_items = []
+        for regime in PROFILE_EM_VIX_REGIMES:
+            regime_records = [record for record in profile_records if record.get("profile_em_vix_regime") == regime["key"]]
+            bucket_results = build_profile_entry_em_bucket_results(regime_records)
+            best_bucket = select_best_profile_em_bucket(bucket_results)
+            regime_items.append(
+                {
+                    "key": regime["key"],
+                    "label": regime["label"],
+                    "sample_size": len(regime_records),
+                    "recommended_range": best_bucket.get("label") if best_bucket else None,
+                    "confidence": best_bucket.get("confidence") if best_bucket else "No Confidence",
+                    "supporting_trade_count": best_bucket.get("trade_count") if best_bucket else 0,
+                    "weighted_supporting_trade_count": round(best_bucket.get("weighted_trade_count") or 0.0, 2) if best_bucket else 0.0,
+                    "expectancy": best_bucket.get("expectancy") if best_bucket else None,
+                    "win_rate": best_bucket.get("win_rate") if best_bucket else None,
+                    "status": "ready" if best_bucket else "insufficient",
+                    "bucket_results": bucket_results,
+                }
+            )
+        profile_items.append(
+            {
+                "profile": profile_label,
+                "qualified_trade_count": len(profile_records),
+                "regimes": regime_items,
+            }
+        )
+
+    excluded_trade_count = exclusion_summary["em_multiple_missing_count"] + exclusion_summary["vix_missing_count"]
+    return {
+        "mode_label": "Real + Simulated" if include_simulated else "Real Only",
+        "include_simulated": include_simulated,
+        "closed_trade_count": len(closed_records),
+        "qualified_trade_count": len(eligible_records),
+        "excluded_trade_count": excluded_trade_count,
+        "minimum_scored_trades": MIN_PROFILE_EM_RECOMMENDATION_SCORED_TRADES,
+        "profiles": profile_items,
+        "exclusion_summary": exclusion_summary,
+    }
+
+
+def determine_profile_em_labels(records: list[Dict[str, Any]]) -> list[str]:
+    known_labels = PERFORMANCE_FILTER_GROUPS["profile"]
+    observed_labels = {str(record.get("profile") or "").strip() for record in records if str(record.get("profile") or "").strip()}
+    ordered = [label for label in known_labels if label in observed_labels]
+    dynamic_labels = sorted(label for label in observed_labels if label not in known_labels)
+    return ordered + dynamic_labels
+
+
+def resolve_profile_entry_em_multiple(record: Dict[str, Any]) -> tuple[Optional[float], str]:
+    actual_em_multiple = coerce_float(record.get("actual_em_multiple"))
+    if actual_em_multiple is not None and actual_em_multiple > 0:
+        return actual_em_multiple, "actual_em_multiple"
+    safety_ratio = coerce_float(record.get("safety_ratio"))
+    if safety_ratio is not None and safety_ratio > 0:
+        return safety_ratio, "safety_ratio"
+    return None, "unavailable"
+
+
+def classify_profile_em_vix_regime(vix_at_entry: Optional[float]) -> Optional[str]:
+    if vix_at_entry is None:
+        return None
+    return "vix_ge_19" if float(vix_at_entry) >= 19.0 else "vix_lt_19"
+
+
+def build_profile_entry_em_bucket_results(records: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    items = []
+    for bucket_order, bucket in enumerate(SAFETY_RATIO_BUCKETS):
+        bucket_key = bucket["key"]
+        grouped_records = [record for record in records if classify_safety_ratio_bucket(record.get("entry_em_multiple")) == bucket_key]
+        grouped_outcomes = summarize_outcomes(grouped_records)
+        weighted_trade_count = sum(profile_em_sample_weight(record) for record in grouped_records)
+        weighted_scored_count = sum(profile_em_sample_weight(record) for record in grouped_outcomes.scored_outcomes)
+        average_win = weighted_average(grouped_outcomes.wins, value_key="gross_pnl", weight_resolver=profile_em_sample_weight)
+        average_loss = abs(weighted_average(grouped_outcomes.loss_events, value_key="gross_pnl", weight_resolver=profile_em_sample_weight))
+        win_rate = (sum(profile_em_sample_weight(record) for record in grouped_outcomes.wins) / weighted_scored_count) if weighted_scored_count else 0.0
+        loss_rate = (sum(profile_em_sample_weight(record) for record in grouped_outcomes.loss_events) / weighted_scored_count) if weighted_scored_count else 0.0
+        expectancy = calculate_expectancy(
+            win_rate=win_rate,
+            average_win=average_win,
+            loss_rate=loss_rate,
+            average_loss=average_loss,
+        ) if weighted_scored_count else 0.0
+        items.append(
+            {
+                "bucket_order": bucket_order,
+                "key": bucket_key,
+                "label": bucket["label"],
+                "trade_count": len(grouped_records),
+                "scored_trade_count": len(grouped_outcomes.scored_outcomes),
+                "weighted_trade_count": round(weighted_trade_count, 2),
+                "weighted_scored_trade_count": round(weighted_scored_count, 2),
+                "win_rate": round(win_rate * 100, 2),
+                "expectancy": round(expectancy, 2),
+                "confidence": confidence_label(weighted_trade_count),
+            }
+        )
+    return items
+
+
+def select_best_profile_em_bucket(bucket_results: list[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    candidates = [
+        item
+        for item in bucket_results
+        if (item.get("trade_count") or 0) >= MIN_PROFILE_EM_RECOMMENDATION_SCORED_TRADES
+        and (item.get("scored_trade_count") or 0) >= MIN_PROFILE_EM_RECOMMENDATION_SCORED_TRADES
+        and (item.get("weighted_scored_trade_count") or 0) > 0
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda item: (
+            item.get("expectancy") or 0.0,
+            item.get("weighted_trade_count") or 0.0,
+            item.get("win_rate") or 0.0,
+            -(item.get("bucket_order") or 0),
+        ),
+    )
+
+
+def summarize_distance_sources(records: Iterable[Dict[str, Any]]) -> Dict[str, int]:
+    counts = {
+        "original": 0,
+        "derived": 0,
+        "estimated_fallback": 0,
+        "unresolved": 0,
+    }
+    for record in records:
+        source = str(record.get("distance_source") or "unresolved")
+        counts[source] = counts.get(source, 0) + 1
+    return counts
+
+
+def summarize_expected_move_sources(records: Iterable[Dict[str, Any]]) -> Dict[str, int]:
+    counts = {
+        "original": 0,
+        "recovered_candidate": 0,
+        "recovered_snapshot": 0,
+        "estimated_calibrated": 0,
+        "same_day_atm_straddle": 0,
+        "unresolved": 0,
+    }
+    for record in records:
+        source = normalize_expected_move_source(record.get("expected_move_source"))
+        counts[source] = counts.get(source, 0) + 1
+    return counts
+
+
+def summarize_expected_move_usage(records: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    counts = {
+        EXPECTED_MOVE_USAGE_ACTUAL: 0,
+        EXPECTED_MOVE_USAGE_ESTIMATED: 0,
+        EXPECTED_MOVE_USAGE_EXCLUDED: 0,
+    }
+    weighted_support = 0.0
+    for record in records:
+        usage = classify_expected_move_usage(record.get("expected_move_source"), record.get("expected_move_used"))
+        counts[usage] = counts.get(usage, 0) + 1
+        weighted_support += expected_move_sample_weight(record)
+    counts["weighted_support"] = round(weighted_support, 2)
+    return counts
+
+
+def expected_move_sample_weight(record: Dict[str, Any]) -> float:
+    return float(record.get("expected_move_weight") or expected_move_learning_weight(record.get("expected_move_source"), record.get("expected_move_confidence")))
+
+
+def summarize_safety_ratio_records(records: Iterable[Dict[str, Any]], *, closed_only: bool = False) -> Dict[str, Any]:
+    candidate_records = []
+    included_records = []
+    exclusion_summary = {
+        "open_trade_count": 0,
+        "distance_unresolved_count": 0,
+        "distance_conflict_count": 0,
+        "expected_move_missing_count": 0,
+        "expected_move_excluded_count": 0,
+        "expected_move_too_small_count": 0,
+        "ratio_unavailable_count": 0,
+    }
+
+    for record in records:
+        if closed_only and record.get("status") in {"Open", "Reduced"}:
+            exclusion_summary["open_trade_count"] += 1
+            continue
+
+        candidate_records.append(record)
+        exclusion_reason = classify_safety_ratio_exclusion(record)
+        if exclusion_reason is None:
+            included_records.append(record)
+            continue
+        exclusion_summary[exclusion_reason] += 1
+
+    excluded_trade_count = sum(exclusion_summary.values())
+    return {
+        "candidate_records": candidate_records,
+        "included_records": included_records,
+        "included_trade_count": len(included_records),
+        "excluded_trade_count": excluded_trade_count,
+        "exclusion_summary": exclusion_summary,
+    }
+
+
+def classify_safety_ratio_exclusion(record: Dict[str, Any]) -> Optional[str]:
+    distance_to_short = coerce_float(record.get("distance_to_short"))
+    if distance_to_short is None:
+        return "distance_unresolved_count"
+    if record.get("distance_has_material_discrepancy"):
+        return "distance_conflict_count"
+    short_strike = coerce_float(record.get("short_strike"))
+    spx_at_entry = coerce_float(record.get("spx_at_entry"))
+    if spx_at_entry is None and short_strike is not None and abs(distance_to_short - short_strike) <= 0.01:
+        return "distance_conflict_count"
+
+    expected_move_used = coerce_float(record.get("expected_move_used"))
+    if expected_move_used is None:
+        return "expected_move_missing_count"
+    if record.get("expected_move_usage") == EXPECTED_MOVE_USAGE_EXCLUDED:
+        return "expected_move_excluded_count"
+    if expected_move_used < MIN_EXPECTED_MOVE_USED:
+        return "expected_move_too_small_count"
+    if record.get("safety_ratio") is None:
+        return "ratio_unavailable_count"
+    return None
+
+
+def is_valid_premium_em_record(record: Dict[str, Any]) -> bool:
+    if record.get("premium_per_contract") is None:
+        return False
+    return classify_safety_ratio_exclusion(record) is None
+
+
+def weighted_average(
+    records: Iterable[Dict[str, Any]],
+    *,
+    value_key: str,
+    weight_resolver=expected_move_sample_weight,
+) -> float:
+    weighted_total = 0.0
+    total_weight = 0.0
+    for record in records:
+        value = record.get(value_key)
+        weight = weight_resolver(record)
+        if value is None or weight <= 0:
+            continue
+        weighted_total += float(value) * weight
+        total_weight += weight
+    if total_weight <= 0:
+        return 0.0
+    return weighted_total / total_weight
+
+
+def profile_em_sample_weight(record: Dict[str, Any]) -> float:
+    if str(record.get("entry_em_multiple_source") or "").strip().lower() == "actual_em_multiple":
+        return 1.0
+    return expected_move_sample_weight(record)
+
+
+def build_outcome_composition(outcomes: OutcomeSummary) -> Dict[str, Any]:
+    items = []
+    for label in PERFORMANCE_FILTER_GROUPS["result"]:
+        count = outcomes.outcome_count(label)
+        items.append({"label": label, "value": count})
+    return {"items": items, "total": sum(item["value"] for item in items)}
+
+
+def calculate_expectancy(*, win_rate: float, average_win: float, loss_rate: float, average_loss: float) -> float:
+    return (win_rate * average_win) - (loss_rate * average_loss)
+
+
+def classify_trade_result(trade: Dict[str, Any]) -> str:
+    current_status = str(trade.get("derived_status_raw") or trade.get("status") or "").strip().lower()
+    if current_status in {"open", "reduced"}:
+        return ""
+    result = classify_closed_trade_outcome(
+        gross_pnl=trade.get("gross_pnl") if trade.get("gross_pnl") is not None else trade.get("pnl"),
+        max_theoretical_risk=trade.get("total_max_loss") if trade.get("total_max_loss") is not None else trade.get("max_theoretical_risk") if trade.get("max_theoretical_risk") is not None else trade.get("max_loss"),
+        explicit_result=trade.get("win_loss_result") or trade.get("result"),
+        close_reason=trade.get("close_reason"),
+    )
+    if result == "Flat":
+        return "Scratched"
+    if result in {"Win", "Loss", "Black Swan", "Scratched"}:
+        return result
+
+    gross_pnl = coerce_float(trade.get("gross_pnl") if trade.get("gross_pnl") is not None else trade.get("pnl"))
+    if gross_pnl is not None:
+        if gross_pnl > 0:
+            return "Win"
+        if gross_pnl < 0:
+            return "Loss"
+        return "Scratched"
+    return ""
+
+
+def normalize_macro_grade(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if "major" in text:
+        return "Major"
+    if "minor" in text:
+        return "Minor"
+    return "None"
+
+
+def normalize_structure_grade(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if any(keyword in text for keyword in ("poor", "bad", "reject", "blocked", "fail")):
+        return "Poor"
+    if any(keyword in text for keyword in ("good", "allowed", "strong")):
+        return "Good"
+    return "Neutral"
+
+
+def normalize_filter_value(group: str, value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if group in {"result", "trade_mode", "macro_grade", "structure_grade", "profile", "system"}:
+        return text.replace(" ", "-")
+    return text
+
+
+def pick_trade_date(trade: Dict[str, Any]) -> str:
+    trade_date = str(trade.get("trade_date") or "").strip()
+    if trade_date:
+        return trade_date
+    entry_datetime = str(trade.get("entry_datetime") or "").strip()
+    if entry_datetime:
+        return entry_datetime.split("T", 1)[0]
+    created_at = str(trade.get("created_at") or "").strip()
+    if created_at:
+        return created_at.split("T", 1)[0]
+    return ""
+
+
+def derive_max_loss(trade: Dict[str, Any], *, actual_entry_credit: Optional[float]) -> Optional[float]:
+    credit_model = resolve_trade_credit_model(trade)
+    existing_max_loss = coerce_float(
+        trade.get("max_theoretical_risk")
+        if trade.get("max_theoretical_risk") is not None
+        else (trade.get("max_risk") if trade.get("max_risk") is not None else trade.get("max_loss"))
+    )
+    if existing_max_loss is not None and existing_max_loss > 0:
+        return existing_max_loss
+    derived = credit_model.get("max_theoretical_risk")
+    return round(derived, 2) if derived is not None else None
+
+
+def derive_entry_credit(trade: Dict[str, Any]) -> tuple[Optional[float], str]:
+    credit_model = resolve_trade_credit_model(trade)
+    actual_entry_credit = coerce_float(credit_model.get("actual_entry_credit"))
+    if actual_entry_credit is not None:
+        return actual_entry_credit, str(credit_model.get("source") or "actual_entry_credit")
+    return None, "unavailable"
+
+
+def compute_risk_efficiency(*, total_premium: Optional[float], max_loss: Optional[float]) -> Optional[float]:
+    if total_premium is None or max_loss in {None, 0}:
+        return None
+    return compute_ratio(total_premium, max_loss)
+
+
+def classify_vix_bucket(vix_at_entry: Optional[float]) -> Optional[str]:
+    if vix_at_entry is None:
+        return None
+    if vix_at_entry < 18:
+        return "<18"
+    if vix_at_entry < 22:
+        return "18-22"
+    if vix_at_entry < 26:
+        return "22-26"
+    return "26+"
+
+
+def compute_ratio(numerator: Optional[float], denominator: Optional[float]) -> Optional[float]:
+    if numerator is None or denominator in {None, 0}:
+        return None
+    return round(numerator / denominator, 6)
+
+
+def average(values: Iterable[Optional[float]]) -> float:
+    cleaned = [float(value) for value in values if value is not None and math.isfinite(float(value))]
+    if not cleaned:
+        return 0.0
+    return sum(cleaned) / len(cleaned)
+
+
+def coerce_float(value: Any) -> Optional[float]:
+    if value in {None, "", "—"}:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None

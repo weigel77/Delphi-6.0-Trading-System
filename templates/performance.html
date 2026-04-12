@@ -1,0 +1,1375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Performance | {{ app_identity.display_name }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    {% from '_delphi_header_macros.html' import render_delphi_header with context %}
+    {% set active_filters = dashboard_payload.filters if dashboard_payload and dashboard_payload.filters else {} %}
+    <main class="page-shell performance-shell" data-performance-url="{{ url_for('performance_dashboard_data') }}">
+        <section class="hero-card delphi-header-card delphi-shared-header delphi-header-card-subpage">
+            {{ render_delphi_header(
+                active_page='performance',
+                page_heading='Performance',
+                page_copy='Visual dashboard for trade behavior, risk, and progression at a glance.',
+                page_meta='Chart-first command view for Apollo, Legacy, and Kairos performance.',
+                menu_status=menu_status,
+            ) }}
+
+            {% if info_message %}
+                <div class="message message-{{ info_message.level|default('info') }}">{{ info_message.text }}</div>
+            {% endif %}
+        </section>
+
+        <section class="panel performance-kpi-panel">
+            <div class="performance-kpi-strip">
+                <article class="performance-kpi-card performance-kpi-card-gauge">
+                    <div class="performance-kpi-label">Win Rate</div>
+                    <div id="win-rate-gauge" class="performance-gauge" aria-label="Win Rate"></div>
+                </article>
+                <article class="performance-kpi-card performance-kpi-card-gauge">
+                    <div class="performance-kpi-label">Expectancy</div>
+                    <div id="expectancy-gauge" class="performance-gauge" aria-label="Expectancy"></div>
+                </article>
+                <article class="performance-kpi-card performance-kpi-card-net">
+                    <div class="performance-kpi-label">Net P/L</div>
+                    <div id="net-pnl-tile" class="performance-big-number" aria-label="Net P/L"></div>
+                    <div class="performance-mini-strip">
+                        <div class="performance-mini-stat"><span>Total</span><strong id="total-trades-value"></strong></div>
+                        <div class="performance-mini-stat"><span>Open</span><strong id="open-trades-value"></strong></div>
+                        <div class="performance-mini-stat"><span>Closed</span><strong id="closed-trades-value"></strong></div>
+                    </div>
+                </article>
+                <article class="performance-kpi-card performance-kpi-card-outcome-mix">
+                    <div class="performance-kpi-label">Win / Loss / Black Swan %</div>
+                    <div id="outcome-mix-card" class="performance-outcome-mix-block" aria-label="Outcome percentages"></div>
+                </article>
+                <article class="performance-kpi-card performance-kpi-card-compare">
+                    <div class="performance-kpi-label">Avg Win vs Loss</div>
+                    <div id="avg-compare-card" class="performance-compare-block" aria-label="Average Win versus Average Loss"></div>
+                </article>
+            </div>
+        </section>
+
+        <section class="panel performance-filter-panel">
+            <div class="performance-filter-ribbon" id="performance-filter-ribbon">
+                {% for group, options in filter_groups.items() %}
+                    <fieldset class="performance-filter-group">
+                        <legend>{{ group.replace('_', ' ')|title }}</legend>
+                        <div class="performance-filter-options">
+                            {% for option in options %}
+                                <label class="performance-filter-pill">
+                                    <input type="checkbox" class="performance-filter-checkbox" data-filter-group="{{ group }}" value="{{ option|lower|replace(' ', '-') }}" {% if option|lower|replace(' ', '-') in active_filters.get(group, []) %}checked{% endif %}>
+                                    <span>{{ option }}</span>
+                                </label>
+                            {% endfor %}
+                        </div>
+                    </fieldset>
+                {% endfor %}
+            </div>
+        </section>
+
+        <section class="performance-chart-grid">
+            <article class="panel performance-chart-panel performance-chart-panel-wide">
+                <div class="performance-panel-header">
+                    <h2>Equity Curve</h2>
+                    <span id="performance-records-caption" class="subtle"></span>
+                </div>
+                <div id="equity-curve-chart" class="performance-chart-canvas" aria-label="Equity Curve"></div>
+            </article>
+
+            <article class="panel performance-chart-panel">
+                <div class="performance-panel-header"><h2>Outcome Mix</h2></div>
+                <div id="outcome-composition-chart" class="performance-chart-canvas performance-chart-canvas-centered" aria-label="Outcome Composition"></div>
+            </article>
+
+            <article class="panel performance-chart-panel">
+                <div class="performance-panel-header"><h2>Profile Avg P/L / Trade</h2></div>
+                <div id="profile-avg-pnl-chart" class="performance-chart-canvas" aria-label="Average P/L by Profile"></div>
+            </article>
+
+            <article class="panel performance-chart-panel">
+                <div class="performance-panel-header"><h2>Macro Avg P/L / Trade</h2></div>
+                <div id="macro-avg-pnl-chart" class="performance-chart-canvas" aria-label="Average P/L by Macro Grade"></div>
+            </article>
+
+            <article class="panel performance-chart-panel">
+                <div class="performance-panel-header"><h2>Structure Avg P/L / Trade</h2></div>
+                <div id="structure-avg-pnl-chart" class="performance-chart-canvas" aria-label="Average P/L by Structure Grade"></div>
+            </article>
+        </section>
+
+        <section class="panel performance-learning-panel">
+            <div class="performance-panel-header">
+                <h2>Delphi 4.3 Learning Metrics</h2>
+                <span class="subtle">Extends the existing performance engine with distance, credit, VIX, and historical EM safety learning views.</span>
+            </div>
+
+            <div class="performance-learning-overview" id="performance-learning-overview">
+                <article class="performance-learning-card">
+                    <p class="performance-kpi-label">Avg Safety Ratio</p>
+                    <strong id="avg-safety-ratio-value" class="performance-learning-value">—</strong>
+                    <span id="avg-safety-ratio-note" class="subtle">Distance to short divided by validated expected move.</span>
+                </article>
+                <article class="performance-learning-card">
+                    <p class="performance-kpi-label">Avg Premium / EM Point</p>
+                    <strong id="avg-premium-per-em-value" class="performance-learning-value">—</strong>
+                    <span class="subtle">Average premium per contract divided by expected move used.</span>
+                </article>
+                <article class="performance-learning-card">
+                    <p class="performance-kpi-label">
+                        Avg Premium / Risk
+                        <span class="performance-help-badge" title="Premium collected divided by maximum theoretical risk at entry.">?</span>
+                    </p>
+                    <strong id="avg-risk-efficiency-value" class="performance-learning-value">—</strong>
+                    <span id="avg-risk-efficiency-note" class="subtle">Premium collected divided by maximum theoretical risk at entry.</span>
+                </article>
+                <article class="performance-learning-card">
+                    <p class="performance-kpi-label">AVG CREDIT EFFICIENCY</p>
+                    <strong id="avg-credit-efficiency-value" class="performance-learning-value">—</strong>
+                    <span id="avg-credit-efficiency-note" class="subtle">Premium received ÷ max theoretical loss.</span>
+                </article>
+            </div>
+
+            <div class="performance-learning-grid">
+                <article class="panel performance-chart-panel">
+                    <div class="performance-panel-header"><h2>Credit Efficiency by System</h2></div>
+                    <div id="credit-efficiency-system-panel" class="performance-chart-canvas" aria-label="Credit Efficiency by System"></div>
+                </article>
+
+                <article class="panel performance-chart-panel">
+                    <div class="performance-panel-header"><h2>Credit Efficiency by Profile</h2></div>
+                    <div id="credit-efficiency-profile-panel" class="performance-chart-canvas" aria-label="Credit Efficiency by Profile"></div>
+                </article>
+
+                <article class="panel performance-chart-panel">
+                    <div class="performance-panel-header"><h2>Credit Efficiency by VIX Bucket</h2></div>
+                    <div id="credit-efficiency-vix-panel" class="performance-chart-canvas" aria-label="Credit Efficiency by VIX Bucket"></div>
+                </article>
+
+                <article class="panel performance-chart-panel performance-chart-panel-feature performance-chart-panel-full">
+                    <div class="performance-panel-header performance-panel-header-stacked">
+                        <div>
+                            <h2>Best EM Safety Distance by Profile</h2>
+                            <span id="profile-em-safety-caption" class="subtle">Historical best EM-distance ranges by profile across VIX >= 19 and VIX < 19.</span>
+                        </div>
+                        <div class="performance-inline-toggle" role="group" aria-label="Best EM safety distance mode">
+                            <button type="button" id="profile-em-safety-real-only" class="performance-inline-toggle-button performance-inline-toggle-button-active" data-profile-em-view="real_only" aria-pressed="true">Real Only</button>
+                            <button type="button" id="profile-em-safety-real-plus-simulated" class="performance-inline-toggle-button" data-profile-em-view="real_plus_simulated" aria-pressed="false">Real + Simulated</button>
+                        </div>
+                    </div>
+                    <div id="profile-em-safety-distance-panel" class="performance-profile-em-panel" aria-label="Best EM Safety Distance by Profile"></div>
+                </article>
+
+                <details id="safety-ratio-summary-details" class="panel performance-chart-panel performance-chart-panel-compact performance-chart-panel-full performance-collapsible-panel">
+                    <summary class="performance-collapsible-summary">
+                        <div>
+                            <h2>Safety Ratio Curve Summary</h2>
+                            <span id="safety-ratio-excluded-caption" class="subtle"></span>
+                        </div>
+                    </summary>
+                    <div class="performance-collapsible-content">
+                        <div class="performance-safety-curve-layout">
+                            <div id="safety-ratio-expectancy-chart" class="performance-chart-canvas" aria-label="Safety Ratio Expectancy Curve"></div>
+                            <div id="safety-ratio-bucket-summary" class="performance-safety-summary" aria-label="Safety Ratio Bucket Summary"></div>
+                        </div>
+                    </div>
+                </details>
+
+                <details id="learning-audit-details" class="panel performance-chart-panel performance-chart-panel-compact performance-chart-panel-full performance-collapsible-panel">
+                    <summary class="performance-collapsible-summary">
+                        <div>
+                            <h2>Learning Audit</h2>
+                            <span class="subtle">EM sample counts, exclusions, and result classification rules.</span>
+                        </div>
+                    </summary>
+                    <div class="performance-collapsible-content">
+                        <div id="learning-audit-panel" class="performance-audit-panel" aria-label="Learning Audit"></div>
+                    </div>
+                </details>
+            </div>
+        </section>
+    </main>
+
+    <script id="performance-dashboard-payload" type="application/json">{{ dashboard_payload|tojson }}</script>
+    <script>
+        const performanceRoot = document.querySelector('.performance-shell');
+        const performanceUrl = performanceRoot?.dataset.performanceUrl;
+        const payloadElement = document.getElementById('performance-dashboard-payload');
+        const filterInputs = Array.from(document.querySelectorAll('.performance-filter-checkbox'));
+        const palette = {
+            blue: '#1f6feb',
+            blueSoft: '#d8e8ff',
+            green: '#1f8f5f',
+            greenSoft: '#d9f5e8',
+            red: '#c24141',
+            redSoft: '#fde3e3',
+            dark: '#425164',
+            darkSoft: '#d9dfe8',
+            neutral: '#7a8fa9',
+            axis: '#d5dfeb',
+            text: '#16314e',
+            muted: '#5b6f88',
+            panel: '#ffffff',
+        };
+
+        const formatCurrency = (value) => {
+            const amount = Number(value || 0);
+            const sign = amount < 0 ? '-' : '';
+            return `${sign}$${Math.abs(amount).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+        };
+
+        const formatPercent = (value) => `${Number(value || 0).toFixed(0)}%`;
+
+        const escapeHtml = (value) => String(value ?? '')
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;')
+            .replaceAll('"', '&quot;')
+            .replaceAll("'", '&#39;');
+
+        const readInitialPayload = () => {
+            try {
+                return JSON.parse(payloadElement?.textContent || '{}');
+            } catch {
+                return {};
+            }
+        };
+
+        const normalizeDashboardPayload = (payload) => {
+            const safePayload = payload && typeof payload === 'object' ? payload : {};
+            return {
+                records_total: Number(safePayload.records_total || 0),
+                records_filtered: Number(safePayload.records_filtered || 0),
+                metrics: {
+                    totals: {
+                        total_trades: Number(safePayload.metrics?.totals?.total_trades || 0),
+                        open_trades: Number(safePayload.metrics?.totals?.open_trades || 0),
+                        closed_trades: Number(safePayload.metrics?.totals?.closed_trades || 0),
+                        scratched_count: Number(safePayload.metrics?.totals?.scratched_count || 0),
+                    },
+                    win_rate: {
+                        value: Number(safePayload.metrics?.win_rate?.value || 0),
+                        wins: Number(safePayload.metrics?.win_rate?.wins || 0),
+                        losses: Number(safePayload.metrics?.win_rate?.losses || 0),
+                        scratched_excluded: Number(safePayload.metrics?.win_rate?.scratched_excluded || 0),
+                    },
+                    expectancy: {
+                        value: Number(safePayload.metrics?.expectancy?.value || 0),
+                        scale: Number(safePayload.metrics?.expectancy?.scale || 50),
+                    },
+                    net_pnl: {
+                        value: Number(safePayload.metrics?.net_pnl?.value || 0),
+                    },
+                    outcome_mix: {
+                        win_roi: Number(safePayload.metrics?.outcome_mix?.win_roi || 0),
+                        loss_roi: Number(safePayload.metrics?.outcome_mix?.loss_roi || 0),
+                        black_swan_roi: Number(safePayload.metrics?.outcome_mix?.black_swan_roi || 0),
+                        win_count: Number(safePayload.metrics?.outcome_mix?.win_count || 0),
+                        loss_count: Number(safePayload.metrics?.outcome_mix?.loss_count || 0),
+                        black_swan_count: Number(safePayload.metrics?.outcome_mix?.black_swan_count || 0),
+                        closed_real_outcomes: Number(safePayload.metrics?.outcome_mix?.closed_real_outcomes || 0),
+                        source: String(safePayload.metrics?.outcome_mix?.source || ''),
+                    },
+                    average_win_loss: {
+                        average_win: Number(safePayload.metrics?.average_win_loss?.average_win || 0),
+                        average_loss: Number(safePayload.metrics?.average_win_loss?.average_loss || 0),
+                        average_black_swan_loss: Number(safePayload.metrics?.average_win_loss?.average_black_swan_loss || 0),
+                        win_count: Number(safePayload.metrics?.average_win_loss?.win_count || 0),
+                        loss_count: Number(safePayload.metrics?.average_win_loss?.loss_count || 0),
+                        black_swan_count: Number(safePayload.metrics?.average_win_loss?.black_swan_count || 0),
+                    },
+                    black_swan: {
+                        count: Number(safePayload.metrics?.black_swan?.count || 0),
+                        impact: Number(safePayload.metrics?.black_swan?.impact || 0),
+                        impact_ratio: Number(safePayload.metrics?.black_swan?.impact_ratio || 0),
+                    },
+                },
+                charts: {
+                    equity_curve: safePayload.charts?.equity_curve || { points: [] },
+                    profile_avg_pnl: safePayload.charts?.profile_avg_pnl || { items: [] },
+                    macro_avg_pnl: safePayload.charts?.macro_avg_pnl || { items: [] },
+                    structure_avg_pnl: safePayload.charts?.structure_avg_pnl || { items: [] },
+                    outcome_composition: safePayload.charts?.outcome_composition || { items: [], total: 0 },
+                    credit_efficiency_by_system: safePayload.charts?.credit_efficiency_by_system || { items: [] },
+                    credit_efficiency_by_profile: safePayload.charts?.credit_efficiency_by_profile || { items: [] },
+                    credit_efficiency_by_vix_bucket: safePayload.charts?.credit_efficiency_by_vix_bucket || { items: [] },
+                    safety_ratio_by_system: safePayload.charts?.safety_ratio_by_system || { items: [] },
+                    premium_em_by_profile: safePayload.charts?.premium_em_by_profile || { items: [] },
+                    premium_em_by_vix_bucket: safePayload.charts?.premium_em_by_vix_bucket || { items: [] },
+                    safety_ratio_expectancy_curve: safePayload.charts?.safety_ratio_expectancy_curve || { items: [] },
+                },
+                learning: {
+                    overview: {
+                        avg_safety_ratio: Number(safePayload.learning?.overview?.avg_safety_ratio || 0),
+                        avg_premium_per_em: Number(safePayload.learning?.overview?.avg_premium_per_em || 0),
+                        avg_risk_efficiency: Number(safePayload.learning?.overview?.avg_risk_efficiency || 0),
+                        avg_credit_efficiency_pct: Number(safePayload.learning?.overview?.avg_credit_efficiency_pct || 0),
+                        qualified_credit_efficiency_trades: Number(safePayload.learning?.overview?.qualified_credit_efficiency_trades || 0),
+                        classified_vix_trades: Number(safePayload.learning?.overview?.classified_vix_trades || 0),
+                        safety_ratio_summary: safePayload.learning?.overview?.safety_ratio_summary || {
+                            included_trade_count: 0,
+                            excluded_trade_count: 0,
+                            exclusion_summary: {},
+                        },
+                        expected_move_usage_summary: safePayload.learning?.overview?.expected_move_usage_summary || {
+                            actual_manual: 0,
+                            calibrated_estimated: 0,
+                            excluded: 0,
+                            weighted_support: 0,
+                        },
+                        expected_move_weighting: safePayload.learning?.overview?.expected_move_weighting || {
+                            actual_manual: 1.0,
+                            calibrated_estimated: 0.6,
+                        },
+                        risk_efficiency_definition: String(safePayload.learning?.overview?.risk_efficiency_definition || ''),
+                        risk_efficiency_credit_note: String(safePayload.learning?.overview?.risk_efficiency_credit_note || ''),
+                        risk_efficiency_fallback_count: Number(safePayload.learning?.overview?.risk_efficiency_fallback_count || 0),
+                        credit_efficiency_definition: String(safePayload.learning?.overview?.credit_efficiency_definition || ''),
+                        credit_efficiency_credit_note: String(safePayload.learning?.overview?.credit_efficiency_credit_note || ''),
+                        credit_efficiency_fallback_count: Number(safePayload.learning?.overview?.credit_efficiency_fallback_count || 0),
+                    },
+                    safety_optimization: safePayload.learning?.safety_optimization || {
+                        bucket_results: [],
+                        closed_trade_count: 0,
+                        eligible_trade_count: 0,
+                        excluded_trade_count: 0,
+                        vix_excluded_count: 0,
+                        overall_best_by_expectancy: null,
+                        overall_best_by_win_rate: null,
+                        vix_bucket_results: [],
+                    },
+                    adaptive_safety_guidance: safePayload.learning?.adaptive_safety_guidance || {
+                        overall: null,
+                        overall_best_by_win_rate: null,
+                        by_vix_bucket: [],
+                        recommendation: { overall_optimal_safety_range: null, vix_guidance: {} },
+                    },
+                    em_policy: safePayload.learning?.em_policy || {
+                        qualified_trade_count: 0,
+                        excluded_trade_count: 0,
+                        excluded_reasons: {},
+                        expected_move_usage_summary: {
+                            actual_manual: 0,
+                            calibrated_estimated: 0,
+                            excluded: 0,
+                            weighted_support: 0,
+                        },
+                        apollo: null,
+                        kairos: null,
+                    },
+                    trade_mode_split: safePayload.learning?.trade_mode_split || { items: [] },
+                    result_audit: safePayload.learning?.result_audit || { counts: {}, rules: [] },
+                    profile_em_safety_distance: safePayload.learning?.profile_em_safety_distance || {
+                        default_view: 'real_only',
+                        real_only: {
+                            mode_label: 'Real Only',
+                            include_simulated: false,
+                            closed_trade_count: 0,
+                            qualified_trade_count: 0,
+                            excluded_trade_count: 0,
+                            minimum_scored_trades: 2,
+                            profiles: [],
+                            exclusion_summary: {},
+                        },
+                        real_plus_simulated: {
+                            mode_label: 'Real + Simulated',
+                            include_simulated: true,
+                            closed_trade_count: 0,
+                            qualified_trade_count: 0,
+                            excluded_trade_count: 0,
+                            minimum_scored_trades: 2,
+                            profiles: [],
+                            exclusion_summary: {},
+                        },
+                    },
+                },
+            };
+        };
+
+        let profileEmSafetyView = 'real_only';
+        let latestDashboardPayload = normalizeDashboardPayload(readInitialPayload());
+
+        const formatRatio = (value, decimals = 2) => {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric)) {
+                return '—';
+            }
+            return `${numeric.toFixed(decimals)}x`;
+        };
+
+        const formatDecimal = (value, decimals = 3) => {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric)) {
+                return '—';
+            }
+            return numeric.toFixed(decimals);
+        };
+
+        const formatRatioPercent = (value, decimals = 1) => {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric)) {
+                return '—';
+            }
+            return `${(numeric * 100).toFixed(decimals)}%`;
+        };
+
+        const formatConfidenceLabel = (value) => {
+            const normalized = String(value || 'none').trim().toLowerCase();
+            if (normalized === 'high') {
+                return 'High';
+            }
+            if (normalized === 'medium') {
+                return 'Medium';
+            }
+            if (normalized === 'low') {
+                return 'Low';
+            }
+            return 'None';
+        };
+
+        const getActiveFilters = () => {
+            const filters = {};
+            filterInputs.forEach((input) => {
+                const group = input.dataset.filterGroup;
+                if (!filters[group]) {
+                    filters[group] = [];
+                }
+                if (input.checked) {
+                    filters[group].push(input.value);
+                }
+            });
+            return filters;
+        };
+
+        const buildQuery = (filters) => {
+            const params = new URLSearchParams();
+            Object.entries(filters).forEach(([key, values]) => {
+                values.forEach((value) => params.append(key, value));
+            });
+            return params.toString();
+        };
+
+        const renderEmpty = (targetId, title) => {
+            const target = document.getElementById(targetId);
+            if (!target) {
+                return;
+            }
+            target.innerHTML = `<div class="performance-empty-state">${title}</div>`;
+        };
+
+        const renderGauge = ({ targetId, value, min, max, color, subtitle, formatter }) => {
+            const target = document.getElementById(targetId);
+            if (!target) {
+                return;
+            }
+            const safeMin = Number(min);
+            const safeMax = Number(max);
+            const safeValue = Number(value || 0);
+            const ratio = Math.max(0, Math.min(1, (safeValue - safeMin) / Math.max(safeMax - safeMin, 1)));
+            const startX = 26;
+            const endX = 234;
+            const arcRadius = 104;
+            const arcY = 124;
+            const needleX = startX + ((endX - startX) * ratio);
+            target.innerHTML = `
+                <svg viewBox="0 0 260 150" class="performance-gauge-svg" role="img">
+                    <path d="M26 124 A104 104 0 0 1 234 124" fill="none" stroke="${palette.blueSoft}" stroke-width="16" stroke-linecap="round"></path>
+                    <path d="M26 124 A104 104 0 0 1 234 124" fill="none" stroke="${color}" stroke-width="16" stroke-linecap="round" pathLength="100" stroke-dasharray="${ratio * 100} 100"></path>
+                    <line x1="130" y1="124" x2="${needleX}" y2="46" stroke="${palette.text}" stroke-width="3" stroke-linecap="round"></line>
+                    <circle cx="130" cy="124" r="6" fill="${palette.text}"></circle>
+                    <text x="130" y="82" text-anchor="middle" class="performance-gauge-value">${formatter(safeValue)}</text>
+                    <text x="130" y="102" text-anchor="middle" class="performance-gauge-subtitle">${subtitle}</text>
+                </svg>
+            `;
+        };
+
+        const renderNetPnl = (metrics) => {
+            const target = document.getElementById('net-pnl-tile');
+            const netPnl = Number(metrics.net_pnl.value || 0);
+            if (target) {
+                target.textContent = formatCurrency(netPnl);
+                target.className = `performance-big-number ${netPnl >= 0 ? 'performance-big-number-positive' : 'performance-big-number-negative'}`;
+            }
+            document.getElementById('total-trades-value').textContent = metrics.totals.total_trades;
+            document.getElementById('open-trades-value').textContent = metrics.totals.open_trades;
+            document.getElementById('closed-trades-value').textContent = metrics.totals.closed_trades;
+        };
+
+        const renderAverageCompare = (metrics) => {
+            const target = document.getElementById('avg-compare-card');
+            if (!target) {
+                return;
+            }
+            const averageWin = Number(metrics.average_win_loss.average_win || 0);
+            const averageLoss = Number(metrics.average_win_loss.average_loss || 0);
+            const averageBlackSwanLoss = Number(metrics.average_win_loss.average_black_swan_loss || 0);
+            const maxValue = Math.max(averageWin, averageLoss, averageBlackSwanLoss, 1);
+            const winWidth = (averageWin / maxValue) * 100;
+            const lossWidth = (averageLoss / maxValue) * 100;
+            const blackSwanWidth = (averageBlackSwanLoss / maxValue) * 100;
+            target.innerHTML = `
+                <div class="performance-compare-row">
+                    <span>Win</span>
+                    <div class="performance-compare-bar"><div class="performance-compare-fill performance-compare-fill-win" style="width:${winWidth}%"></div></div>
+                    <strong>${formatCurrency(averageWin)} <small>n=${metrics.average_win_loss.win_count || 0}</small></strong>
+                </div>
+                <div class="performance-compare-row">
+                    <span>Loss</span>
+                    <div class="performance-compare-bar"><div class="performance-compare-fill performance-compare-fill-loss" style="width:${lossWidth}%"></div></div>
+                    <strong>${formatCurrency(averageLoss)} <small>n=${metrics.average_win_loss.loss_count || 0}</small></strong>
+                </div>
+                <div class="performance-compare-row">
+                    <span>Black Swan</span>
+                    <div class="performance-compare-bar"><div class="performance-compare-fill performance-compare-fill-black-swan" style="width:${blackSwanWidth}%"></div></div>
+                    <strong>${formatCurrency(averageBlackSwanLoss)} <small>n=${metrics.average_win_loss.black_swan_count || 0}</small></strong>
+                </div>
+            `;
+        };
+
+        const renderOutcomeMix = (metrics) => {
+            const target = document.getElementById('outcome-mix-card');
+            if (!target) {
+                return;
+            }
+            const rows = [
+                {
+                    label: 'Win',
+                    value: Number(metrics.outcome_mix?.win_roi || 0),
+                    count: Number(metrics.outcome_mix?.win_count || 0),
+                    cssClass: 'performance-compare-fill-win',
+                },
+                {
+                    label: 'Loss',
+                    value: Number(metrics.outcome_mix?.loss_roi || 0),
+                    count: Number(metrics.outcome_mix?.loss_count || 0),
+                    cssClass: 'performance-compare-fill-loss',
+                },
+                {
+                    label: 'Black Swan',
+                    value: Number(metrics.outcome_mix?.black_swan_roi || 0),
+                    count: Number(metrics.outcome_mix?.black_swan_count || 0),
+                    cssClass: 'performance-compare-fill-black-swan',
+                },
+            ];
+            const sourceNote = metrics.outcome_mix?.source
+                ? `<p class="subtle performance-outcome-mix-note">${metrics.outcome_mix.source}</p>`
+                : '';
+            target.innerHTML = `${rows.map((row) => `
+                <div class="performance-outcome-mix-row">
+                    <span>${row.label}</span>
+                    <div class="performance-compare-bar"><div class="performance-compare-fill ${row.cssClass}" style="width:${Math.max(0, Math.min(100, row.value))}%"></div></div>
+                    <strong>${formatPercent(row.value)} <small>n=${row.count}</small></strong>
+                </div>
+            `).join('')}${sourceNote}`;
+        };
+
+        const renderPremiumEmSummary = (targetId, chartData, options = {}) => {
+            const target = document.getElementById(targetId);
+            if (!target) {
+                return;
+            }
+            const items = chartData.items || [];
+            const nonEmptyItems = items.filter((item) => Number(item.trade_count || 0) > 0);
+            if (!nonEmptyItems.length) {
+                renderEmpty(targetId, options.emptyTitle || 'No valid EM-backed trades');
+                return;
+            }
+            target.innerHTML = `
+                <div class="performance-metric-table">
+                    ${nonEmptyItems.map((item) => `
+                        <div class="performance-metric-row">
+                            <div>
+                                <strong>${item.label}</strong>
+                                <span>n=${item.trade_count}</span>
+                            </div>
+                            <div>
+                                <strong>${formatCurrency(item.avg_premium_per_contract)}</strong>
+                                <span>Avg premium</span>
+                            </div>
+                            <div>
+                                <strong>${formatRatio(item.avg_em_multiple)}</strong>
+                                <span>Avg EM multiple</span>
+                            </div>
+                            <div>
+                                <strong>${formatDecimal(item.premium_per_em, 2)}</strong>
+                                <span>Premium / EM point</span>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        };
+
+        let equityCurvePopupCleanup = null;
+
+        const renderLineChart = (targetId, chartData) => {
+            const target = document.getElementById(targetId);
+            if (!target) {
+                return;
+            }
+            if (equityCurvePopupCleanup) {
+                equityCurvePopupCleanup();
+                equityCurvePopupCleanup = null;
+            }
+            const points = chartData.points || [];
+            if (!points.length) {
+                renderEmpty(targetId, 'No realized P/L yet');
+                return;
+            }
+            const width = 760;
+            const height = 280;
+            const padding = { top: 24, right: 18, bottom: 38, left: 54 };
+            const plotWidth = width - padding.left - padding.right;
+            const plotHeight = height - padding.top - padding.bottom;
+            const values = points.map((point) => Number(point.cumulative || 0));
+            const minValue = Math.min(...values, 0);
+            const maxValue = Math.max(...values, 0);
+            const span = Math.max(maxValue - minValue, 1);
+            const stepX = points.length > 1 ? plotWidth / (points.length - 1) : 0;
+            const xyPoints = points.map((point, index) => {
+                const x = padding.left + (stepX * index);
+                const y = padding.top + ((maxValue - Number(point.cumulative || 0)) / span) * plotHeight;
+                return { ...point, x, y };
+            });
+            const linePath = xyPoints.map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(' ');
+            const areaPath = `${linePath} L${padding.left + plotWidth} ${padding.top + plotHeight} L${padding.left} ${padding.top + plotHeight} Z`;
+            const baselineY = padding.top + ((maxValue - 0) / span) * plotHeight;
+            target.innerHTML = `
+                <div class="performance-line-chart-wrap">
+                    <svg viewBox="0 0 ${width} ${height}" class="performance-line-chart-svg" role="img">
+                        <line x1="${padding.left}" y1="${baselineY}" x2="${padding.left + plotWidth}" y2="${baselineY}" class="performance-line-baseline"></line>
+                        <path d="${areaPath}" class="performance-line-area"></path>
+                        <path d="${linePath}" class="performance-line-stroke"></path>
+                        ${xyPoints.map((point) => `<circle cx="${point.x}" cy="${point.y}" r="5" tabindex="0" role="button" class="performance-line-dot" data-label="${escapeHtml(point.label)}" data-cumulative="${point.cumulative}" data-trade-number="${point.trade_number ?? ''}" data-trade-pnl="${point.value ?? 0}" data-result="${escapeHtml(point.result || '')}" aria-label="${escapeHtml(`${point.label} cumulative ${formatCurrency(point.cumulative)}`)}"></circle>`).join('')}
+                        <text x="${padding.left}" y="${height - 10}" class="performance-axis-text">${points[0].label}</text>
+                        <text x="${padding.left + plotWidth}" y="${height - 10}" text-anchor="end" class="performance-axis-text">${points[points.length - 1].label}</text>
+                        <text x="${padding.left}" y="18" class="performance-axis-text">${formatCurrency(maxValue)}</text>
+                        <text x="${padding.left}" y="${height - 48}" class="performance-axis-text">${formatCurrency(minValue)}</text>
+                    </svg>
+                    <div class="performance-line-popup" hidden></div>
+                </div>
+            `;
+
+            const chartWrap = target.querySelector('.performance-line-chart-wrap');
+            const popup = target.querySelector('.performance-line-popup');
+            const dots = Array.from(target.querySelectorAll('.performance-line-dot'));
+            let activeDot = null;
+
+            const setActiveDot = (dot) => {
+                activeDot = dot || null;
+                dots.forEach((item) => item.classList.toggle('performance-line-dot-active', item === activeDot));
+            };
+
+            const hidePopup = () => {
+                if (popup) {
+                    popup.hidden = true;
+                }
+                setActiveDot(null);
+            };
+
+            const showPopup = (dot) => {
+                if (!popup || !chartWrap || !dot) {
+                    return;
+                }
+                const wrapBounds = chartWrap.getBoundingClientRect();
+                const dotBounds = dot.getBoundingClientRect();
+                popup.hidden = false;
+                popup.innerHTML = `
+                    <div class="performance-line-popup-row"><span>Date</span><strong>${escapeHtml(dot.dataset.label || '—')}</strong></div>
+                    <div class="performance-line-popup-row"><span>Cumulative P/L</span><strong>${formatCurrency(Number(dot.dataset.cumulative || 0))}</strong></div>
+                    ${dot.dataset.tradeNumber ? `<div class="performance-line-popup-row"><span>Trade #</span><strong>${escapeHtml(dot.dataset.tradeNumber)}</strong></div>` : ''}
+                    <div class="performance-line-popup-row"><span>Trade P/L</span><strong>${formatCurrency(Number(dot.dataset.tradePnl || 0))}</strong></div>
+                    ${dot.dataset.result ? `<div class="performance-line-popup-row"><span>Result</span><strong>${escapeHtml(dot.dataset.result)}</strong></div>` : ''}
+                `;
+                popup.hidden = false;
+                setActiveDot(dot);
+
+                const popupWidth = popup.offsetWidth || 180;
+                const popupHeight = popup.offsetHeight || 120;
+                const centerX = dotBounds.left - wrapBounds.left + (dotBounds.width / 2);
+                const pointTop = dotBounds.top - wrapBounds.top;
+                const preferredTop = pointTop - popupHeight - 14;
+                const fallbackTop = pointTop + dotBounds.height + 14;
+                const clampedLeft = Math.min(
+                    Math.max(centerX, (popupWidth / 2) + 8),
+                    wrapBounds.width - (popupWidth / 2) - 8,
+                );
+                const popupTop = preferredTop >= 8 ? preferredTop : Math.min(fallbackTop, wrapBounds.height - popupHeight - 8);
+                popup.style.left = `${clampedLeft}px`;
+                popup.style.top = `${Math.max(popupTop, 8)}px`;
+            };
+
+            dots.forEach((dot) => {
+                dot.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    showPopup(dot);
+                });
+                dot.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        showPopup(dot);
+                    }
+                });
+            });
+
+            if (popup) {
+                popup.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                });
+            }
+
+            const handleChartClick = (event) => {
+                if (event.target.closest('.performance-line-dot')) {
+                    return;
+                }
+                if (popup?.contains(event.target)) {
+                    return;
+                }
+                hidePopup();
+            };
+
+            const handleDocumentClick = (event) => {
+                if (chartWrap?.contains(event.target)) {
+                    return;
+                }
+                hidePopup();
+            };
+
+            const handleDocumentKeydown = (event) => {
+                if (event.key === 'Escape') {
+                    hidePopup();
+                }
+            };
+
+            chartWrap?.addEventListener('click', handleChartClick);
+            document.addEventListener('click', handleDocumentClick);
+            document.addEventListener('keydown', handleDocumentKeydown);
+            equityCurvePopupCleanup = () => {
+                chartWrap?.removeEventListener('click', handleChartClick);
+                document.removeEventListener('click', handleDocumentClick);
+                document.removeEventListener('keydown', handleDocumentKeydown);
+            };
+        };
+
+        const renderBarChart = (targetId, chartData, options = {}) => {
+            const target = document.getElementById(targetId);
+            if (!target) {
+                return;
+            }
+            const items = chartData.items || [];
+            if (!items.length) {
+                renderEmpty(targetId, options.emptyTitle || 'No chart data');
+                return;
+            }
+            const formatter = options.formatter || formatCurrency;
+            const maxMagnitude = Math.max(...items.map((item) => Math.abs(Number(item.value || 0))), 1);
+            target.innerHTML = `
+                <div class="performance-bar-chart">
+                    ${items.map((item) => {
+                        const value = Number(item.value || 0);
+                        const width = Math.abs(value) / maxMagnitude * 100;
+                        const fillClass = value > 0 ? 'performance-bar-fill-positive' : value < 0 ? 'performance-bar-fill-negative' : 'performance-bar-fill-neutral';
+                        return `
+                            <div class="performance-bar-row">
+                                <span>${item.label}</span>
+                                <div class="performance-bar-track"><div class="performance-bar-fill ${fillClass}" style="width:${width}%"></div></div>
+                                <strong>${formatter(value, item)}</strong>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+        };
+
+        const renderDonutChart = (targetId, chartData) => {
+            const target = document.getElementById(targetId);
+            if (!target) {
+                return;
+            }
+            const items = chartData.items || [];
+            const total = Number(chartData.total || 0);
+            if (!total) {
+                renderEmpty(targetId, 'No closed outcomes');
+                return;
+            }
+            const circumference = 2 * Math.PI * 52;
+            const colors = {
+                Win: palette.green,
+                Loss: palette.red,
+                'Black Swan': palette.dark,
+                Scratched: palette.neutral,
+            };
+            let offset = 0;
+            const segments = items.map((item) => {
+                const value = Number(item.value || 0);
+                const fraction = value / total;
+                const dash = fraction * circumference;
+                const segment = `<circle cx="80" cy="80" r="52" fill="none" stroke="${colors[item.label] || palette.neutral}" stroke-width="18" stroke-dasharray="${dash} ${circumference - dash}" stroke-dashoffset="${-offset}"></circle>`;
+                offset += dash;
+                return segment;
+            }).join('');
+            target.innerHTML = `
+                <div class="performance-donut-wrap">
+                    <svg viewBox="0 0 160 160" class="performance-donut-svg" role="img">
+                        <circle cx="80" cy="80" r="52" fill="none" stroke="#e9eef5" stroke-width="18"></circle>
+                        ${segments}
+                        <text x="80" y="76" text-anchor="middle" class="performance-donut-total">${total}</text>
+                        <text x="80" y="96" text-anchor="middle" class="performance-donut-subtitle">Outcomes</text>
+                    </svg>
+                    <div class="performance-donut-legend">
+                        ${items.map((item) => `<div class="performance-donut-legend-row"><span class="performance-donut-dot" style="background:${colors[item.label] || palette.neutral}"></span><span>${item.label}</span><strong>${item.value}</strong></div>`).join('')}
+                    </div>
+                </div>
+            `;
+        };
+
+        const renderLearningOverview = (learning) => {
+            const overview = learning?.overview || {};
+            const setValue = (id, value) => {
+                const element = document.getElementById(id);
+                if (element) {
+                    element.textContent = value;
+                }
+            };
+            setValue('avg-safety-ratio-value', formatRatio(overview.avg_safety_ratio));
+            setValue('avg-premium-per-em-value', formatDecimal(overview.avg_premium_per_em, 2));
+            setValue('avg-risk-efficiency-value', formatRatioPercent(overview.avg_risk_efficiency));
+            setValue('avg-credit-efficiency-value', `${formatDecimal(overview.avg_credit_efficiency_pct, 1)}%`);
+            const safetyRatioNote = document.getElementById('avg-safety-ratio-note');
+            if (safetyRatioNote) {
+                const summary = overview.safety_ratio_summary || {};
+                safetyRatioNote.textContent = `Distance to short divided by validated expected move. Included ${Number(summary.included_trade_count || 0)} trade(s), excluded ${Number(summary.excluded_trade_count || 0)}.`;
+            }
+            const riskEfficiencyNote = document.getElementById('avg-risk-efficiency-note');
+            if (riskEfficiencyNote) {
+                riskEfficiencyNote.textContent = 'Raw premium-to-risk ratio before percentage normalization.';
+            }
+            const creditEfficiencyNote = document.getElementById('avg-credit-efficiency-note');
+            if (creditEfficiencyNote) {
+                const fallbackCount = Number(overview.credit_efficiency_fallback_count || 0);
+                const definition = overview.credit_efficiency_definition || 'Premium received ÷ max theoretical loss';
+                const creditNote = overview.credit_efficiency_credit_note || 'Uses actual entry credit when available; otherwise falls back to candidate credit estimate.';
+                const usage = overview.expected_move_usage_summary || {};
+                const weighting = overview.expected_move_weighting || {};
+                const usageNote = `Learning EM sample: ${Number(usage.actual_manual || 0)} actual/manual, ${Number(usage.calibrated_estimated || 0)} calibrated estimated, ${Number(usage.excluded || 0)} excluded. Weighting ${Number(weighting.actual_manual || 1).toFixed(1)} / ${Number(weighting.calibrated_estimated || 0.6).toFixed(1)}.`;
+                const qualifiedCount = Number(overview.qualified_credit_efficiency_trades || 0);
+                creditEfficiencyNote.textContent = fallbackCount > 0
+                    ? `${definition}. Across ${qualifiedCount} qualified trade${qualifiedCount === 1 ? '' : 's'}. ${creditNote} Fallback used on ${fallbackCount} trade${fallbackCount === 1 ? '' : 's'}. ${usageNote}`
+                    : `${definition}. Across ${qualifiedCount} qualified trade${qualifiedCount === 1 ? '' : 's'}. ${creditNote} ${usageNote}`;
+            }
+        };
+
+        const renderCreditEfficiencyBreakdown = (targetId, payload) => {
+            const target = document.getElementById(targetId);
+            if (!target) {
+                return;
+            }
+            const items = Array.isArray(payload?.items) ? payload.items : [];
+            if (!items.length) {
+                target.innerHTML = '<div class="performance-empty-state">No credit-efficiency breakdown available.</div>';
+                return;
+            }
+            target.innerHTML = `
+                <div class="performance-safety-table">
+                    <div class="performance-safety-row performance-safety-row-header">
+                        <span>Bucket</span>
+                        <span>Avg Credit Efficiency</span>
+                        <span>Sample</span>
+                    </div>
+                    ${items.map((item) => `
+                        <div class="performance-safety-row">
+                            <span>${escapeHtml(item.label || '—')}</span>
+                            <span>${Number(item.trade_count || 0) > 0 ? `${formatDecimal(item.avg_credit_efficiency_pct || 0, 1)}%` : '—'}</span>
+                            <span>n=${Number(item.trade_count || 0)}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        };
+
+        const renderTradeModeSplit = (payload) => {
+            const target = document.getElementById('trade-mode-learning-grid');
+            if (!target) {
+                return;
+            }
+            const items = payload?.items || [];
+            const totalTrades = items.reduce((sum, item) => sum + Number(item?.trade_count || 0), 0);
+            if (!items.length || totalTrades <= 0) {
+                target.innerHTML = '<div class="performance-empty-state">No simulated trades recorded yet.</div>';
+                return;
+            }
+            target.innerHTML = items.map((item) => `
+                <article class="performance-trade-mode-card">
+                    <div class="performance-panel-header">
+                        <h3>${escapeHtml(item.label || 'Mode')}</h3>
+                        <span class="subtle">${Number(item.trade_count || 0)} trades</span>
+                    </div>
+                    <div class="performance-trade-mode-stats">
+                        <div><span>Net P/L</span><strong>${formatCurrency(item.net_pnl || 0)}</strong></div>
+                        <div><span>Win Rate</span><strong>${formatPercent(item.win_rate || 0)}</strong></div>
+                        <div><span>Expectancy</span><strong>${formatCurrency(item.expectancy || 0)}</strong></div>
+                        <div><span>Open Trades</span><strong>${Number(item.open_trades || 0)}</strong></div>
+                    </div>
+                    <p class="subtle">${Number(item.trade_count || 0) > 0 ? 'Trade-mode comparison is active.' : `No ${String(item.label || 'mode').toLowerCase()} trades recorded yet.`}</p>
+                </article>
+            `).join('');
+        };
+
+        const renderSafetyRatioSummary = (payload, curveChart) => {
+            const caption = document.getElementById('safety-ratio-excluded-caption');
+            if (caption) {
+                const exclusions = payload?.exclusion_summary || {};
+                const exclusionParts = [];
+                if (Number(exclusions.distance_unresolved_count || 0) > 0) {
+                    exclusionParts.push(`${Number(exclusions.distance_unresolved_count || 0)} missing distance`);
+                }
+                if (Number(exclusions.expected_move_missing_count || 0) > 0) {
+                    exclusionParts.push(`${Number(exclusions.expected_move_missing_count || 0)} missing expected move`);
+                }
+                if (Number(exclusions.missing_both_count || 0) > 0) {
+                    exclusionParts.push(`${Number(exclusions.missing_both_count || 0)} missing both`);
+                }
+                const usage = payload?.expected_move_usage_summary || {};
+                if (Number(usage.actual_manual || 0) > 0 || Number(usage.calibrated_estimated || 0) > 0) {
+                    exclusionParts.push(`${Number(usage.actual_manual || 0)} actual/manual`);
+                    exclusionParts.push(`${Number(usage.calibrated_estimated || 0)} calibrated estimated`);
+                }
+                const exclusionText = exclusionParts.length ? ` (${exclusionParts.join(' · ')})` : '';
+                caption.textContent = `${Number(payload?.eligible_trade_count || 0)} eligible closed trades · ${Number(payload?.excluded_trade_count || 0)} excluded${exclusionText}`;
+            }
+            renderBarChart('safety-ratio-expectancy-chart', curveChart, {
+                formatter: (value, item) => `${formatCurrency(value)} · ${Number(item?.trade_count || 0)}t`,
+                emptyTitle: 'No safety-ratio expectancy data',
+            });
+            const target = document.getElementById('safety-ratio-bucket-summary');
+            if (!target) {
+                return;
+            }
+            const items = Array.isArray(payload?.bucket_results) ? payload.bucket_results : [];
+            const populatedItems = items.filter((item) => Number(item.trade_count || 0) > 0);
+            if (!populatedItems.length) {
+                const exclusions = payload?.exclusion_summary || {};
+                const exclusionLines = [
+                    `Missing distance: ${Number(exclusions.distance_unresolved_count || 0)}`,
+                    `Missing expected move: ${Number(exclusions.expected_move_missing_count || 0)}`,
+                    `Missing both: ${Number(exclusions.missing_both_count || 0)}`,
+                ];
+                target.innerHTML = `<div class="performance-empty-state">Not enough qualified trades yet.<br>${exclusionLines.join(' · ')}</div>`;
+                return;
+            }
+            target.innerHTML = `
+                <div class="performance-safety-table">
+                    <div class="performance-safety-row performance-safety-row-header">
+                        <span>Range</span>
+                        <span>Trades</span>
+                        <span>Win Rate</span>
+                        <span>Expectancy</span>
+                        <span>Confidence</span>
+                    </div>
+                    ${populatedItems.map((item) => `
+                        <div class="performance-safety-row">
+                            <span>${escapeHtml(item.label || '—')}</span>
+                            <span>${Number(item.trade_count || 0)}</span>
+                            <span>${formatPercent(item.win_rate || 0)}</span>
+                            <span>${formatCurrency(item.expectancy || 0)}</span>
+                            <span><span class="performance-confidence-badge performance-confidence-${String(item.confidence || 'No Confidence').toLowerCase().replaceAll(' ', '-')}">${escapeHtml(item.confidence || 'No Confidence')}</span></span>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        };
+
+        const syncProfileEmSafetyToggle = () => {
+            document.querySelectorAll('[data-profile-em-view]').forEach((button) => {
+                const isActive = button.dataset.profileEmView === profileEmSafetyView;
+                button.classList.toggle('performance-inline-toggle-button-active', isActive);
+                button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+            });
+        };
+
+        const renderProfileEmSafetyDistance = (payload) => {
+            const target = document.getElementById('profile-em-safety-distance-panel');
+            const caption = document.getElementById('profile-em-safety-caption');
+            if (!target) {
+                return;
+            }
+            const activePayload = payload?.[profileEmSafetyView] || payload?.real_only || { profiles: [], qualified_trade_count: 0, excluded_trade_count: 0, mode_label: 'Real Only', minimum_scored_trades: 2 };
+            syncProfileEmSafetyToggle();
+            if (caption) {
+                caption.textContent = `${activePayload.mode_label || 'Real Only'} · ${Number(activePayload.qualified_trade_count || 0)} qualified closed trade${Number(activePayload.qualified_trade_count || 0) === 1 ? '' : 's'} · ${Number(activePayload.excluded_trade_count || 0)} excluded.`;
+            }
+            const profiles = Array.isArray(activePayload.profiles) ? activePayload.profiles : [];
+            if (!profiles.length) {
+                target.innerHTML = `<div class="performance-empty-state">No profile/regime combinations have enough qualifying EM history yet. Minimum scored trades per recommendation: ${Number(activePayload.minimum_scored_trades || 2)}.</div>`;
+                return;
+            }
+            target.innerHTML = `
+                <div class="performance-profile-em-list">
+                    ${profiles.map((profileItem) => `
+                        <article class="performance-profile-em-card">
+                            <div class="performance-panel-header">
+                                <h3>${escapeHtml(profileItem.profile || 'Profile')}</h3>
+                                <span class="subtle">${Number(profileItem.qualified_trade_count || 0)} qualified trade${Number(profileItem.qualified_trade_count || 0) === 1 ? '' : 's'}</span>
+                            </div>
+                            <div class="performance-profile-em-regimes">
+                                ${(Array.isArray(profileItem.regimes) ? profileItem.regimes : []).map((regime) => {
+                                    const isReady = regime.status === 'ready' && regime.recommended_range;
+                                    return `
+                                        <div class="performance-profile-em-row">
+                                            <div>
+                                                <strong>${escapeHtml(regime.label || 'Regime')}</strong>
+                                                <span class="subtle">${isReady ? `Best EM = ${escapeHtml(regime.recommended_range)}` : 'Not enough data'}</span>
+                                            </div>
+                                            <div class="performance-profile-em-row-meta">
+                                                ${isReady ? `<span class="performance-confidence-badge performance-confidence-${String(regime.confidence || 'No Confidence').toLowerCase().replaceAll(' ', '-')}">${escapeHtml(regime.confidence || 'No Confidence')}</span>` : ''}
+                                                <span>${isReady ? `n=${Number(regime.supporting_trade_count || 0)}` : `sample n=${Number(regime.sample_size || 0)}`}</span>
+                                                ${isReady ? `<span>Exp ${formatCurrency(regime.expectancy || 0)}</span>` : ''}
+                                                ${isReady ? `<span>Win ${formatPercent(regime.win_rate || 0)}</span>` : ''}
+                                            </div>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        </article>
+                    `).join('')}
+                </div>
+            `;
+        };
+
+        const renderAdaptiveSafetyGuidance = (payload) => {
+            const target = document.getElementById('adaptive-safety-guidance');
+            if (!target) {
+                return;
+            }
+            const overall = payload?.overall || null;
+            const overallWinRate = payload?.overall_best_by_win_rate || null;
+            const byVix = (Array.isArray(payload?.by_vix_bucket) ? payload.by_vix_bucket : []).filter((item) => Number(item?.sample_size || 0) > 0 && item?.best_by_expectancy);
+            if (!overall && !byVix.length) {
+                target.innerHTML = '<div class="performance-empty-state">Awaiting more EM-tagged trades.</div>';
+                return;
+            }
+            const renderGuidanceCard = (title, recommendation, details = {}) => {
+                const confidence = recommendation?.confidence || details.confidence || 'No Confidence';
+                const recommendationLabel = recommendation?.label || 'No recommendation yet';
+                return `
+                    <article class="performance-guidance-card">
+                        <div class="performance-panel-header">
+                            <h3>${escapeHtml(title)}</h3>
+                            <span class="performance-confidence-badge performance-confidence-${String(confidence).toLowerCase().replaceAll(' ', '-')}">${escapeHtml(confidence)}</span>
+                        </div>
+                        <strong class="performance-guidance-value">${escapeHtml(recommendationLabel)}</strong>
+                        <div class="performance-guidance-meta">
+                            <span>Trades: ${Number(recommendation?.supporting_trade_count || details.supporting_trade_count || 0)}</span>
+                            <span>Sample: ${Number(details.sample_size || recommendation?.sample_size || recommendation?.supporting_trade_count || 0)}</span>
+                            <span>Best win-rate bucket: ${escapeHtml(details.best_by_win_rate || '—')}</span>
+                        </div>
+                    </article>
+                `;
+            };
+            target.innerHTML = `
+                <div class="performance-guidance-grid">
+                    ${renderGuidanceCard('Overall optimal safety range', overall, {
+                        best_by_win_rate: overallWinRate?.label || '—',
+                        sample_size: overall?.sample_size || 0,
+                    })}
+                    ${byVix.map((item) => renderGuidanceCard(`Best range for VIX ${item.vix_bucket}`, item.best_by_expectancy, {
+                        confidence: item.confidence,
+                        supporting_trade_count: item.supporting_trade_count,
+                        sample_size: item.sample_size,
+                        best_by_win_rate: item.best_by_win_rate?.label || '—',
+                    })).join('')}
+                </div>
+            `;
+        };
+
+        const renderEmPolicyGuidance = (payload) => {
+            const target = document.getElementById('em-policy-guidance');
+            if (!target) {
+                return;
+            }
+            const systems = [payload?.apollo, payload?.kairos].filter(Boolean);
+            const qualifiedTrades = Number(payload?.qualified_trade_count || 0);
+            if (!systems.length || qualifiedTrades <= 0) {
+                target.innerHTML = '<div class="performance-empty-state">Not enough completed EM-tagged trades yet for dynamic threshold guidance.</div>';
+                return;
+            }
+            target.innerHTML = `
+                <div class="performance-guidance-grid">
+                    ${systems.map((item) => `
+                        <article class="performance-guidance-card">
+                            <div class="performance-panel-header">
+                                <h3>${escapeHtml(item.system || 'System')}</h3>
+                                <span class="performance-confidence-badge performance-confidence-${escapeHtml(String(item.overall_confidence || 'none'))}">${escapeHtml(formatConfidenceLabel(item.overall_confidence))}</span>
+                            </div>
+                            <strong class="performance-guidance-value">${escapeHtml(item.overall_recommended_em_range || 'Awaiting more EM-tagged trades.')}</strong>
+                            <div class="performance-guidance-meta">
+                                <span>Qualified: ${Number(item.qualified_trade_count || 0)}</span>
+                                <span>Excluded: ${Number(item.excluded_trade_count || 0)}</span>
+                                <span>Support: ${Number(item.overall_supporting_trade_count || 0)}</span>
+                            </div>
+                        </article>
+                    `).join('')}
+                </div>
+            `;
+        };
+
+        const renderEmPolicyVixGuidance = (payload) => {
+            const target = document.getElementById('em-policy-vix-guidance');
+            if (!target) {
+                return;
+            }
+            const systems = [payload?.apollo, payload?.kairos].filter(Boolean);
+            const cards = systems.flatMap((item) => {
+                const vixGuidance = item?.vix_guidance || {};
+                return Object.entries(vixGuidance).map(([bucket, guidance]) => ({
+                    system: item.system,
+                    bucket,
+                    guidance,
+                }));
+            }).filter((item) => Number(item?.guidance?.sample_size || 0) > 0);
+            if (!cards.length) {
+                target.innerHTML = '<div class="performance-empty-state">Awaiting more EM-tagged trades.</div>';
+                return;
+            }
+            target.innerHTML = `
+                <div class="performance-guidance-grid">
+                    ${cards.map((item) => `
+                        <article class="performance-guidance-card">
+                            <div class="performance-panel-header">
+                                <h3>${escapeHtml(item.system || 'System')} · VIX ${escapeHtml(item.bucket)}</h3>
+                                <span class="performance-confidence-badge performance-confidence-${escapeHtml(String(item.guidance.confidence || 'none'))}">${escapeHtml(formatConfidenceLabel(item.guidance.confidence))}</span>
+                            </div>
+                            <strong class="performance-guidance-value">${escapeHtml(item.guidance.recommended_range || 'Awaiting more EM-tagged trades.')}</strong>
+                            <div class="performance-guidance-meta">
+                                <span>Sample: ${Number(item.guidance.sample_size || 0)}</span>
+                                <span>Support: ${Number(item.guidance.supporting_trade_count || 0)}</span>
+                            </div>
+                        </article>
+                    `).join('')}
+                </div>
+            `;
+        };
+
+        const renderEmPolicyFallbackImpact = (payload) => {
+            const target = document.getElementById('em-policy-fallback-impact');
+            if (!target) {
+                return;
+            }
+            const systems = [payload?.apollo, payload?.kairos].filter(Boolean);
+            if (!systems.length) {
+                target.innerHTML = '<div class="performance-empty-state">Awaiting more EM-tagged trades.</div>';
+                return;
+            }
+            target.innerHTML = `
+                <div class="performance-guidance-grid">
+                    ${systems.map((item) => {
+                        const effect = item.fallback_effect || {};
+                        return `
+                            <article class="performance-guidance-card">
+                                <div class="performance-panel-header">
+                                    <h3>${escapeHtml(item.system || 'System')}</h3>
+                                    <span class="performance-confidence-badge performance-confidence-${escapeHtml(String(effect.impact_label || 'none'))}">${escapeHtml(String(effect.impact_label || 'insufficient-data').replaceAll('-', ' '))}</span>
+                                </div>
+                                <strong class="performance-guidance-value">${escapeHtml(effect.impact_message || 'Awaiting more fallback-tagged trades.')}</strong>
+                                <div class="performance-guidance-meta">
+                                    <span>Strict: ${formatCurrency(effect.strict_only_expectancy || 0)} (${Number(effect.strict_only_trade_count || 0)}t)</span>
+                                    <span>Fallback: ${formatCurrency(effect.fallback_expectancy || 0)} (${Number(effect.fallback_trade_count || 0)}t)</span>
+                                </div>
+                            </article>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+        };
+
+        const renderEmPolicyLearningStatus = (payload) => {
+            const target = document.getElementById('em-policy-learning-status');
+            if (!target) {
+                return;
+            }
+            const systems = [payload?.apollo, payload?.kairos].filter(Boolean);
+            const excludedReasons = payload?.excluded_reasons || {};
+            const excludedItems = Object.entries(excludedReasons);
+            const usage = payload?.expected_move_usage_summary || {};
+            target.innerHTML = `
+                <div class="performance-audit-summary">
+                    <div class="performance-audit-count"><span>Qualified</span><strong>${Number(payload?.qualified_trade_count || 0)}</strong></div>
+                    <div class="performance-audit-count"><span>Excluded</span><strong>${Number(payload?.excluded_trade_count || 0)}</strong></div>
+                    <div class="performance-audit-count"><span>Actual / Manual</span><strong>${Number(usage.actual_manual || 0)}</strong></div>
+                    <div class="performance-audit-count"><span>Calibrated Est.</span><strong>${Number(usage.calibrated_estimated || 0)}</strong></div>
+                    ${systems.map((item) => `<div class="performance-audit-count"><span>${escapeHtml(item.system || 'System')}</span><strong>${Number(item.qualified_trade_count || 0)}</strong></div>`).join('')}
+                </div>
+                <p class="subtle">Weighted support: ${Number(usage.weighted_support || 0).toFixed(1)} effective trades. Calibrated estimates contribute at 0.6 confidence weight.</p>
+                ${excludedItems.length ? `
+                    <ul class="performance-audit-rules">
+                        ${excludedItems.map(([label, count]) => `<li>${escapeHtml(label)}: ${Number(count || 0)}</li>`).join('')}
+                    </ul>
+                ` : '<div class="performance-empty-state">No exclusions in the current EM policy sample.</div>'}
+            `;
+        };
+
+        const renderResultAudit = (payload) => {
+            const target = document.getElementById('result-classification-audit');
+            if (!target) {
+                return;
+            }
+            const counts = payload?.counts || {};
+            const rules = Array.isArray(payload?.rules) ? payload.rules : [];
+            if (!rules.length && !Object.values(counts).some((value) => Number(value || 0) > 0)) {
+                target.innerHTML = '<div class="performance-empty-state">Not enough qualified trades yet.</div>';
+                return;
+            }
+            target.innerHTML = `
+                <div class="performance-audit-summary">
+                    <div class="performance-audit-count"><span>Open</span><strong>${Number(counts.open || 0)}</strong></div>
+                    <div class="performance-audit-count"><span>Win</span><strong>${Number(counts.win || 0)}</strong></div>
+                    <div class="performance-audit-count"><span>Loss</span><strong>${Number(counts.loss || 0)}</strong></div>
+                    <div class="performance-audit-count"><span>Black Swan</span><strong>${Number(counts.black_swan || 0)}</strong></div>
+                    <div class="performance-audit-count"><span>Scratched</span><strong>${Number(counts.scratched || 0)}</strong></div>
+                </div>
+                <ul class="performance-audit-rules">
+                    ${rules.map((rule) => `<li>${escapeHtml(rule)}</li>`).join('')}
+                </ul>
+            `;
+        };
+
+        const renderLearningAudit = (emPolicy, resultAudit) => {
+            const target = document.getElementById('learning-audit-panel');
+            if (!target) {
+                return;
+            }
+            const usage = emPolicy?.expected_move_usage_summary || {};
+            const counts = resultAudit?.counts || {};
+            const rules = Array.isArray(resultAudit?.rules) ? resultAudit.rules : [];
+            const excludedItems = Object.entries(emPolicy?.excluded_reasons || {});
+            target.innerHTML = `
+                <div class="performance-audit-summary performance-audit-summary-dense">
+                    <div class="performance-audit-count"><span>Qualified</span><strong>${Number(emPolicy?.qualified_trade_count || 0)}</strong></div>
+                    <div class="performance-audit-count"><span>Excluded</span><strong>${Number(emPolicy?.excluded_trade_count || 0)}</strong></div>
+                    <div class="performance-audit-count"><span>Actual / Manual</span><strong>${Number(usage.actual_manual || 0)}</strong></div>
+                    <div class="performance-audit-count"><span>Calibrated Est.</span><strong>${Number(usage.calibrated_estimated || 0)}</strong></div>
+                    <div class="performance-audit-count"><span>Weighted Support</span><strong>${Number(usage.weighted_support || 0).toFixed(1)}</strong></div>
+                    <div class="performance-audit-count"><span>Open</span><strong>${Number(counts.open || 0)}</strong></div>
+                    <div class="performance-audit-count"><span>Win</span><strong>${Number(counts.win || 0)}</strong></div>
+                    <div class="performance-audit-count"><span>Loss</span><strong>${Number(counts.loss || 0)}</strong></div>
+                    <div class="performance-audit-count"><span>Black Swan</span><strong>${Number(counts.black_swan || 0)}</strong></div>
+                    <div class="performance-audit-count"><span>Scratched</span><strong>${Number(counts.scratched || 0)}</strong></div>
+                </div>
+                <div class="performance-audit-columns">
+                    <section class="performance-audit-section">
+                        <h3>EM Sample</h3>
+                        <p class="subtle">Learning status is secondary here. Counts and exclusions stay available without taking primary page space.</p>
+                        ${excludedItems.length ? `
+                            <ul class="performance-audit-rules">
+                                ${excludedItems.map(([label, count]) => `<li>${escapeHtml(label)}: ${Number(count || 0)}</li>`).join('')}
+                            </ul>
+                        ` : '<div class="performance-empty-state">No EM-learning exclusions in the current sample.</div>'}
+                    </section>
+                    <section class="performance-audit-section">
+                        <h3>Result Rules</h3>
+                        ${rules.length ? `
+                            <ul class="performance-audit-rules">
+                                ${rules.map((rule) => `<li>${escapeHtml(rule)}</li>`).join('')}
+                            </ul>
+                        ` : '<div class="performance-empty-state">No result-classification diagnostics available.</div>'}
+                    </section>
+                </div>
+            `;
+        };
+
+        const renderDashboard = (payload) => {
+            const safePayload = normalizeDashboardPayload(payload);
+            latestDashboardPayload = safePayload;
+            profileEmSafetyView = safePayload.learning?.profile_em_safety_distance?.default_view || 'real_only';
+            const metrics = safePayload.metrics;
+            renderGauge({
+                targetId: 'win-rate-gauge',
+                value: metrics.win_rate?.value || 0,
+                min: 0,
+                max: 100,
+                color: palette.green,
+                subtitle: `${metrics.win_rate?.wins || 0} wins · ${metrics.win_rate?.losses || 0} losses`,
+                formatter: formatPercent,
+            });
+            renderGauge({
+                targetId: 'expectancy-gauge',
+                value: metrics.expectancy?.value || 0,
+                min: -(metrics.expectancy?.scale || 50),
+                max: metrics.expectancy?.scale || 50,
+                color: Number(metrics.expectancy?.value || 0) >= 0 ? palette.blue : palette.red,
+                subtitle: 'Per closed outcome',
+                formatter: formatCurrency,
+            });
+            renderNetPnl(metrics);
+            renderOutcomeMix(metrics);
+            renderAverageCompare(metrics);
+            renderLineChart('equity-curve-chart', safePayload.charts.equity_curve);
+            renderBarChart('profile-avg-pnl-chart', safePayload.charts.profile_avg_pnl, {
+                formatter: (value, item) => `${formatCurrency(value)} · n=${Number(item?.trade_count || 0)}`,
+                emptyTitle: 'No profile P/L data',
+            });
+            renderBarChart('macro-avg-pnl-chart', safePayload.charts.macro_avg_pnl, {
+                formatter: (value, item) => `${formatCurrency(value)} · n=${Number(item?.trade_count || 0)}`,
+                emptyTitle: 'No macro P/L data',
+            });
+            renderBarChart('structure-avg-pnl-chart', safePayload.charts.structure_avg_pnl, {
+                formatter: (value, item) => `${formatCurrency(value)} · n=${Number(item?.trade_count || 0)}`,
+                emptyTitle: 'No structure P/L data',
+            });
+            renderDonutChart('outcome-composition-chart', safePayload.charts.outcome_composition);
+            renderLearningOverview(safePayload.learning);
+            renderCreditEfficiencyBreakdown('credit-efficiency-system-panel', safePayload.charts.credit_efficiency_by_system);
+            renderCreditEfficiencyBreakdown('credit-efficiency-profile-panel', safePayload.charts.credit_efficiency_by_profile);
+            renderCreditEfficiencyBreakdown('credit-efficiency-vix-panel', safePayload.charts.credit_efficiency_by_vix_bucket);
+            renderProfileEmSafetyDistance(safePayload.learning.profile_em_safety_distance);
+            renderSafetyRatioSummary(safePayload.learning.safety_optimization, safePayload.charts.safety_ratio_expectancy_curve);
+            renderLearningAudit(safePayload.learning.em_policy, safePayload.learning.result_audit);
+            const caption = document.getElementById('performance-records-caption');
+            if (caption) {
+                caption.textContent = `${safePayload.records_filtered || 0} / ${safePayload.records_total || 0} trades active`;
+            }
+        };
+
+        let pendingRequest = null;
+        const refreshDashboard = async () => {
+            if (!performanceUrl) {
+                return;
+            }
+            if (pendingRequest) {
+                pendingRequest.abort();
+            }
+            pendingRequest = new AbortController();
+            try {
+                const query = buildQuery(getActiveFilters());
+                const response = await fetch(`${performanceUrl}?${query}`, { signal: pendingRequest.signal });
+                if (!response.ok) {
+                    throw new Error(`Performance refresh failed with status ${response.status}`);
+                }
+                const payload = await response.json();
+                renderDashboard(payload);
+            } catch (error) {
+                if (error.name !== 'AbortError') {
+                    console.error(error);
+                }
+            }
+        };
+
+        filterInputs.forEach((input) => {
+            input.addEventListener('change', refreshDashboard);
+        });
+
+        document.querySelectorAll('[data-profile-em-view]').forEach((button) => {
+            button.addEventListener('click', () => {
+                profileEmSafetyView = button.dataset.profileEmView || 'real_only';
+                renderProfileEmSafetyDistance(latestDashboardPayload.learning.profile_em_safety_distance);
+            });
+        });
+
+        renderDashboard(latestDashboardPayload);
+    </script>
+</body>
+</html>

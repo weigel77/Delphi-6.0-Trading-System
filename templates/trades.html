@@ -1,0 +1,959 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ trade_mode_label }} | {{ app_identity.display_name }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    {% from '_delphi_header_macros.html' import render_delphi_header with context %}
+    <main class="page-shell">
+        <section class="hero-card delphi-header-card delphi-shared-header delphi-header-card-subpage">
+            {{ render_delphi_header(
+                active_page='journal',
+                page_heading=trade_mode_label,
+                page_copy=trade_mode_description,
+                page_meta='Persistent SQLite-backed log for real and simulated credit spreads.',
+                menu_status=menu_status,
+            ) }}
+
+            {% if error_message %}
+                <div class="message message-error">{{ error_message }}</div>
+            {% endif %}
+
+            {% if info_message %}
+                <div class="message message-{{ info_message.level|default('info') }}">{{ info_message.text }}</div>
+            {% endif %}
+        </section>
+
+        <section class="panel trade-mode-panel">
+            <div class="actions trade-actions">
+                {% for mode in trade_modes %}
+                    <a class="button-link{% if mode.key != trade_mode %} button-link-secondary{% endif %}{% if mode.key == trade_mode %} button-link-active{% endif %}" href="{{ url_for('trade_dashboard', trade_mode=mode.key) }}"{% if mode.key == trade_mode %} aria-current="page"{% endif %}>{{ mode.label }}</a>
+                {% endfor %}
+                <a class="button-link button-link-secondary" href="{{ url_for('trade_dashboard', trade_mode=trade_mode, _anchor='trade-entry-form') }}">Jump to Manual Entry Form</a>
+            </div>
+        </section>
+
+        <section class="panel trade-dashboard-panel">
+            <div class="result-header">
+                <div>
+                    <h2>{{ trade_mode_label }}</h2>
+                    <p class="subtle">One local database stores both real and simulated trades, filtered by mode.</p>
+                </div>
+            </div>
+
+            <div class="summary-grid trade-summary-grid">
+                {% for item in summary_metrics %}
+                    <article class="summary-card">
+                        <p class="summary-label">{{ item.label }}</p>
+                        <p class="summary-value">{{ item.value }}</p>
+                    </article>
+                {% endfor %}
+            </div>
+        </section>
+
+        <section class="panel trade-dashboard-panel">
+            <div class="result-header">
+                <div>
+                    <h2>Historical Import</h2>
+                    <p class="subtle">Upload a CSV or Excel file, preview normalized rows, then import only the non-duplicate trades into this journal.</p>
+                </div>
+            </div>
+
+            <form method="post" action="{{ url_for('trade_import_preview', trade_mode=trade_mode) }}" enctype="multipart/form-data" class="trade-import-form">
+                <div class="trade-import-grid">
+                    <div class="field-group">
+                        <label for="import_file">Import file</label>
+                        <input id="import_file" name="import_file" type="file" accept=".csv,.xlsx" required>
+                    </div>
+                    <div class="field-group">
+                        <label for="import_journal_name">Journal</label>
+                        <input id="import_journal_name" name="import_journal_name" type="text" value="{{ import_journal_name }}" list="journal-name-options" required>
+                    </div>
+                </div>
+                <div class="actions trade-form-actions">
+                    <button type="submit">Preview Import</button>
+                </div>
+            </form>
+
+            <p class="subtle">Flexible headings are accepted, including Date, Entry Time, Expiration, Symbol, Short Strike, Long Strike, Qty, Net Credit, Exit Value, and Notes. Partial historical rows are allowed.</p>
+
+            {% if import_preview %}
+                <div class="trade-import-preview">
+                    <div class="trade-import-preview-header">
+                        <div>
+                            <h3>Import Preview</h3>
+                            <p class="subtle">{{ import_preview.file_name }} · {{ import_preview.row_count }} row(s) scanned · {{ import_preview.ready_count }} ready · {{ import_preview.duplicate_count }} duplicate · {{ import_preview.invalid_count }} need review</p>
+                            {% if import_preview.recognized_columns %}
+                                <p class="subtle">Mapped columns: {{ import_preview.recognized_columns|join(', ') }}</p>
+                            {% endif %}
+                        </div>
+                        <div class="actions trade-import-preview-actions">
+                            <form method="post" action="{{ url_for('trade_import_confirm', trade_mode=trade_mode) }}">
+                                <input type="hidden" name="import_token" value="{{ import_preview.token }}">
+                                <button type="submit" {% if import_preview.ready_count == 0 %}disabled{% endif %}>Import Ready Trades</button>
+                            </form>
+                            <form method="post" action="{{ url_for('trade_import_cancel', trade_mode=trade_mode) }}">
+                                <input type="hidden" name="import_token" value="{{ import_preview.token }}">
+                                <button type="submit" class="secondary">Clear Preview</button>
+                            </form>
+                        </div>
+                    </div>
+
+                    <div class="table-wrap trade-table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Row</th>
+                                    <th>Status</th>
+                                    <th>Profile</th>
+                                    <th>Trade Date</th>
+                                    <th>Expiration</th>
+                                    <th>Symbol</th>
+                                    <th>Strikes</th>
+                                    <th>Contracts</th>
+                                    <th>Entry</th>
+                                    <th>Exit</th>
+                                    <th>Notes</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for row in import_preview.rows %}
+                                    <tr>
+                                        <td>{{ row.row_number }}</td>
+                                        <td><span class="trade-import-status trade-import-status-{{ row.status_class }}">{{ row.status_label }}</span></td>
+                                        <td>{{ row.candidate_profile }}</td>
+                                        <td>{{ row.trade_date }}</td>
+                                        <td>{{ row.expiration_date }}</td>
+                                        <td>{{ row.symbol }}</td>
+                                        <td>{{ row.strike_pair }}</td>
+                                        <td>{{ row.contracts }}</td>
+                                        <td>{{ row.actual_entry_credit }}</td>
+                                        <td>{{ row.actual_exit_value }}</td>
+                                        <td>
+                                            {% if row.messages %}
+                                                <ul class="trade-import-message-list">
+                                                    {% for message in row.messages %}
+                                                        <li>{{ message }}</li>
+                                                    {% endfor %}
+                                                </ul>
+                                            {% elif row.mapped_fields %}
+                                                <span class="subtle">Mapped {{ row.mapped_fields|length }} field(s)</span>
+                                            {% else %}
+                                                <span class="subtle">—</span>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            {% endif %}
+        </section>
+
+        <section class="panel trade-dashboard-panel">
+            <div class="result-header">
+                <div>
+                    <h2>Trade Log</h2>
+                    <p class="subtle">Editable local journal for entry, exit, and P/L review.</p>
+                </div>
+            </div>
+
+            {% if trades %}
+                <div class="trade-filter-toolbar" aria-label="Trade Log Filters">
+                    <fieldset class="trade-filter-group">
+                        <legend>System</legend>
+                        <div class="trade-filter-options">
+                            {% for option in filter_groups.system %}
+                                <label class="trade-filter-option"><input class="trade-filter-checkbox" type="checkbox" data-filter-group="system" value="{{ option|lower }}" checked> <span>{{ option }}</span></label>
+                            {% endfor %}
+                        </div>
+                    </fieldset>
+                    <fieldset class="trade-filter-group">
+                        <legend>Profile</legend>
+                        <div class="trade-filter-options">
+                            {% for option in filter_groups.profile %}
+                                <label class="trade-filter-option"><input class="trade-filter-checkbox" type="checkbox" data-filter-group="profile" value="{{ option|lower|replace(' ', '-') }}" checked> <span>{{ option }}</span></label>
+                            {% endfor %}
+                        </div>
+                    </fieldset>
+                    <fieldset class="trade-filter-group">
+                        <legend>Result</legend>
+                        <div class="trade-filter-options">
+                            {% for option in filter_groups.result %}
+                                <label class="trade-filter-option"><input class="trade-filter-checkbox" type="checkbox" data-filter-group="result" value="{{ option|lower|replace(' ', '-') }}" checked> <span>{{ option }}</span></label>
+                            {% endfor %}
+                        </div>
+                    </fieldset>
+                </div>
+
+                <div class="table-wrap trade-table-wrap trade-log-wrap">
+                    <table id="trade-log-table">
+                        <thead>
+                            <tr>
+                                <th><button type="button" class="trade-sort-button" data-sort-key="trade-number" data-sort-type="number">Trade #<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
+                                <th><button type="button" class="trade-sort-button" data-sort-key="status" data-sort-type="text">Status<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
+                                <th><button type="button" class="trade-sort-button" data-sort-key="profile" data-sort-type="text">Profile<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
+                                <th><button type="button" class="trade-sort-button" data-sort-key="system" data-sort-type="text">System<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
+                                <th><button type="button" class="trade-sort-button" data-sort-key="trade-date" data-sort-type="date">Trade Date<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
+                                <th><button type="button" class="trade-sort-button" data-sort-key="expiration" data-sort-type="date">Expiration<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
+                                <th><button type="button" class="trade-sort-button" data-sort-key="symbol" data-sort-type="text">Symbol<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
+                                <th><button type="button" class="trade-sort-button" data-sort-key="strikes" data-sort-type="text">Strikes<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
+                                <th><button type="button" class="trade-sort-button" data-sort-key="contracts" data-sort-type="number">Contracts<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
+                                <th><button type="button" class="trade-sort-button" data-sort-key="closed-contracts" data-sort-type="number">Closed Qty<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
+                                <th><button type="button" class="trade-sort-button" data-sort-key="remaining-contracts" data-sort-type="number">Remaining<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
+                                <th><button type="button" class="trade-sort-button" data-sort-key="distance" data-sort-type="number">Distance<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
+                                <th><button type="button" class="trade-sort-button" data-sort-key="entry" data-sort-type="number">Entry<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
+                                <th><button type="button" class="trade-sort-button" data-sort-key="exit" data-sort-type="number">Exit<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
+                                <th><button type="button" class="trade-sort-button" data-sort-key="max-loss" data-sort-type="number">Max Loss<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
+                                <th><button type="button" class="trade-sort-button" data-sort-key="pnl" data-sort-type="number">P/L<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
+                                <th><button type="button" class="trade-sort-button" data-sort-key="roi" data-sort-type="number">ROI<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
+                                <th><button type="button" class="trade-sort-button" data-sort-key="result" data-sort-type="text">Result<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="trade-log-body">
+                            {% for trade in trades %}
+                                <tr class="trade-log-row" data-system="{{ trade.system_name|lower }}" data-profile="{{ trade.candidate_profile|lower|replace(' ', '-') }}" data-result="{{ trade.result_filter }}" data-sort-trade-number="{{ trade.trade_number_raw }}" data-sort-status="{{ trade.status_raw }}" data-sort-profile="{{ trade.candidate_profile|lower }}" data-sort-system="{{ trade.system_name|lower }}" data-sort-trade-date="{{ trade.trade_date_raw }}" data-sort-expiration="{{ trade.expiration_date_raw }}" data-sort-symbol="{{ trade.underlying_symbol_raw|lower }}" data-sort-strikes="{{ trade.strike_pair_raw }}" data-sort-contracts="{{ trade.contracts_raw }}" data-sort-closed-contracts="{{ trade.closed_contracts_raw }}" data-sort-remaining-contracts="{{ trade.remaining_contracts_raw }}" data-sort-distance="{{ trade.distance_to_short_raw }}" data-sort-entry="{{ trade.actual_entry_credit_raw }}" data-sort-exit="{{ trade.actual_exit_value_raw }}" data-sort-max-loss="{{ trade.total_max_loss_raw }}" data-sort-pnl="{{ trade.gross_pnl_raw }}" data-sort-roi="{{ trade.roi_on_risk_raw }}" data-sort-result="{{ trade.result_sort }}">
+                                    <td>{{ trade.trade_number }}</td>
+                                    <td>{{ trade.status }}</td>
+                                    <td>{{ trade.candidate_profile }}</td>
+                                    <td>{{ trade.system_name }}</td>
+                                    <td>{{ trade.trade_date }}</td>
+                                    <td>{{ trade.expiration_date }}</td>
+                                    <td>{{ trade.underlying_symbol }}</td>
+                                    <td>{{ trade.strike_pair }}</td>
+                                    <td>{{ trade.contracts }}</td>
+                                    <td>{{ trade.closed_contracts }}</td>
+                                    <td>{{ trade.remaining_contracts }}</td>
+                                    <td>{{ trade.distance_to_short }}</td>
+                                    <td>{{ trade.actual_entry_credit }}</td>
+                                    <td>{{ trade.actual_exit_value }}</td>
+                                    <td>{{ trade.total_max_loss }}</td>
+                                    <td>{{ trade.gross_pnl }}</td>
+                                    <td>{{ trade.roi_on_risk }}</td>
+                                    <td class="trade-result-cell {{ trade.result_class }}">{{ trade.win_loss_result }}</td>
+                                    <td>
+                                        <div class="trade-action-stack">
+                                            <a class="button-link button-link-small" href="{{ url_for('trade_edit', trade_mode=trade.trade_mode, trade_id=trade.id) }}">Edit</a>
+                                            <form method="post" action="{{ url_for('trade_delete', trade_mode=trade.trade_mode, trade_id=trade.id) }}" onsubmit="return confirm('Delete trade #{{ trade.trade_number }}?');">
+                                                <button type="submit" class="secondary trade-delete-button">Delete</button>
+                                            </form>
+                                        </div>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <p class="subtle">No {{ trade_mode }} trades have been logged yet.</p>
+            {% endif %}
+        </section>
+
+        <section class="panel trade-dashboard-panel" id="trade-entry-form">
+            <div class="result-header">
+                <div>
+                    <h2>{{ form_title }}</h2>
+                    <p class="subtle">Manual entries land in the same SQLite journal as Apollo executions. Derived fields update automatically when entry, exit, strikes, contracts, or status change.</p>
+                </div>
+            </div>
+
+            {% if editing_trade %}
+                <div class="summary-grid trade-summary-grid">
+                    <article class="summary-card">
+                        <p class="summary-label">Original Contracts</p>
+                        <p class="summary-value" id="position-summary-original">{{ editing_trade.original_contracts }}</p>
+                    </article>
+                    <article class="summary-card">
+                        <p class="summary-label">Closed Contracts</p>
+                        <p class="summary-value" id="position-summary-closed">{{ editing_trade.closed_contracts }}</p>
+                    </article>
+                    <article class="summary-card">
+                        <p class="summary-label">Remaining Contracts</p>
+                        <p class="summary-value" id="position-summary-remaining">{{ editing_trade.remaining_contracts }}</p>
+                    </article>
+                    <article class="summary-card">
+                        <p class="summary-label">Realized P/L</p>
+                        <p class="summary-value" id="position-summary-pnl">{{ editing_trade.realized_pnl }}</p>
+                    </article>
+                    <article class="summary-card">
+                        <p class="summary-label">Total Max Loss</p>
+                        <p class="summary-value" id="position-summary-max-loss">{{ editing_trade.total_max_loss }}</p>
+                    </article>
+                </div>
+            {% endif %}
+
+            {% if prefill_active %}
+                <div class="message message-info message-inline">{{ prefill_notice or 'Prefilled trade data is loaded into this draft. Review any field, then click Save Trade to write it to the journal.' }}</div>
+            {% endif %}
+
+            <form method="post" action="{{ form_action }}" class="trade-form" onsubmit="this.querySelectorAll('button[type=submit]').forEach((button) => { button.disabled = true; });">
+                <input type="hidden" name="prefill_source" value="{{ form_values.prefill_source }}">
+                <input type="hidden" name="system_version" value="{{ form_values.system_version }}">
+                <input type="hidden" name="expected_move_used" value="{{ form_values.expected_move_used }}">
+                <input type="hidden" name="expected_move_source" value="{{ form_values.expected_move_source }}">
+                <input type="hidden" name="em_multiple_floor" value="{{ form_values.em_multiple_floor }}">
+                <input type="hidden" name="percent_floor" value="{{ form_values.percent_floor }}">
+                <input type="hidden" name="boundary_rule_used" value="{{ form_values.boundary_rule_used }}">
+                <input type="hidden" name="actual_distance_to_short" value="{{ form_values.actual_distance_to_short }}">
+                <input type="hidden" name="actual_em_multiple" value="{{ form_values.actual_em_multiple }}">
+                <input type="hidden" name="pass_type" value="{{ form_values.pass_type }}">
+                <input type="hidden" name="premium_per_contract" value="{{ form_values.premium_per_contract }}">
+                <input type="hidden" name="total_premium" value="{{ form_values.total_premium }}">
+                <input type="hidden" name="max_theoretical_risk" value="{{ form_values.max_theoretical_risk }}">
+                <input type="hidden" name="risk_efficiency" value="{{ form_values.risk_efficiency }}">
+                <input type="hidden" name="target_em" value="{{ form_values.target_em }}">
+                <input type="hidden" name="fallback_used" value="{{ form_values.fallback_used }}">
+                <input type="hidden" name="fallback_rule_name" value="{{ form_values.fallback_rule_name }}">
+                {% if editing_trade_id and editing_trade %}
+                    <section class="trade-position-management" id="position-management">
+                        <input type="hidden" name="close_events_present" value="1">
+                        <div class="result-header trade-position-header">
+                            <div>
+                                <h3>Position Management</h3>
+                                <p class="subtle">Add, edit, or remove close events here. Changes are only written when you click Save Trade.</p>
+                            </div>
+                            <div class="trade-position-actions">
+                                <button type="button" class="secondary" id="add-close-event-button">Add Close Event</button>
+                                <button type="button" class="secondary" id="expire-remaining-button">Expire Remaining</button>
+                                <button type="button" class="secondary" id="close-remaining-button">Close Remaining</button>
+                            </div>
+                        </div>
+
+                        <div class="table-wrap trade-table-wrap">
+                            <table id="close-event-table">
+                                <thead>
+                                    <tr>
+                                        <th>Contracts Closed</th>
+                                        <th>Close Credit</th>
+                                        <th>Close Method</th>
+                                        <th>Recorded</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="close-event-body">
+                                    {% for event in editing_trade.close_events %}
+                                        <tr class="close-event-row">
+                                            <td>
+                                                <input type="hidden" name="close_event_id" value="{{ event.id }}">
+                                                <input type="hidden" name="close_event_event_datetime" value="{{ event.event_datetime_value }}">
+                                                <input type="hidden" name="close_event_notes_exit" value="{{ event.notes_exit_value }}">
+                                                <input name="close_event_contracts_closed" type="number" min="1" step="1" value="{{ event.contracts_closed_value }}" required>
+                                            </td>
+                                            <td>
+                                                <input name="close_event_actual_exit_value" type="number" min="0" step="0.01" value="{{ event.actual_exit_value_value }}" required>
+                                            </td>
+                                            <td>
+                                                <select name="close_event_method" required>
+                                                    {% for option in ['Reduce', 'Close', 'Expire', 'Manage Trade Prefill'] %}
+                                                        <option value="{{ option }}" {% if event.close_method_value|lower == option|lower %}selected{% endif %}>{{ option }}</option>
+                                                    {% endfor %}
+                                                </select>
+                                            </td>
+                                            <td><span class="subtle">{{ event.event_datetime or 'New on save' }}</span></td>
+                                            <td><button type="button" class="secondary trade-remove-close-event" data-remove-close-event>Remove</button></td>
+                                        </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        <p class="subtle trade-close-event-empty" id="close-event-empty" {% if editing_trade.close_events %}hidden{% endif %}>No close events saved yet.</p>
+                    </section>
+                {% endif %}
+
+                <div class="trade-form-grid">
+                    <div class="field-group">
+                        <label for="trade_number">Trade #</label>
+                        <input id="trade_number" name="trade_number" type="number" min="1" step="1" value="{{ form_values.trade_number }}">
+                    </div>
+                    <div class="field-group">
+                        <label for="trade_mode">Trade mode</label>
+                        <select id="trade_mode" name="trade_mode" required>
+                            {% for mode in trade_modes %}
+                                <option value="{{ mode.key }}" {% if form_values.trade_mode == mode.key %}selected{% endif %}>{{ mode.label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="field-group">
+                        <label for="system_name">System name</label>
+                        <select id="system_name" name="system_name" required>
+                            {% for option in system_name_options %}
+                                <option value="{{ option }}" {% if form_values.system_name == option %}selected{% endif %}>{{ option }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="field-group">
+                        <label for="journal_name">Journal</label>
+                        <input id="journal_name" name="journal_name" type="text" value="{{ form_values.journal_name }}" list="journal-name-options" required>
+                        <datalist id="journal-name-options">
+                            {% for option in journal_name_options %}
+                                <option value="{{ option }}"></option>
+                            {% endfor %}
+                        </datalist>
+                    </div>
+                    <div class="field-group">
+                        <label for="candidate_profile">Candidate profile</label>
+                        <select id="candidate_profile" name="candidate_profile">
+                            {% for option in candidate_profiles %}
+                                <option value="{{ option }}" {% if form_values.candidate_profile == option %}selected{% endif %}>{{ option }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="field-group">
+                        <label for="status">Status</label>
+                        <select id="status" name="status" required>
+                            {% for option in trade_statuses %}
+                                <option value="{{ option }}" {% if form_values.status == option %}selected{% endif %}>{{ option|title }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="field-group">
+                        <label for="trade_date">Trade date</label>
+                        <input id="trade_date" name="trade_date" type="date" value="{{ form_values.trade_date }}">
+                    </div>
+                    <div class="field-group">
+                        <label for="entry_datetime">Entry datetime</label>
+                        <input id="entry_datetime" name="entry_datetime" type="datetime-local" value="{{ form_values.entry_datetime }}">
+                    </div>
+                    <div class="field-group">
+                        <label for="expiration_date">Expiration date</label>
+                        <input id="expiration_date" name="expiration_date" type="date" value="{{ form_values.expiration_date }}">
+                    </div>
+                    <div class="field-group">
+                        <label for="underlying_symbol">Underlying symbol</label>
+                        <input id="underlying_symbol" name="underlying_symbol" type="text" value="{{ form_values.underlying_symbol }}">
+                    </div>
+                    <div class="field-group">
+                        <label for="spx_at_entry">SPX at entry</label>
+                        <input id="spx_at_entry" name="spx_at_entry" type="number" step="0.01" value="{{ form_values.spx_at_entry }}">
+                    </div>
+                    <div class="field-group">
+                        <label for="vix_at_entry">VIX at entry</label>
+                        <input id="vix_at_entry" name="vix_at_entry" type="number" step="0.01" value="{{ form_values.vix_at_entry }}">
+                    </div>
+                    <div class="field-group">
+                        <label for="structure_grade">Structure grade</label>
+                        <input id="structure_grade" name="structure_grade" type="text" value="{{ form_values.structure_grade }}">
+                    </div>
+                    <div class="field-group">
+                        <label for="macro_grade">Macro grade</label>
+                        <input id="macro_grade" name="macro_grade" type="text" value="{{ form_values.macro_grade }}">
+                    </div>
+                    <div class="field-group">
+                        <label for="expected_move">Expected move</label>
+                        <input id="expected_move" name="expected_move" type="number" step="0.01" value="{{ form_values.expected_move }}">
+                        <p id="expected-move-note" class="subtle">{{ expected_move_field_meta.note }}</p>
+                    </div>
+                    <div class="field-group">
+                        <label for="option_type">Option type</label>
+                        <select id="option_type" name="option_type">
+                            {% for option in option_type_options %}
+                                <option value="{{ option }}" {% if form_values.option_type == option %}selected{% endif %}>{{ option }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="field-group">
+                        <label for="short_strike">Short strike</label>
+                        <input id="short_strike" name="short_strike" type="number" step="0.01" value="{{ form_values.short_strike }}">
+                    </div>
+                    <div class="field-group">
+                        <label for="long_strike">Long strike</label>
+                        <input id="long_strike" name="long_strike" type="number" step="0.01" value="{{ form_values.long_strike }}">
+                    </div>
+                    <div class="field-group">
+                        <label for="spread_width">Spread width</label>
+                        <input id="spread_width" name="spread_width" type="number" step="0.01" value="{{ form_values.spread_width }}">
+                    </div>
+                    <div class="field-group">
+                        <label for="contracts">Contracts</label>
+                        <input id="contracts" name="contracts" type="number" min="0" step="1" value="{{ form_values.contracts }}">
+                    </div>
+                    <div class="field-group">
+                        <label for="candidate_credit_estimate">Candidate credit estimate</label>
+                        <input id="candidate_credit_estimate" name="candidate_credit_estimate" type="number" step="0.01" value="{{ form_values.candidate_credit_estimate }}">
+                    </div>
+                    <div class="field-group">
+                        <label for="actual_entry_credit">Actual entry credit</label>
+                        <input id="actual_entry_credit" name="actual_entry_credit" type="number" step="0.01" value="{{ form_values.actual_entry_credit }}">
+                    </div>
+                    <div class="field-group">
+                        <label for="total_max_loss_display">Total max loss</label>
+                        <input id="total_max_loss_display" type="text" value="{{ total_max_loss_field.value_display }}" readonly aria-readonly="true">
+                        <p id="total-max-loss-note" class="subtle">{{ total_max_loss_field.note }}</p>
+                    </div>
+                    <div class="field-group">
+                        <label for="distance_to_short">Distance to short</label>
+                        <input id="distance_to_short" name="distance_to_short" type="number" step="0.01" value="{{ form_values.distance_to_short }}" readonly data-distance-source="{{ distance_field_meta.source or '' }}" data-initial-distance="{{ form_values.distance_to_short }}" data-initial-distance-source="{{ distance_field_meta.source or '' }}" aria-readonly="true">
+                        <p id="distance-to-short-note" class="subtle">{{ distance_field_meta.note }}</p>
+                    </div>
+                    <div class="field-group">
+                        <label for="short_delta">Short delta</label>
+                        <input id="short_delta" name="short_delta" type="number" step="0.01" value="{{ form_values.short_delta }}">
+                    </div>
+                    {% if not editing_trade_id %}
+                        <div class="field-group">
+                            <label for="exit_datetime">Exit datetime</label>
+                            <input id="exit_datetime" name="exit_datetime" type="datetime-local" value="{{ form_values.exit_datetime }}">
+                        </div>
+                        <div class="field-group">
+                            <label for="spx_at_exit">SPX at exit</label>
+                            <input id="spx_at_exit" name="spx_at_exit" type="number" step="0.01" value="{{ form_values.spx_at_exit }}">
+                        </div>
+                        <div class="field-group">
+                            <label for="actual_exit_value">Actual exit value</label>
+                            <input id="actual_exit_value" name="actual_exit_value" type="number" step="0.01" value="{{ form_values.actual_exit_value }}">
+                        </div>
+                        <div class="field-group">
+                            <label for="close_method">Close method</label>
+                            <input id="close_method" name="close_method" type="text" value="{{ form_values.close_method }}">
+                        </div>
+                    {% endif %}
+                    <div class="field-group">
+                        <label for="close_reason">Close reason</label>
+                        <input id="close_reason" name="close_reason" type="text" value="{{ form_values.close_reason }}">
+                    </div>
+                    <div class="field-group field-group-wide">
+                        <label for="notes_entry">Entry notes</label>
+                        <textarea id="notes_entry" name="notes_entry" rows="3">{{ form_values.notes_entry }}</textarea>
+                    </div>
+                    <div class="field-group field-group-wide">
+                        <label for="notes_exit">Exit notes</label>
+                        <textarea id="notes_exit" name="notes_exit" rows="3">{{ form_values.notes_exit }}</textarea>
+                    </div>
+                </div>
+
+                <div class="actions trade-form-actions">
+                    <button type="submit">Save Trade</button>
+                    {% if editing_trade_id %}
+                        <a class="button-link button-link-secondary" href="{{ url_for('trade_dashboard', trade_mode=trade_mode) }}">Cancel Edit</a>
+                    {% endif %}
+                </div>
+            </form>
+        </section>
+    </main>
+
+    <script>
+        const tradeEntryFormPanel = document.getElementById('trade-entry-form');
+        if (window.location.hash === '#trade-entry-form' && tradeEntryFormPanel) {
+            const firstField = tradeEntryFormPanel.querySelector('input:not([type=hidden]), select, textarea');
+            if (firstField) {
+                window.requestAnimationFrame(() => firstField.focus());
+            }
+        }
+
+        const tradeLogTable = document.getElementById('trade-log-table');
+        if (tradeLogTable) {
+            const tradeLogBody = document.getElementById('trade-log-body');
+            const tradeRows = Array.from(tradeLogBody.querySelectorAll('.trade-log-row'));
+            const filterInputs = Array.from(document.querySelectorAll('.trade-filter-checkbox'));
+            const sortButtons = Array.from(document.querySelectorAll('.trade-sort-button'));
+            let activeSortKey = null;
+            let activeSortDirection = 'asc';
+
+            tradeRows.forEach((row, index) => {
+                row.dataset.originalIndex = String(index);
+            });
+
+            const getCheckedValues = (groupName) => new Set(
+                filterInputs
+                    .filter((input) => input.dataset.filterGroup === groupName && input.checked)
+                    .map((input) => input.value)
+            );
+
+            const compareNullable = (left, right, direction) => {
+                const leftEmpty = left === null || left === undefined || left === '' || Number.isNaN(left);
+                const rightEmpty = right === null || right === undefined || right === '' || Number.isNaN(right);
+                if (leftEmpty && rightEmpty) {
+                    return 0;
+                }
+                if (leftEmpty) {
+                    return 1;
+                }
+                if (rightEmpty) {
+                    return -1;
+                }
+                if (left < right) {
+                    return direction === 'asc' ? -1 : 1;
+                }
+                if (left > right) {
+                    return direction === 'asc' ? 1 : -1;
+                }
+                return 0;
+            };
+
+            const getSortValue = (row, key, type) => {
+                const rawValue = row.getAttribute(`data-sort-${key}`) || '';
+                if (type === 'number') {
+                    const parsed = Number(rawValue);
+                    return Number.isFinite(parsed) ? parsed : null;
+                }
+                if (type === 'date') {
+                    const timestamp = Date.parse(rawValue);
+                    return Number.isFinite(timestamp) ? timestamp : null;
+                }
+                return rawValue.toLowerCase();
+            };
+
+            const updateSortIndicators = () => {
+                sortButtons.forEach((button) => {
+                    const indicator = button.querySelector('.trade-sort-indicator');
+                    if (!indicator) {
+                        return;
+                    }
+                    if (button.dataset.sortKey !== activeSortKey) {
+                        indicator.textContent = '';
+                        button.classList.remove('trade-sort-button-active');
+                        return;
+                    }
+                    indicator.textContent = activeSortDirection === 'asc' ? ' ▲' : ' ▼';
+                    button.classList.add('trade-sort-button-active');
+                });
+            };
+
+            const applyTradeLogView = () => {
+                const activeSystems = getCheckedValues('system');
+                const activeProfiles = getCheckedValues('profile');
+                const activeResults = getCheckedValues('result');
+
+                tradeRows.forEach((row) => {
+                    const systemValue = row.dataset.system;
+                    const profileValue = row.dataset.profile;
+                    const resultValue = row.dataset.result;
+                    const systemMatch = !systemValue || activeSystems.has(systemValue);
+                    const profileMatch = !profileValue || activeProfiles.has(profileValue);
+                    const resultMatch = !resultValue || activeResults.has(resultValue);
+                    row.hidden = !(systemMatch && profileMatch && resultMatch);
+                });
+
+                const sortedRows = [...tradeRows].sort((leftRow, rightRow) => {
+                    if (!activeSortKey) {
+                        return Number(leftRow.dataset.originalIndex) - Number(rightRow.dataset.originalIndex);
+                    }
+                    const activeButton = sortButtons.find((button) => button.dataset.sortKey === activeSortKey);
+                    const type = activeButton ? activeButton.dataset.sortType : 'text';
+                    const comparison = compareNullable(
+                        getSortValue(leftRow, activeSortKey, type),
+                        getSortValue(rightRow, activeSortKey, type),
+                        activeSortDirection
+                    );
+                    if (comparison !== 0) {
+                        return comparison;
+                    }
+                    return Number(leftRow.dataset.originalIndex) - Number(rightRow.dataset.originalIndex);
+                });
+
+                sortedRows.forEach((row) => tradeLogBody.appendChild(row));
+                updateSortIndicators();
+            };
+
+            filterInputs.forEach((input) => {
+                input.addEventListener('change', applyTradeLogView);
+            });
+
+            sortButtons.forEach((button) => {
+                button.addEventListener('click', () => {
+                    const selectedKey = button.dataset.sortKey;
+                    if (activeSortKey === selectedKey) {
+                        activeSortDirection = activeSortDirection === 'asc' ? 'desc' : 'asc';
+                    } else {
+                        activeSortKey = selectedKey;
+                        activeSortDirection = 'asc';
+                    }
+                    applyTradeLogView();
+                });
+            });
+
+            applyTradeLogView();
+        }
+
+        const closeEventBody = document.getElementById('close-event-body');
+        const distanceInput = document.getElementById('distance_to_short');
+        const distanceNote = document.getElementById('distance-to-short-note');
+        const spxAtEntryInput = document.getElementById('spx_at_entry');
+        const shortStrikeInput = document.getElementById('short_strike');
+        const longStrikeInput = document.getElementById('long_strike');
+        const spreadWidthInput = document.getElementById('spread_width');
+        const contractsInput = document.getElementById('contracts');
+        const candidateCreditInput = document.getElementById('candidate_credit_estimate');
+        const actualEntryCreditInput = document.getElementById('actual_entry_credit');
+        const optionTypeInput = document.getElementById('option_type');
+        const totalMaxLossDisplay = document.getElementById('total_max_loss_display');
+        const totalMaxLossNote = document.getElementById('total-max-loss-note');
+
+        if (totalMaxLossDisplay) {
+            const readNumber = (input) => {
+                const parsed = Number(input?.value ?? '');
+                return Number.isFinite(parsed) ? parsed : null;
+            };
+            const formatCurrencyValue = (value) => {
+                if (!Number.isFinite(value)) {
+                    return '—';
+                }
+                return `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            };
+            const resolveSpreadWidth = () => {
+                const explicitWidth = readNumber(spreadWidthInput);
+                if (explicitWidth !== null) {
+                    return explicitWidth;
+                }
+                const shortStrike = readNumber(shortStrikeInput);
+                const longStrike = readNumber(longStrikeInput);
+                if (shortStrike === null || longStrike === null) {
+                    return null;
+                }
+                return Math.abs(shortStrike - longStrike);
+            };
+            const resolveNetCreditPerContract = (creditValue, spreadWidth, contracts) => {
+                if (creditValue === null || creditValue <= 0) {
+                    return null;
+                }
+                if (creditValue <= 10 && (spreadWidth === null || creditValue <= spreadWidth)) {
+                    return creditValue;
+                }
+                if (contracts && contracts > 0) {
+                    const totalPremiumCredit = creditValue / (contracts * 100);
+                    if (spreadWidth === null || totalPremiumCredit <= spreadWidth) {
+                        return totalPremiumCredit;
+                    }
+                }
+                return creditValue / 100;
+            };
+            const refreshTotalMaxLoss = () => {
+                const spreadWidth = resolveSpreadWidth();
+                const contracts = readNumber(contractsInput);
+                const rawCredit = readNumber(actualEntryCreditInput) ?? readNumber(candidateCreditInput);
+                const netCreditPerContract = resolveNetCreditPerContract(rawCredit, spreadWidth, contracts);
+                if (spreadWidth === null || contracts === null || netCreditPerContract === null) {
+                    totalMaxLossDisplay.value = '—';
+                    if (totalMaxLossNote) {
+                        totalMaxLossNote.textContent = 'System-calculated from spread width minus net credit, multiplied by contracts and 100. Add width, credit, and contracts to calculate it.';
+                    }
+                    return;
+                }
+                const totalMaxLoss = Math.max((spreadWidth - netCreditPerContract) * contracts * 100, 0);
+                totalMaxLossDisplay.value = formatCurrencyValue(totalMaxLoss);
+                if (totalMaxLossNote) {
+                    totalMaxLossNote.textContent = 'System-calculated from spread width minus net credit, multiplied by contracts and 100. This field is saved automatically and cannot be edited.';
+                }
+            };
+
+            [shortStrikeInput, longStrikeInput, spreadWidthInput, contractsInput, actualEntryCreditInput, candidateCreditInput].forEach((input) => {
+                input?.addEventListener('input', refreshTotalMaxLoss);
+                input?.addEventListener('change', refreshTotalMaxLoss);
+            });
+            refreshTotalMaxLoss();
+        }
+
+        if (distanceInput) {
+            const readNumber = (input) => {
+                const parsed = Number(input?.value ?? '');
+                return Number.isFinite(parsed) ? parsed : null;
+            };
+            const formatDistance = (value) => Number.isFinite(value) ? value.toFixed(2) : '';
+            const initialDistance = readNumber({ value: distanceInput.dataset.initialDistance });
+            const initialDistanceSource = String(distanceInput.dataset.initialDistanceSource || '').trim().toLowerCase();
+            const setDistanceNote = (source) => {
+                if (!distanceNote) {
+                    return;
+                }
+                if (source === 'derived') {
+                    distanceNote.textContent = 'System-derived from SPX at entry and short strike.';
+                    return;
+                }
+                if (source === 'estimated_fallback') {
+                    distanceNote.textContent = 'Apollo fallback estimate from the SPX close on the trading day before expiration.';
+                    return;
+                }
+                if (source === 'original') {
+                    distanceNote.textContent = 'Stored journal distance retained as the authoritative value.';
+                    return;
+                }
+                distanceNote.textContent = 'Distance unresolved. Add SPX at entry and short strike, or run Apollo history backfill for older trades.';
+            };
+            const refreshDistanceField = () => {
+                const spxAtEntry = readNumber(spxAtEntryInput);
+                const shortStrike = readNumber(shortStrikeInput);
+                const optionType = String(optionTypeInput?.value || '').toLowerCase();
+                if (spxAtEntry !== null && shortStrike !== null) {
+                    const distanceValue = optionType.includes('call')
+                        ? Math.abs(shortStrike - spxAtEntry)
+                        : Math.abs(spxAtEntry - shortStrike);
+                    distanceInput.value = formatDistance(distanceValue);
+                    distanceInput.dataset.distanceSource = 'derived';
+                    setDistanceNote('derived');
+                    return;
+                }
+                if (initialDistance !== null && initialDistance >= 0 && initialDistanceSource && initialDistanceSource !== 'unresolved') {
+                    distanceInput.value = formatDistance(initialDistance);
+                    distanceInput.dataset.distanceSource = initialDistanceSource;
+                    setDistanceNote(initialDistanceSource);
+                    return;
+                }
+                distanceInput.value = '';
+                distanceInput.dataset.distanceSource = 'unresolved';
+                setDistanceNote('unresolved');
+            };
+
+            [spxAtEntryInput, shortStrikeInput, optionTypeInput].forEach((input) => {
+                input?.addEventListener('input', refreshDistanceField);
+                input?.addEventListener('change', refreshDistanceField);
+            });
+            refreshDistanceField();
+        }
+
+        if (closeEventBody) {
+            const addCloseEventButton = document.getElementById('add-close-event-button');
+            const expireRemainingButton = document.getElementById('expire-remaining-button');
+            const closeRemainingButton = document.getElementById('close-remaining-button');
+            const closeEventEmpty = document.getElementById('close-event-empty');
+            const contractsInput = document.getElementById('contracts');
+            const entryCreditInput = document.getElementById('actual_entry_credit');
+            const summaryOriginal = document.getElementById('position-summary-original');
+            const summaryClosed = document.getElementById('position-summary-closed');
+            const summaryRemaining = document.getElementById('position-summary-remaining');
+            const summaryPnl = document.getElementById('position-summary-pnl');
+
+            const formatQuantity = (value) => Number.isFinite(value) ? String(value) : '0';
+            const formatCurrency = (value) => {
+                const sign = value < 0 ? '-' : '';
+                return `${sign}$${Math.abs(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            };
+            const parseNumber = (value) => {
+                const parsed = Number(value);
+                return Number.isFinite(parsed) ? parsed : null;
+            };
+            const getRows = () => Array.from(closeEventBody.querySelectorAll('.close-event-row'));
+            const updateEmptyState = () => {
+                if (closeEventEmpty) {
+                    closeEventEmpty.hidden = getRows().length > 0;
+                }
+            };
+            const calculateSummary = () => {
+                const originalContracts = parseNumber(contractsInput ? contractsInput.value : '') || 0;
+                const entryCredit = parseNumber(entryCreditInput ? entryCreditInput.value : '');
+                let closedContracts = 0;
+                let totalExitValue = 0;
+
+                getRows().forEach((row) => {
+                    const contractsField = row.querySelector('input[name="close_event_contracts_closed"]');
+                    const exitField = row.querySelector('input[name="close_event_actual_exit_value"]');
+                    const contractsClosed = parseNumber(contractsField ? contractsField.value : '');
+                    const exitValue = parseNumber(exitField ? exitField.value : '');
+                    if (Number.isInteger(contractsClosed) && contractsClosed > 0) {
+                        closedContracts += contractsClosed;
+                        if (exitValue !== null) {
+                            totalExitValue += contractsClosed * exitValue;
+                        }
+                    }
+                });
+
+                const remainingContracts = Math.max(originalContracts - closedContracts, 0);
+                const realizedPnl = entryCredit === null ? 0 : ((entryCredit * closedContracts) - totalExitValue) * 100;
+                if (summaryOriginal) {
+                    summaryOriginal.textContent = formatQuantity(originalContracts);
+                }
+                if (summaryClosed) {
+                    summaryClosed.textContent = formatQuantity(closedContracts);
+                }
+                if (summaryRemaining) {
+                    summaryRemaining.textContent = formatQuantity(remainingContracts);
+                }
+                if (summaryPnl) {
+                    summaryPnl.textContent = formatCurrency(realizedPnl);
+                }
+                return { originalContracts, closedContracts, remainingContracts };
+            };
+            const buildCloseEventRow = ({ id = '', contractsClosed = '', actualExitValue = '', closeMethod = 'Reduce', recordedLabel = 'New on save' } = {}) => {
+                const row = document.createElement('tr');
+                row.className = 'close-event-row';
+                row.innerHTML = `
+                    <td>
+                        <input type="hidden" name="close_event_id" value="${id}">
+                        <input type="hidden" name="close_event_event_datetime" value="">
+                        <input type="hidden" name="close_event_notes_exit" value="">
+                        <input name="close_event_contracts_closed" type="number" min="1" step="1" value="${contractsClosed}" required>
+                    </td>
+                    <td>
+                        <input name="close_event_actual_exit_value" type="number" min="0" step="0.01" value="${actualExitValue}" required>
+                    </td>
+                    <td>
+                        <select name="close_event_method" required>
+                            <option value="Reduce">Reduce</option>
+                            <option value="Close">Close</option>
+                            <option value="Expire">Expire</option>
+                            <option value="Manage Trade Prefill">Manage Trade Prefill</option>
+                        </select>
+                    </td>
+                    <td><span class="subtle">${recordedLabel}</span></td>
+                    <td><button type="button" class="secondary trade-remove-close-event" data-remove-close-event>Remove</button></td>
+                `;
+                row.querySelector('select[name="close_event_method"]').value = closeMethod;
+                return row;
+            };
+            const appendCloseEventRow = (defaults = {}) => {
+                closeEventBody.appendChild(buildCloseEventRow(defaults));
+                updateEmptyState();
+                calculateSummary();
+            };
+            const appendRemainingHelperRow = (method) => {
+                const summary = calculateSummary();
+                if (summary.remainingContracts <= 0) {
+                    return;
+                }
+                appendCloseEventRow({
+                    contractsClosed: String(summary.remainingContracts),
+                    actualExitValue: method === 'Expire' ? '0.00' : '',
+                    closeMethod: method,
+                });
+            };
+
+            closeEventBody.addEventListener('click', (event) => {
+                const removeButton = event.target.closest('[data-remove-close-event]');
+                if (!removeButton) {
+                    return;
+                }
+                const row = removeButton.closest('.close-event-row');
+                if (row) {
+                    row.remove();
+                    updateEmptyState();
+                    calculateSummary();
+                }
+            });
+            closeEventBody.addEventListener('input', calculateSummary);
+            closeEventBody.addEventListener('change', (event) => {
+                const methodField = event.target.closest('select[name="close_event_method"]');
+                if (methodField && methodField.value === 'Expire') {
+                    const row = methodField.closest('.close-event-row');
+                    const exitField = row ? row.querySelector('input[name="close_event_actual_exit_value"]') : null;
+                    if (exitField && !exitField.value) {
+                        exitField.value = '0.00';
+                    }
+                }
+                calculateSummary();
+            });
+            if (contractsInput) {
+                contractsInput.addEventListener('input', calculateSummary);
+            }
+            if (entryCreditInput) {
+                entryCreditInput.addEventListener('input', calculateSummary);
+            }
+            if (addCloseEventButton) {
+                addCloseEventButton.addEventListener('click', () => appendCloseEventRow());
+            }
+            if (expireRemainingButton) {
+                expireRemainingButton.addEventListener('click', () => appendRemainingHelperRow('Expire'));
+            }
+            if (closeRemainingButton) {
+                closeRemainingButton.addEventListener('click', () => appendRemainingHelperRow('Close'));
+            }
+
+            updateEmptyState();
+            calculateSummary();
+        }
+    </script>
+</body>
+</html>
