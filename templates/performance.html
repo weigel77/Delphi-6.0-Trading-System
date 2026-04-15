@@ -9,15 +9,21 @@
 <body>
     {% from '_delphi_header_macros.html' import render_delphi_header with context %}
     {% set active_filters = dashboard_payload.filters if dashboard_payload and dashboard_payload.filters else {} %}
-    <main class="page-shell performance-shell" data-performance-url="{{ url_for('performance_dashboard_data') }}">
+    <main class="page-shell performance-shell" data-performance-url="{{ performance_data_url|default(url_for('performance_dashboard_data')) }}">
         <section class="hero-card delphi-header-card delphi-shared-header delphi-header-card-subpage">
             {{ render_delphi_header(
                 active_page='performance',
                 page_heading='Performance',
                 page_copy='Visual dashboard for trade behavior, risk, and progression at a glance.',
                 page_meta='Chart-first command view for Apollo, Legacy, and Kairos performance.',
+                page_kicker=app_identity.page_kicker,
+                page_version=app_identity.version_label,
                 menu_status=menu_status,
             ) }}
+
+            {% if error_message %}
+                <div class="message message-error">{{ error_message }}</div>
+            {% endif %}
 
             {% if info_message %}
                 <div class="message message-{{ info_message.level|default('info') }}">{{ info_message.text }}</div>
@@ -25,6 +31,9 @@
         </section>
 
         <section class="panel performance-kpi-panel">
+            {% if not hosted_admin_error and ((dashboard_payload.records_total|default(0)) == 0 or (dashboard_payload.records_filtered|default(0)) == 0) %}
+                <div class="message message-info message-inline">{% if hosted_mode %}No hosted performance records are available yet. The page is live and routed correctly, but there is no trade history to chart at the moment.{% else %}No performance records are available yet.{% endif %}</div>
+            {% endif %}
             <div class="performance-kpi-strip">
                 <article class="performance-kpi-card performance-kpi-card-gauge">
                     <div class="performance-kpi-label">Win Rate</div>
@@ -63,7 +72,7 @@
                             {% for option in options %}
                                 <label class="performance-filter-pill">
                                     <input type="checkbox" class="performance-filter-checkbox" data-filter-group="{{ group }}" value="{{ option|lower|replace(' ', '-') }}" {% if option|lower|replace(' ', '-') in active_filters.get(group, []) %}checked{% endif %}>
-                                    <span>{{ option }}</span>
+                                    <span>{{ 'SubPrime' if hosted_mode and option == 'Subprime' else option }}</span>
                                 </label>
                             {% endfor %}
                         </div>
@@ -448,10 +457,13 @@
         const buildQuery = (filters) => {
             const params = new URLSearchParams();
             Object.entries(filters).forEach(([key, values]) => {
+                params.append(`${key}__active`, '1');
                 values.forEach((value) => params.append(key, value));
             });
             return params.toString();
         };
+
+        const formatHostedLabel = (value) => String(value || '') === 'Subprime' ? 'SubPrime' : String(value || '');
 
         const renderEmpty = (targetId, title) => {
             const target = document.getElementById(targetId);
@@ -583,7 +595,7 @@
                     ${nonEmptyItems.map((item) => `
                         <div class="performance-metric-row">
                             <div>
-                                <strong>${item.label}</strong>
+                                <strong>${formatHostedLabel(item.label)}</strong>
                                 <span>n=${item.trade_count}</span>
                             </div>
                             <div>
@@ -775,7 +787,7 @@
                         const fillClass = value > 0 ? 'performance-bar-fill-positive' : value < 0 ? 'performance-bar-fill-negative' : 'performance-bar-fill-neutral';
                         return `
                             <div class="performance-bar-row">
-                                <span>${item.label}</span>
+                                <span>${formatHostedLabel(item.label)}</span>
                                 <div class="performance-bar-track"><div class="performance-bar-fill ${fillClass}" style="width:${width}%"></div></div>
                                 <strong>${formatter(value, item)}</strong>
                             </div>
@@ -1012,7 +1024,7 @@
                     ${profiles.map((profileItem) => `
                         <article class="performance-profile-em-card">
                             <div class="performance-panel-header">
-                                <h3>${escapeHtml(profileItem.profile || 'Profile')}</h3>
+                                <h3>${escapeHtml(formatHostedLabel(profileItem.profile || 'Profile'))}</h3>
                                 <span class="subtle">${Number(profileItem.qualified_trade_count || 0)} qualified trade${Number(profileItem.qualified_trade_count || 0) === 1 ? '' : 's'}</span>
                             </div>
                             <div class="performance-profile-em-regimes">
@@ -1345,6 +1357,10 @@
             pendingRequest = new AbortController();
             try {
                 const query = buildQuery(getActiveFilters());
+                if (window.history?.replaceState) {
+                    const nextUrl = query ? `${window.location.pathname}?${query}` : window.location.pathname;
+                    window.history.replaceState({}, '', nextUrl);
+                }
                 const response = await fetch(`${performanceUrl}?${query}`, { signal: pendingRequest.signal });
                 if (!response.ok) {
                     throw new Error(`Performance refresh failed with status ${response.status}`);

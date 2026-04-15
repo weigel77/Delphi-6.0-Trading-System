@@ -6,8 +6,7 @@ from typing import Dict, Optional
 
 from config import AppConfig, get_app_config
 
-from .schwab_auth_service import SchwabAuthService
-from .token_store import JsonTokenStore
+from .runtime.provider_composition import LocalProviderComposer, ProviderComposer
 from .providers.base_provider import BaseMarketDataProvider, UnavailableProvider
 from .providers.cboe_provider import CboeVixHistoricalProvider
 from .providers.schwab_provider import SchwabProvider
@@ -19,46 +18,26 @@ class ProviderFactory:
     """Instantiate the active market-data provider from configuration."""
 
     @staticmethod
-    def _create_schwab_provider(config: AppConfig) -> SchwabProvider:
-        """Create a Schwab provider with the configured auth services."""
-        token_store = JsonTokenStore(config.schwab_token_path)
-        auth_service = SchwabAuthService(config=config, token_store=token_store)
-        return SchwabProvider(config=config, display_timezone=config.app_timezone, auth_service=auth_service)
-
-    @staticmethod
-    def create_provider(config: Optional[AppConfig] = None) -> BaseMarketDataProvider:
+    def create_provider(config: Optional[AppConfig] = None, provider_composer: ProviderComposer | None = None) -> BaseMarketDataProvider:
         """Backward-compatible alias for the configured live provider."""
-        return ProviderFactory.create_live_provider(config)
+        return ProviderFactory.create_live_provider(config, provider_composer=provider_composer)
 
     @staticmethod
-    def create_live_provider(config: Optional[AppConfig] = None) -> BaseMarketDataProvider:
+    def create_live_provider(config: Optional[AppConfig] = None, provider_composer: ProviderComposer | None = None) -> BaseMarketDataProvider:
         """Return the configured live/latest provider."""
         app_config = config or get_app_config()
-        provider_key = ProviderFactory._resolve_live_provider_key(app_config)
-
-        if provider_key == "yahoo":
-            return YahooProvider(display_timezone=app_config.app_timezone)
-
-        if provider_key == "schwab":
-            return ProviderFactory._create_schwab_provider(app_config)
-
-        return UnavailableProvider(
-            provider_key=provider_key,
-            message=(
-                f"Unsupported live market data provider '{provider_key}'. "
-                "Use MARKET_DATA_LIVE_PROVIDER or MARKET_DATA_PROVIDER with a supported value."
-            ),
-            display_timezone=app_config.app_timezone,
-        )
+        composer = provider_composer or LocalProviderComposer(app_config)
+        return composer.create_live_provider()
 
     @staticmethod
-    def create_historical_providers(config: Optional[AppConfig] = None) -> Dict[str, BaseMarketDataProvider]:
+    def create_historical_providers(
+        config: Optional[AppConfig] = None,
+        provider_composer: ProviderComposer | None = None,
+    ) -> Dict[str, BaseMarketDataProvider]:
         """Return configured historical providers keyed by ticker family."""
         app_config = config or get_app_config()
-        return {
-            "^VIX": ProviderFactory._create_historical_provider("vix", app_config),
-            "^GSPC": ProviderFactory._create_historical_provider("spx", app_config),
-        }
+        composer = provider_composer or LocalProviderComposer(app_config)
+        return composer.create_historical_providers()
 
     @staticmethod
     def _create_historical_provider(capability: str, config: AppConfig) -> BaseMarketDataProvider:

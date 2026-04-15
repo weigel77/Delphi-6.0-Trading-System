@@ -46,6 +46,9 @@ class FakeTimer:
 
 
 class StubMarketDataService:
+    def __init__(self):
+        self.live_provider = object()
+
     @staticmethod
     def _build_intraday_frame(session_date, *, base_price=6120.0, step=0.08):
         session_anchor = datetime(session_date.year, session_date.month, session_date.day, 8, 30, tzinfo=ZoneInfo("America/Chicago"))
@@ -157,6 +160,9 @@ class KairosServiceTest(unittest.TestCase):
         self.assertTrue(FakeTimer.instances[0].started)
         self.assertEqual(int(FakeTimer.instances[0].interval), 120)
 
+    def test_default_options_chain_service_uses_shared_market_data_provider(self):
+        self.assertIs(self.service.options_chain_service.provider, self.service.market_data_service.live_provider)
+
     def test_live_workspace_auto_initializes_on_page_load(self):
         payload = self.service.initialize_live_kairos_on_page_load()
 
@@ -175,7 +181,54 @@ class KairosServiceTest(unittest.TestCase):
         self.assertEqual(payload["scan_log_count"], payload["total_scans_completed"])
         self.assertEqual(payload["scan_log"][-1]["scan_sequence_number"], 1)
         self.assertEqual(payload["scan_log"][0]["scan_sequence_number"], payload["total_scans_completed"])
-        self.assertIn("backfilled", payload["latest_scan"]["classification_note"].lower())
+        self.assertIn("same spx tape", payload["latest_scan"]["classification_note"].lower())
+
+    def test_live_tape_uses_shared_intraday_window_progression_for_markers(self):
+        self.service.market_data_service.get_same_day_intraday_candles = (
+            lambda ticker, interval_minutes=1, query_type="intraday": StubMarketDataService._build_intraday_frame(
+                self.current_time.date(),
+                base_price=6120.0,
+                step=0.25,
+            )
+        )
+        payload = self.service.activate_for_today()
+
+        marker_kinds = {marker["kind"] for marker in payload["bar_map"]["event_markers"]}
+
+        self.assertIn("setup-forming", marker_kinds)
+        self.assertIn("window-open", marker_kinds)
+        self.assertEqual(payload["latest_scan"]["kairos_state"], "Window Open")
+
+    def test_live_tape_keeps_bullish_low_vix_bars_window_open_under_caution(self):
+        original_snapshot = self.service.market_data_service.get_latest_snapshot
+
+        def low_vix_snapshot(ticker, query_type="latest"):
+            if ticker == "^VIX":
+                return {
+                    "Latest Value": 17.12,
+                    "Daily Point Change": -0.8,
+                    "Daily Percent Change": -4.46,
+                    "As Of": "2026-04-06 09:45:00 AM CDT",
+                }
+            return original_snapshot(ticker, query_type=query_type)
+
+        self.service.market_data_service.get_latest_snapshot = low_vix_snapshot
+        self.service.market_data_service.get_same_day_intraday_candles = (
+            lambda ticker, interval_minutes=1, query_type="intraday": StubMarketDataService._build_intraday_frame(
+                self.current_time.date(),
+                base_price=6120.0,
+                step=0.25,
+            )
+        )
+
+        payload = self.service.activate_for_today()
+
+        marker_kinds = {marker["kind"] for marker in payload["bar_map"]["event_markers"]}
+
+        self.assertEqual(payload["latest_scan"]["vix_status"], "Caution")
+        self.assertEqual(payload["latest_scan"]["kairos_state"], "Window Open")
+        self.assertIn("setup-forming", marker_kinds)
+        self.assertIn("window-open", marker_kinds)
 
     def test_live_workspace_auto_initializes_closed_market_without_fabricating_trade(self):
         self.current_time = datetime(2026, 4, 4, 10, 0, tzinfo=ZoneInfo("America/Chicago"))
@@ -242,8 +295,8 @@ class KairosServiceTest(unittest.TestCase):
 
         activated = self.service.activate_for_today()
 
-        self.assertEqual(activated["current_state"], "Not Eligible")
-        self.assertEqual(activated["latest_scan"]["vix_status"], "Not Eligible")
+        self.assertEqual(activated["current_state"], "Watching")
+        self.assertEqual(activated["latest_scan"]["vix_status"], "Caution")
         self.assertEqual(activated["latest_scan"]["timing_status"], "Eligible")
         self.assertTrue(activated["latest_scan"]["is_simulated"])
         self.assertEqual(int(FakeTimer.instances[-1].interval), 30)

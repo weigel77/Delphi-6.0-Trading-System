@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
-from contextlib import closing
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from threading import RLock, Timer
+from threading import RLock
 from typing import Any, Callable, Dict, Iterable, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -19,68 +17,26 @@ from .apollo_service import ApolloService
 from .market_calendar_service import MarketCalendarService
 from .market_data import MarketDataError, MarketDataService
 from .options_chain_service import OptionsChainService
-from .pushover_service import PushoverService
+from .repositories.management_state_repository import (
+    OpenTradeManagementStateRepository,
+    SQLiteOpenTradeManagementStateRepository,
+    build_management_state_payload,
+)
+from .repositories.trade_repository import TradeRepository
+from .runtime.notifications import NotificationDelivery
+from .runtime.scheduler import RuntimeJobHandle, RuntimeScheduler, ThreadingTimerScheduler
 from .trade_store import (
-    TradeStore,
     current_timestamp,
-    normalize_candidate_profile,
     normalize_system_name,
     parse_date_value,
     parse_datetime_value,
+    resolve_trade_candidate_profile,
     resolve_trade_credit_model,
     to_float,
 )
 
 
 LOGGER = logging.getLogger(__name__)
-
-MANAGEMENT_SCHEMA = """
-CREATE TABLE IF NOT EXISTS open_trade_management_state (
-    trade_id INTEGER PRIMARY KEY,
-    system_name TEXT NOT NULL,
-    trade_mode TEXT NOT NULL,
-    current_management_status TEXT,
-    previous_management_status TEXT,
-    current_thesis_status TEXT,
-    previous_thesis_status TEXT,
-    concise_reason TEXT,
-    reason_code TEXT,
-    next_trigger TEXT,
-    trigger_source TEXT,
-    last_evaluated_at TEXT,
-    last_alert_sent_at TEXT,
-    last_alert_type TEXT,
-    last_alert_priority INTEGER,
-    alert_count INTEGER NOT NULL DEFAULT 0,
-    last_alert_reason_code TEXT,
-    last_underlying_price REAL,
-    last_distance_to_short REAL,
-    last_distance_to_long REAL,
-    last_buffer_remaining_percent REAL
-);
-
-CREATE TABLE IF NOT EXISTS open_trade_management_alert_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    trade_id INTEGER NOT NULL,
-    system_name TEXT NOT NULL,
-    trade_mode TEXT NOT NULL,
-    alert_type TEXT NOT NULL,
-    alert_priority INTEGER NOT NULL,
-    alert_priority_label TEXT NOT NULL,
-    reason_code TEXT,
-    title TEXT NOT NULL,
-    body TEXT NOT NULL,
-    sent_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS open_trade_management_runtime_settings (
-    singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
-    notifications_enabled INTEGER NOT NULL DEFAULT 1,
-    last_morning_snapshot_date TEXT,
-    last_eod_summary_date TEXT,
-    last_background_run_at TEXT
-);
-"""
 
 
 class OpenTradeManager:
@@ -115,43 +71,42 @@ class OpenTradeManager:
     def __init__(
         self,
         *,
-        trade_store: TradeStore,
+        trade_store: TradeRepository,
         market_data_service: MarketDataService,
         apollo_service: ApolloService,
         options_chain_service: OptionsChainService,
-        pushover_service: PushoverService,
         kairos_service: Any,
+        notification_delivery: NotificationDelivery | None = None,
+        pushover_service: NotificationDelivery | None = None,
         market_calendar_service: MarketCalendarService | None = None,
         config: AppConfig | None = None,
         now_provider: Callable[[], datetime] | None = None,
+        state_repository: OpenTradeManagementStateRepository | None = None,
+        scheduler: RuntimeScheduler | None = None,
     ) -> None:
         self.config = config or get_app_config()
         self.trade_store = trade_store
         self.market_data_service = market_data_service
         self.apollo_service = apollo_service
         self.options_chain_service = options_chain_service
-        self.pushover_service = pushover_service
+        notification_delivery = notification_delivery or pushover_service
+        if notification_delivery is None:
+            raise ValueError("OpenTradeManager requires a notification delivery adapter.")
+        self.notification_delivery = notification_delivery
+        self.pushover_service = notification_delivery
         self.kairos_service = kairos_service
         self.market_calendar_service = market_calendar_service or MarketCalendarService(self.config)
         self.database_path = Path(self.trade_store.database_path)
+        self.state_repository = state_repository or SQLiteOpenTradeManagementStateRepository(self.database_path)
+        self.scheduler = scheduler or ThreadingTimerScheduler()
         self.display_timezone = ZoneInfo(self.config.app_timezone)
         self.now_provider = now_provider or (lambda: datetime.now(self.display_timezone))
         self._monitor_lock = RLock()
-        self._monitor_timer: Timer | None = None
+        self._monitor_timer: RuntimeJobHandle | None = None
         self._monitor_running = False
 
     def initialize(self) -> None:
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(self._connect()) as connection:
-            connection.executescript(MANAGEMENT_SCHEMA)
-            connection.execute(
-                """
-                INSERT INTO open_trade_management_runtime_settings (singleton_id, notifications_enabled)
-                VALUES (1, 1)
-                ON CONFLICT(singleton_id) DO NOTHING
-                """
-            )
-            connection.commit()
+        self.state_repository.initialize()
 
     def start_background_monitoring(self) -> None:
         with self._monitor_lock:
@@ -168,22 +123,19 @@ class OpenTradeManager:
                 self._monitor_timer = None
 
     def set_notifications_enabled(self, enabled: bool) -> None:
-        with closing(self._connect()) as connection:
-            connection.execute(
-                "UPDATE open_trade_management_runtime_settings SET notifications_enabled = ? WHERE singleton_id = 1",
-                (1 if enabled else 0,),
-            )
-            connection.commit()
+        self.state_repository.set_notifications_enabled(enabled)
 
     def notifications_enabled(self) -> bool:
-        return bool(self._load_runtime_settings().get("notifications_enabled", True))
+        return bool(self.state_repository.load_runtime_settings().get("notifications_enabled", True))
 
     def _schedule_background_monitor(self) -> None:
         if not self._monitor_running:
             return
-        self._monitor_timer = Timer(self.BACKGROUND_INTERVAL_SECONDS, self._background_monitor_tick)
-        self._monitor_timer.daemon = True
-        self._monitor_timer.start()
+        self._monitor_timer = self.scheduler.schedule(
+            self.BACKGROUND_INTERVAL_SECONDS,
+            self._background_monitor_tick,
+            daemon=True,
+        )
 
     def _background_monitor_tick(self) -> None:
         try:
@@ -200,12 +152,7 @@ class OpenTradeManager:
         if not self._is_monitor_window(now):
             return {"ran": False, "reason": "outside-monitor-window", "evaluated_at": now.isoformat()}
         payload = self.evaluate_open_trades(send_alerts=True)
-        with closing(self._connect()) as connection:
-            connection.execute(
-                "UPDATE open_trade_management_runtime_settings SET last_background_run_at = ? WHERE singleton_id = 1",
-                (now.isoformat(),),
-            )
-            connection.commit()
+        self.state_repository.mark_runtime_setting("last_background_run_at", now.isoformat())
         return {"ran": True, **payload}
 
     def evaluate_open_trades(self, *, send_alerts: bool = False) -> Dict[str, Any]:
@@ -219,46 +166,48 @@ class OpenTradeManager:
         alert_failures: List[str] = []
         records: List[Dict[str, Any]] = []
 
-        with closing(self._connect()) as connection:
-            daily_outcomes: list[Dict[str, Any]] = []
-            for trade in open_trades:
-                previous_state = states_by_trade.get(int(trade.get("id") or 0), {})
-                record = self._evaluate_trade(trade, shared_context, now)
-                alert_outcome = {"sent": False, "error": "", "priority": None, "alert_type": None, "sent_at": None}
-                record["trade_notification_state"] = {
-                    "last_status": self._coerce_text(trade.get("last_status"), fallback="—"),
-                    "last_action_sent": self._coerce_text(trade.get("last_action_sent"), fallback="—"),
-                    "last_alert_timestamp": self._format_datetime(parse_datetime_value(trade.get("last_alert_timestamp"))),
-                }
-                self._upsert_management_state(connection, record, previous_state, alert_outcome, now)
-                persisted_state = self._load_management_state(connection, int(record["trade_id"]))
-                record["alert_state"] = self._build_alert_state_payload(persisted_state, trade)
-                records.append(record)
+        daily_outcomes: list[Dict[str, Any]] = []
+        for trade in open_trades:
+            previous_state = states_by_trade.get(int(trade.get("id") or 0), {})
+            record = self._evaluate_trade(trade, shared_context, now)
+            alert_outcome = {"sent": False, "error": "", "priority": None, "alert_type": None, "sent_at": None}
+            record["trade_notification_state"] = {
+                "last_status": self._coerce_text(trade.get("last_status"), fallback="—"),
+                "last_action_sent": self._coerce_text(trade.get("last_action_sent"), fallback="—"),
+                "last_alert_timestamp": self._format_datetime(parse_datetime_value(trade.get("last_alert_timestamp"))),
+            }
+            self._upsert_management_state(record, previous_state, alert_outcome, now)
+            persisted_state = build_management_state_payload(record, previous_state, alert_outcome, now)
+            record["alert_state"] = self._build_alert_state_payload(persisted_state, trade)
+            records.append(record)
 
-            if send_alerts and runtime_settings.get("notifications_enabled", True):
-                real_records = [
-                    item for item in records if str(item.get("trade_mode") or "").strip().lower() == "real"
-                ]
-                daily_outcomes = self._process_daily_notifications(connection, real_records, now, runtime_settings)
-                for outcome in daily_outcomes:
-                    if outcome.get("sent"):
-                        alerts_sent += 1
-                    elif outcome.get("error"):
-                        alert_failures.append(str(outcome["error"]))
-                for trade in alert_eligible_trades:
-                    record = next((item for item in records if int(item.get("trade_id") or 0) == int(trade.get("id") or 0)), None)
-                    if record is None:
-                        continue
-                    previous_state = states_by_trade.get(int(trade.get("id") or 0), {})
-                    alert_outcome = self._process_trade_notifications(connection, trade, record, previous_state, now)
-                    if alert_outcome.get("sent"):
-                        alerts_sent += int(alert_outcome.get("sent_count") or 1)
-                    elif alert_outcome.get("error"):
-                        alert_failures.append(f"Trade #{record['trade_number']}: {alert_outcome['error']}")
-                    self._upsert_management_state(connection, record, previous_state, alert_outcome, now)
-                    persisted_state = self._load_management_state(connection, int(record["trade_id"]))
-                    record["alert_state"] = self._build_alert_state_payload(persisted_state, self._load_trade(connection, int(record["trade_id"])))
-            connection.commit()
+        if send_alerts and runtime_settings.get("notifications_enabled", True):
+            real_records = [
+                item for item in records if str(item.get("trade_mode") or "").strip().lower() == "real"
+            ]
+            daily_outcomes = self._process_daily_notifications(real_records, now, runtime_settings)
+            for outcome in daily_outcomes:
+                if outcome.get("sent"):
+                    alerts_sent += 1
+                elif outcome.get("error"):
+                    alert_failures.append(str(outcome["error"]))
+            for trade in alert_eligible_trades:
+                record = next((item for item in records if int(item.get("trade_id") or 0) == int(trade.get("id") or 0)), None)
+                if record is None:
+                    continue
+                previous_state = states_by_trade.get(int(trade.get("id") or 0), {})
+                alert_outcome = self._process_trade_notifications(trade, record, previous_state, now)
+                if alert_outcome.get("sent"):
+                    alerts_sent += int(alert_outcome.get("sent_count") or 1)
+                elif alert_outcome.get("error"):
+                    alert_failures.append(f"Trade #{record['trade_number']}: {alert_outcome['error']}")
+                self._upsert_management_state(record, previous_state, alert_outcome, now)
+                persisted_state = build_management_state_payload(record, previous_state, alert_outcome, now)
+                updated_trade = dict(trade)
+                updated_trade["last_status"] = str(record.get("status") or "")
+                updated_trade["last_action_sent"] = str(record.get("action_type") or "")
+                updated_trade["last_alert_timestamp"] = alert_outcome.get("sent_at") or trade.get("last_alert_timestamp")
+                record["alert_state"] = self._build_alert_state_payload(persisted_state, updated_trade)
 
         records.sort(key=lambda item: (-int(item.get("status_severity") or 0), str(item.get("system_name") or ""), -int(item.get("trade_number") or 0)))
         return {
@@ -270,6 +219,7 @@ class OpenTradeManager:
             "notifications_enabled": bool(runtime_settings.get("notifications_enabled", True)),
             "last_morning_snapshot_date": runtime_settings.get("last_morning_snapshot_date") or "",
             "last_eod_summary_date": runtime_settings.get("last_eod_summary_date") or "",
+            "live_expected_move_display": next((record.get("current_live_expected_move_display") for record in records if record.get("current_live_expected_move_display")), "—"),
             "status_counts": self._build_status_counts(records),
             "records": records,
         }
@@ -301,21 +251,17 @@ class OpenTradeManager:
             alert_type=f"manual-{normalized_trade_mode}-status-update",
             reason_code=f"manual-{normalized_trade_mode}-status-update",
         )
-        with closing(self._connect()) as connection:
-            outcome = self._send_management_alert(
-                connection,
-                None,
-                {"trade_id": 0, "trade_mode": normalized_trade_mode, "system_name": "Delphi"},
-                snapshot_payload,
-                now,
+        outcome = self._send_management_alert(
+            None,
+            {"trade_id": 0, "trade_mode": normalized_trade_mode, "system_name": "Delphi"},
+            snapshot_payload,
+            now,
+        )
+        if outcome.get("sent"):
+            self._stamp_trade_alert_timestamps(
+                [int(item.get("trade_id") or 0) for item in selected_records],
+                outcome.get("sent_at"),
             )
-            if outcome.get("sent"):
-                self._stamp_trade_alert_timestamps(
-                    connection,
-                    [int(item.get("trade_id") or 0) for item in selected_records],
-                    outcome.get("sent_at"),
-                )
-            connection.commit()
 
         return {
             "sent": bool(outcome.get("sent")),
@@ -443,10 +389,10 @@ class OpenTradeManager:
 
         if system_name == "Kairos":
             classification = self._classify_kairos_trade(trade, metrics, shared_context.get("kairos") or {}, now)
-            profile_label = self._coerce_text(trade.get("pass_type") or trade.get("candidate_profile"), fallback="Kairos")
+            profile_label = resolve_trade_candidate_profile(trade)
         else:
             classification = self._classify_apollo_trade(trade, metrics, shared_context.get("apollo") or {}, now)
-            profile_label = normalize_candidate_profile(trade.get("candidate_profile"))
+            profile_label = resolve_trade_candidate_profile(trade)
 
         return {
             "trade_id": int(trade.get("id") or 0),
@@ -736,30 +682,17 @@ class OpenTradeManager:
             **action_plan,
         }
 
-    def _process_daily_notifications(
-        self,
-        connection: sqlite3.Connection,
-        records: List[Dict[str, Any]],
-        now: datetime,
-        runtime_settings: Dict[str, Any],
-    ) -> list[Dict[str, Any]]:
+    def _process_daily_notifications(self, records: List[Dict[str, Any]], now: datetime, runtime_settings: Dict[str, Any]) -> list[Dict[str, Any]]:
         outcomes: list[Dict[str, Any]] = []
-        morning_outcome = self._send_morning_snapshot_if_due(connection, records, now, runtime_settings)
+        morning_outcome = self._send_morning_snapshot_if_due(records, now, runtime_settings)
         if morning_outcome is not None:
             outcomes.append(morning_outcome)
-        eod_outcome = self._send_eod_summary_if_due(connection, records, now, runtime_settings)
+        eod_outcome = self._send_eod_summary_if_due(records, now, runtime_settings)
         if eod_outcome is not None:
             outcomes.append(eod_outcome)
         return outcomes
 
-    def _process_trade_notifications(
-        self,
-        connection: sqlite3.Connection,
-        trade: Dict[str, Any],
-        record: Dict[str, Any],
-        previous_state: Dict[str, Any],
-        now: datetime,
-    ) -> Dict[str, Any]:
+    def _process_trade_notifications(self, trade: Dict[str, Any], record: Dict[str, Any], previous_state: Dict[str, Any], now: datetime) -> Dict[str, Any]:
         sent_count = 0
         last_priority = None
         last_alert_type = None
@@ -767,7 +700,7 @@ class OpenTradeManager:
 
         status_change = self._build_status_change_alert(trade, record)
         if status_change is not None:
-            outcome = self._send_management_alert(connection, trade, record, status_change, now)
+            outcome = self._send_management_alert(trade, record, status_change, now)
             if not outcome.get("sent") and outcome.get("error"):
                 return outcome
             if outcome.get("sent"):
@@ -778,7 +711,7 @@ class OpenTradeManager:
 
         action_alert = self._build_action_alert(trade, record)
         if action_alert is not None:
-            outcome = self._send_management_alert(connection, trade, record, action_alert, now)
+            outcome = self._send_management_alert(trade, record, action_alert, now)
             if not outcome.get("sent") and outcome.get("error"):
                 return outcome
             if outcome.get("sent"):
@@ -788,7 +721,6 @@ class OpenTradeManager:
                 sent_at = outcome.get("sent_at")
 
         self._update_trade_notification_state(
-            connection,
             trade_id=int(trade.get("id") or 0),
             last_status=str(record.get("status") or ""),
             last_action_sent=str(record.get("action_type") or ""),
@@ -803,70 +735,8 @@ class OpenTradeManager:
             "sent_at": sent_at,
         }
 
-    def _upsert_management_state(
-        self,
-        connection: sqlite3.Connection,
-        record: Dict[str, Any],
-        previous_state: Dict[str, Any],
-        alert_outcome: Dict[str, Any],
-        now: datetime,
-    ) -> None:
-        existing_alert_count = int(previous_state.get("alert_count") or 0)
-        connection.execute(
-            """
-            INSERT INTO open_trade_management_state (
-                trade_id, system_name, trade_mode, current_management_status, previous_management_status,
-                current_thesis_status, previous_thesis_status, concise_reason, reason_code, next_trigger,
-                trigger_source, last_evaluated_at, last_alert_sent_at, last_alert_type, last_alert_priority,
-                alert_count, last_alert_reason_code, last_underlying_price, last_distance_to_short,
-                last_distance_to_long, last_buffer_remaining_percent
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(trade_id) DO UPDATE SET
-                system_name = excluded.system_name,
-                trade_mode = excluded.trade_mode,
-                previous_management_status = open_trade_management_state.current_management_status,
-                current_management_status = excluded.current_management_status,
-                previous_thesis_status = open_trade_management_state.current_thesis_status,
-                current_thesis_status = excluded.current_thesis_status,
-                concise_reason = excluded.concise_reason,
-                reason_code = excluded.reason_code,
-                next_trigger = excluded.next_trigger,
-                trigger_source = excluded.trigger_source,
-                last_evaluated_at = excluded.last_evaluated_at,
-                last_alert_sent_at = COALESCE(excluded.last_alert_sent_at, open_trade_management_state.last_alert_sent_at),
-                last_alert_type = COALESCE(excluded.last_alert_type, open_trade_management_state.last_alert_type),
-                last_alert_priority = COALESCE(excluded.last_alert_priority, open_trade_management_state.last_alert_priority),
-                alert_count = excluded.alert_count,
-                last_alert_reason_code = COALESCE(excluded.last_alert_reason_code, open_trade_management_state.last_alert_reason_code),
-                last_underlying_price = excluded.last_underlying_price,
-                last_distance_to_short = excluded.last_distance_to_short,
-                last_distance_to_long = excluded.last_distance_to_long,
-                last_buffer_remaining_percent = excluded.last_buffer_remaining_percent
-            """,
-            (
-                record["trade_id"],
-                record["system_name"],
-                str(record["trade_mode"]).lower(),
-                record["status"],
-                previous_state.get("current_management_status"),
-                record["thesis_status"],
-                previous_state.get("current_thesis_status"),
-                record["reason"],
-                record["reason_code"],
-                record["next_trigger"],
-                record["trigger_source"],
-                now.isoformat(),
-                alert_outcome.get("sent_at"),
-                alert_outcome.get("alert_type"),
-                alert_outcome.get("priority"),
-                existing_alert_count + int(alert_outcome.get("sent_count") or (1 if alert_outcome.get("sent") else 0)),
-                record["reason_code"] if alert_outcome.get("sent") else previous_state.get("last_alert_reason_code"),
-                record.get("current_underlying_price"),
-                record.get("distance_to_short"),
-                record.get("distance_to_long"),
-                record.get("percent_buffer_remaining"),
-            ),
-        )
+    def _upsert_management_state(self, record: Dict[str, Any], previous_state: Dict[str, Any], alert_outcome: Dict[str, Any], now: datetime) -> None:
+        self.state_repository.upsert_management_state(record, previous_state, alert_outcome, now)
 
     def _load_open_trades(self) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
@@ -879,24 +749,16 @@ class OpenTradeManager:
         return rows
 
     def _load_runtime_settings(self) -> Dict[str, Any]:
-        with closing(self._connect()) as connection:
-            row = connection.execute(
-                "SELECT * FROM open_trade_management_runtime_settings WHERE singleton_id = 1"
-            ).fetchone()
-            return dict(row) if row else {"notifications_enabled": True}
+        return self.state_repository.load_runtime_settings()
 
-    def _load_trade(self, connection: sqlite3.Connection, trade_id: int) -> Dict[str, Any]:
-        row = connection.execute("SELECT * FROM trades WHERE id = ?", (trade_id,)).fetchone()
-        return dict(row) if row else {}
+    def _load_trade(self, trade_id: int) -> Dict[str, Any]:
+        return self.state_repository.load_trade(trade_id)
 
     def _load_management_states(self) -> Dict[int, Dict[str, Any]]:
-        with closing(self._connect()) as connection:
-            rows = connection.execute("SELECT * FROM open_trade_management_state").fetchall()
-            return {int(row["trade_id"]): dict(row) for row in rows}
+        return self.state_repository.load_management_states()
 
-    def _load_management_state(self, connection: sqlite3.Connection, trade_id: int) -> Dict[str, Any]:
-        row = connection.execute("SELECT * FROM open_trade_management_state WHERE trade_id = ?", (trade_id,)).fetchone()
-        return dict(row) if row else {}
+    def _load_management_state(self, trade_id: int) -> Dict[str, Any]:
+        return self.state_repository.load_management_state(trade_id)
 
     def _build_alert_state_payload(self, state: Dict[str, Any], trade: Dict[str, Any]) -> Dict[str, Any]:
         last_alert_sent_at = parse_datetime_value(state.get("last_alert_sent_at")) if state else None
@@ -1210,27 +1072,31 @@ class OpenTradeManager:
             "critical": bool(record.get("critical_alert")),
         }
 
+    def _alert_profile_label(self, record: Dict[str, Any]) -> str:
+        system_name = str(record.get("system_name") or "").strip().lower()
+        if system_name == "kairos":
+            pass_type = self._coerce_text(record.get("pass_type"), fallback="")
+            if pass_type:
+                return pass_type
+        return self._coerce_text(record.get("profile_label"), fallback="Unknown")
+
     def _send_morning_snapshot_if_due(
-        self,
-        connection: sqlite3.Connection,
-        records: List[Dict[str, Any]],
-        now: datetime,
-        runtime_settings: Dict[str, Any],
+        self, records: List[Dict[str, Any]], now: datetime, runtime_settings: Dict[str, Any]
     ) -> Dict[str, Any] | None:
         if not self._is_morning_snapshot_due(now, runtime_settings):
             return None
         if not records:
-            self._mark_runtime_setting(connection, "last_morning_snapshot_date", now.date().isoformat())
+            self._mark_runtime_setting("last_morning_snapshot_date", now.date().isoformat())
             return {"sent": False, "error": "", "priority": 0, "alert_type": "morning-snapshot", "sent_at": None}
         payload = self._build_open_positions_snapshot_payload(
             records,
             alert_type="morning-snapshot",
             reason_code="morning-snapshot",
         )
-        outcome = self._send_management_alert(connection, None, {"trade_id": 0, "trade_mode": "real", "system_name": "Delphi"}, payload, now)
+        outcome = self._send_management_alert(None, {"trade_id": 0, "trade_mode": "real", "system_name": "Delphi"}, payload, now)
         if outcome.get("sent"):
-            self._mark_runtime_setting(connection, "last_morning_snapshot_date", now.date().isoformat())
-            self._stamp_trade_alert_timestamps(connection, [int(item.get("trade_id") or 0) for item in records], outcome.get("sent_at"))
+            self._mark_runtime_setting("last_morning_snapshot_date", now.date().isoformat())
+            self._stamp_trade_alert_timestamps([int(item.get("trade_id") or 0) for item in records], outcome.get("sent_at"))
         return outcome
 
     def _build_open_positions_snapshot_payload(
@@ -1247,7 +1113,7 @@ class OpenTradeManager:
             body_blocks.append(
                 "\n".join(
                     [
-                        f"{record['system_name']} | {record['profile_label']} | {record['status']}",
+                        f"{record['system_name']} | {self._alert_profile_label(record)} | {record['status']}",
                         f"Dist: {self._format_points(record.get('distance_to_short'))} | EM: {record['current_live_expected_move_display']}",
                         f"{record['percent_credit_captured_display']} credit",
                     ]
@@ -1263,17 +1129,13 @@ class OpenTradeManager:
         }
 
     def _send_eod_summary_if_due(
-        self,
-        connection: sqlite3.Connection,
-        open_records: List[Dict[str, Any]],
-        now: datetime,
-        runtime_settings: Dict[str, Any],
+        self, open_records: List[Dict[str, Any]], now: datetime, runtime_settings: Dict[str, Any]
     ) -> Dict[str, Any] | None:
         if not self._is_eod_summary_due(now, runtime_settings):
             return None
         closed_today = self._load_closed_real_trades_for_date(now.date())
         if not closed_today and not open_records:
-            self._mark_runtime_setting(connection, "last_eod_summary_date", now.date().isoformat())
+            self._mark_runtime_setting("last_eod_summary_date", now.date().isoformat())
             return {"sent": False, "error": "", "priority": 0, "alert_type": "eod-summary", "sent_at": None}
         lines = ["Closed Today:"]
         for trade in closed_today:
@@ -1285,7 +1147,7 @@ class OpenTradeManager:
         critical = False
         for record in open_records:
             critical = critical or bool(record.get("critical_alert"))
-            lines.append(f"{record['system_name']} | {record['profile_label']}")
+            lines.append(f"{record['system_name']} | {self._alert_profile_label(record)}")
             lines.append(f"Dist: {self._format_points(record.get('distance_to_short'))} | EM: {record['current_live_expected_move_display']}")
         if not open_records:
             lines.append("None")
@@ -1297,26 +1159,29 @@ class OpenTradeManager:
             "reason_code": "eod-summary",
             "critical": critical,
         }
-        outcome = self._send_management_alert(connection, None, {"trade_id": 0, "trade_mode": "real", "system_name": "Delphi"}, payload, now)
+        if self.state_repository.has_matching_alert(
+            alert_type="eod-summary",
+            sent_on=now.date().isoformat(),
+            title=str(payload["title"]),
+            body=str(payload["message"]),
+        ):
+            self._mark_runtime_setting("last_eod_summary_date", now.date().isoformat())
+            return {"sent": False, "error": "", "priority": payload["priority"], "alert_type": "eod-summary", "sent_at": None}
+        outcome = self._send_management_alert(None, {"trade_id": 0, "trade_mode": "real", "system_name": "Delphi"}, payload, now)
         if outcome.get("sent"):
-            self._mark_runtime_setting(connection, "last_eod_summary_date", now.date().isoformat())
-            self._stamp_trade_alert_timestamps(connection, [int(item.get("trade_id") or 0) for item in open_records], outcome.get("sent_at"))
+            self._mark_runtime_setting("last_eod_summary_date", now.date().isoformat())
+            self._stamp_trade_alert_timestamps([int(item.get("trade_id") or 0) for item in open_records], outcome.get("sent_at"))
         return outcome
 
     def _send_management_alert(
-        self,
-        connection: sqlite3.Connection,
-        trade: Dict[str, Any] | None,
-        record: Dict[str, Any],
-        payload: Dict[str, Any],
-        now: datetime,
+        self, trade: Dict[str, Any] | None, record: Dict[str, Any], payload: Dict[str, Any], now: datetime
     ) -> Dict[str, Any]:
         title = str(payload.get("title") or "").strip()
         message = str(payload.get("message") or "").strip()
         priority = int(payload.get("priority") or 0)
         if payload.get("critical"):
             title = f"🔴 CRITICAL {title}"
-        result = self.pushover_service.send_notification(title=title, message=message, priority=priority)
+        result = self.notification_delivery.send_notification(title=title, message=message, priority=priority)
         if not result.get("ok"):
             return {
                 "sent": False,
@@ -1326,25 +1191,17 @@ class OpenTradeManager:
                 "sent_at": None,
             }
         sent_at = now.isoformat()
-        connection.execute(
-            """
-            INSERT INTO open_trade_management_alert_log (
-                trade_id, system_name, trade_mode, alert_type, alert_priority, alert_priority_label,
-                reason_code, title, body, sent_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                int((trade or {}).get("id") or record.get("trade_id") or 0),
-                str(record.get("system_name") or (trade or {}).get("system_name") or "Delphi"),
-                str(record.get("trade_mode") or (trade or {}).get("trade_mode") or "real").lower(),
-                str(payload.get("alert_type") or "management-alert"),
-                priority,
-                "High" if priority == 1 else "Normal",
-                payload.get("reason_code"),
-                title,
-                message,
-                sent_at,
-            ),
+        self.state_repository.record_alert(
+            trade_id=int((trade or {}).get("id") or record.get("trade_id") or 0),
+            system_name=str(record.get("system_name") or (trade or {}).get("system_name") or "Delphi"),
+            trade_mode=str(record.get("trade_mode") or (trade or {}).get("trade_mode") or "real").lower(),
+            alert_type=str(payload.get("alert_type") or "management-alert"),
+            alert_priority=priority,
+            alert_priority_label="High" if priority == 1 else "Normal",
+            reason_code=payload.get("reason_code"),
+            title=title,
+            body=message,
+            sent_at=sent_at,
         )
         return {
             "sent": True,
@@ -1355,46 +1212,20 @@ class OpenTradeManager:
         }
 
     def _update_trade_notification_state(
-        self,
-        connection: sqlite3.Connection,
-        *,
-        trade_id: int,
-        last_status: str,
-        last_action_sent: str,
-        last_alert_timestamp: str | None,
+        self, *, trade_id: int, last_status: str, last_action_sent: str, last_alert_timestamp: str | None
     ) -> None:
-        connection.execute(
-            """
-            UPDATE trades
-            SET last_status = ?,
-                last_action_sent = ?,
-                last_alert_timestamp = COALESCE(?, last_alert_timestamp),
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                last_status or None,
-                last_action_sent or None,
-                last_alert_timestamp,
-                current_timestamp(),
-                trade_id,
-            ),
+        self.state_repository.update_trade_notification_state(
+            trade_id=trade_id,
+            last_status=last_status,
+            last_action_sent=last_action_sent,
+            last_alert_timestamp=last_alert_timestamp,
         )
 
-    def _stamp_trade_alert_timestamps(self, connection: sqlite3.Connection, trade_ids: List[int], sent_at: str | None) -> None:
-        if not sent_at:
-            return
-        for trade_id in [item for item in trade_ids if item > 0]:
-            connection.execute(
-                "UPDATE trades SET last_alert_timestamp = ?, updated_at = ? WHERE id = ?",
-                (sent_at, current_timestamp(), trade_id),
-            )
+    def _stamp_trade_alert_timestamps(self, trade_ids: List[int], sent_at: str | None) -> None:
+        self.state_repository.stamp_trade_alert_timestamps(trade_ids, sent_at)
 
-    def _mark_runtime_setting(self, connection: sqlite3.Connection, column_name: str, value: str) -> None:
-        connection.execute(
-            f"UPDATE open_trade_management_runtime_settings SET {column_name} = ? WHERE singleton_id = 1",
-            (value,),
-        )
+    def _mark_runtime_setting(self, column_name: str, value: str) -> None:
+        self.state_repository.mark_runtime_setting(column_name, value)
 
     def _load_closed_real_trades_for_date(self, target_date: date) -> List[Dict[str, Any]]:
         trades = self.trade_store.list_trades("real")
@@ -1462,11 +1293,6 @@ class OpenTradeManager:
 
     def _coerce_trade_expiration(self, trade: Dict[str, Any]) -> date | None:
         return parse_date_value(trade.get("expiration_date"))
-
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
-        connection.row_factory = sqlite3.Row
-        return connection
 
     def _now(self) -> datetime:
         value = self.now_provider()

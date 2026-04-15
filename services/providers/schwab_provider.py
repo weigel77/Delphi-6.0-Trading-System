@@ -14,7 +14,13 @@ from config import AppConfig
 
 from ..calculations import calculate_percent_change, calculate_point_change
 from ..schwab_auth_service import SchwabAuthService
-from .base_provider import BaseMarketDataProvider, ProviderAuthRequiredError, ProviderError, ProviderNotImplementedError
+from .base_provider import (
+    BaseMarketDataProvider,
+    ProviderAuthRequiredError,
+    ProviderError,
+    ProviderNotImplementedError,
+    ProviderReauthenticationRequiredError,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -71,16 +77,10 @@ class SchwabProvider(BaseMarketDataProvider):
     def get_latest_snapshot(self, symbol: str) -> Dict[str, Any]:
         """Fetch the latest quote snapshot from the Schwab quotes endpoint."""
         schwab_symbol = self._map_quote_symbol(symbol)
-        access_token = self.auth_service.get_valid_access_token()
-        response = requests.get(
+        response = self._authorized_get(
             f"{self.config.schwab_base_url}/quotes",
             params={"symbols": schwab_symbol},
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=30,
         )
-
-        if response.status_code == 401:
-            raise ProviderAuthRequiredError("Click login to connect to Schwab")
         if response.status_code >= 400:
             raise ProviderError(f"Unable to retrieve Schwab quotes right now ({response.status_code}).")
 
@@ -145,7 +145,6 @@ class SchwabProvider(BaseMarketDataProvider):
 
     def get_historical_range(self, symbol: str, start_date: date, end_date: date) -> pd.DataFrame:
         """Fetch historical daily price data from the Schwab price-history endpoint."""
-        access_token = self.auth_service.get_valid_access_token()
         endpoint = f"{self.config.schwab_base_url}/pricehistory"
 
         last_failure: ProviderError | None = None
@@ -160,15 +159,7 @@ class SchwabProvider(BaseMarketDataProvider):
                 params,
             )
 
-            response = requests.get(
-                endpoint,
-                params=params,
-                headers={"Authorization": f"Bearer {access_token}"},
-                timeout=30,
-            )
-
-            if response.status_code == 401:
-                raise ProviderAuthRequiredError("Click login to connect to Schwab")
+            response = self._authorized_get(endpoint, params=params)
 
             if response.status_code >= 400:
                 safe_message = self._extract_safe_error_message(response)
@@ -234,7 +225,6 @@ class SchwabProvider(BaseMarketDataProvider):
 
     def get_intraday_candles_for_date(self, symbol: str, target_date: date, interval_minutes: int = 5) -> pd.DataFrame:
         """Fetch intraday candles for the requested trading date."""
-        access_token = self.auth_service.get_valid_access_token()
         endpoint = f"{self.config.schwab_base_url}/pricehistory"
         session_window = self._get_session_window_for_date(target_date)
 
@@ -253,15 +243,7 @@ class SchwabProvider(BaseMarketDataProvider):
                 params,
             )
 
-            response = requests.get(
-                endpoint,
-                params=params,
-                headers={"Authorization": f"Bearer {access_token}"},
-                timeout=30,
-            )
-
-            if response.status_code == 401:
-                raise ProviderAuthRequiredError("Click login to connect to Schwab")
+            response = self._authorized_get(endpoint, params=params)
 
             if response.status_code >= 400:
                 safe_message = self._extract_safe_error_message(response)
@@ -310,7 +292,6 @@ class SchwabProvider(BaseMarketDataProvider):
         if target_date is None:
             raise ProviderError("Apollo option-chain retrieval requires an explicit target expiration date.")
 
-        access_token = self.auth_service.get_valid_access_token()
         endpoint = f"{self.config.schwab_base_url}/chains"
         final_symbol = self._resolve_option_chain_symbol(symbol)
         diagnostics: Dict[str, Any] = {
@@ -338,15 +319,7 @@ class SchwabProvider(BaseMarketDataProvider):
                 params,
             )
 
-            response = requests.get(
-                endpoint,
-                params=params,
-                headers={"Authorization": f"Bearer {access_token}"},
-                timeout=30,
-            )
-
-            if response.status_code == 401:
-                raise ProviderAuthRequiredError("Click login to connect to Schwab")
+            response = self._authorized_get(endpoint, params=params)
 
             if response.status_code >= 400:
                 failure_detail = self._build_option_chain_failure_detail(response)
@@ -401,18 +374,12 @@ class SchwabProvider(BaseMarketDataProvider):
 
     def debug_option_chain_request(self, symbol: str, target_date: date, minimal_only: bool = True) -> Dict[str, Any]:
         """Run a raw Schwab option-chain request for debugging and return diagnostics."""
-        access_token = self.auth_service.get_valid_access_token()
         endpoint = f"{self.config.schwab_base_url}/chains"
         final_symbol = self._resolve_option_chain_symbol(symbol)
         attempts = self._build_option_chain_attempts(symbol=final_symbol, expiration_date=target_date)
         attempt_label, params = attempts[0] if minimal_only else attempts[0]
         print("SCHWAB OPTION CHAIN PARAMS:", params)
-        response = requests.get(
-            endpoint,
-            params=params,
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=30,
-        )
+        response = self._authorized_get(endpoint, params=params)
         try:
             payload = response.json()
         except Exception:
@@ -597,6 +564,34 @@ class SchwabProvider(BaseMarketDataProvider):
             "endDate": int(end_at.timestamp() * 1000),
             "needExtendedHoursData": "false",
         }
+
+    def _authorized_get(self, endpoint: str, *, params: Dict[str, Any]) -> requests.Response:
+        access_token = self.auth_service.get_valid_access_token()
+        response = requests.get(
+            endpoint,
+            params=params,
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=30,
+        )
+        if response.status_code != 401:
+            return response
+
+        LOGGER.warning(
+            "Schwab request unauthorized; attempting token refresh | endpoint=%s | params=%s",
+            endpoint,
+            params,
+        )
+        access_token = self.auth_service.recover_from_unauthorized_response()
+        response = requests.get(
+            endpoint,
+            params=params,
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=30,
+        )
+        if response.status_code == 401:
+            self.auth_service.clear_tokens()
+            raise ProviderReauthenticationRequiredError("Schwab authentication expired. Please log in again.")
+        return response
 
     @staticmethod
     def _extract_quote_container(payload: Dict[str, Any], symbol: str) -> Dict[str, Any]:

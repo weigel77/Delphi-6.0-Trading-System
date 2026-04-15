@@ -13,7 +13,7 @@ import requests
 
 from config import AppConfig
 
-from .token_store import JsonTokenStore
+from .repositories.token_repository import JsonFileTokenRepository, TokenRepository
 from .providers.base_provider import (
     ProviderAuthRequiredError,
     ProviderConfigurationError,
@@ -27,9 +27,9 @@ LOGGER = logging.getLogger(__name__)
 class SchwabAuthService:
     """Manage Schwab OAuth URLs, token exchange, and refresh operations."""
 
-    def __init__(self, config: AppConfig, token_store: Optional[JsonTokenStore] = None) -> None:
+    def __init__(self, config: AppConfig, token_store: Optional[TokenRepository] = None) -> None:
         self.config = config
-        self.token_store = token_store or JsonTokenStore(config.schwab_token_path)
+        self.token_store = token_store or JsonFileTokenRepository(config.schwab_token_path)
 
     def build_state_token(self) -> str:
         """Return a random state token for the OAuth redirect."""
@@ -104,6 +104,26 @@ class SchwabAuthService:
         if not access_token:
             raise ProviderAuthRequiredError("Click login to connect to Schwab")
 
+        return access_token
+
+    def recover_from_unauthorized_response(self) -> str:
+        """Refresh and return a new access token after an upstream 401 response."""
+        try:
+            tokens = self.refresh_access_token()
+        except ProviderAuthRequiredError:
+            self.token_store.clear()
+            raise
+        except ProviderReauthenticationRequiredError:
+            self.token_store.clear()
+            raise
+        except Exception as exc:
+            self.token_store.clear()
+            raise ProviderReauthenticationRequiredError("Schwab authentication expired. Please log in again.") from exc
+
+        access_token = str(tokens.get("access_token") or "").strip()
+        if not access_token:
+            self.token_store.clear()
+            raise ProviderReauthenticationRequiredError("Schwab authentication expired. Please log in again.")
         return access_token
 
     def is_authenticated(self) -> bool:

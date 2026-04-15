@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional
 
+from .repositories.trade_repository import TradeRepository
 from .trade_store import (
-    TradeStore,
     build_learning_trade_fields,
     normalize_macro_flag,
     normalize_structure_label,
@@ -39,7 +39,7 @@ class PerformanceSummary:
 class PerformanceEngine:
     """Load trades, derive features, and build grouped performance summaries."""
 
-    def __init__(self, store: TradeStore) -> None:
+    def __init__(self, store: TradeRepository) -> None:
         self.store = store
 
     def load_trades(self) -> list[Dict[str, Any]]:

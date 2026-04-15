@@ -441,8 +441,8 @@ class KairosRoutesTest(unittest.TestCase):
         activate_payload = activate_response.get_json()
 
         self.assertEqual(activate_response.status_code, 200)
-        self.assertEqual(activate_payload["current_state"], "Not Eligible")
-        self.assertEqual(activate_payload["latest_scan"]["vix_status"], "Not Eligible")
+        self.assertEqual(activate_payload["current_state"], "Watching")
+        self.assertEqual(activate_payload["latest_scan"]["vix_status"], "Caution")
         self.assertEqual(activate_payload["scan_interval_seconds"], 30)
         self.assertTrue(activate_payload["latest_scan"]["is_simulated"])
 
@@ -1181,7 +1181,7 @@ class KairosRoutesTest(unittest.TestCase):
                 "css_class": "apollo-risk-reference-barrier",
                 "short_label": "Window Boundary",
                 "value_label": "6,712.50",
-                "tooltip": "Kairos window boundary",
+                "tooltip": "Prime boundary",
             },
         ]
         payload["live_workspace"]["candidate_cards"] = [
@@ -1394,6 +1394,27 @@ class KairosRoutesTest(unittest.TestCase):
         self.assertEqual(take_payload["simulation_runner"]["status"], "Running")
         self.assertIsNotNone(take_payload["simulation_runner"]["active_trade_lock_in"])
         self.assertIn("Override", take_payload["status_note"])
+
+    def test_sim_runner_best_trade_partial_response_omits_static_controls(self):
+        self.kairos_sim_service.now_provider = lambda: datetime(2026, 4, 4, 10, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+        start_response = self.client.post(
+            "/kairos/sim/runner/start",
+            json={"scenario_key": "bullish-recovery-day", "pause_events": ["setup-forming"]},
+        )
+        self.assertEqual(start_response.status_code, 200)
+
+        pause_payload = self._advance_sim_until_not_running(start_response.get_json())
+        self.assertEqual(pause_payload["simulation_runner"]["pause_reason"], "pause_on_setup-forming")
+
+        best_trade_response = self.client.post("/kairos/sim/runner/best-trade?response=runner")
+        best_trade_payload = best_trade_response.get_json()
+
+        self.assertEqual(best_trade_response.status_code, 200)
+        self.assertEqual(best_trade_payload["partial_response"], "runner")
+        self.assertIn("simulation_runner", best_trade_payload)
+        self.assertIn("bar_map", best_trade_payload)
+        self.assertNotIn("simulation_controls", best_trade_payload)
 
     def test_completed_sim_is_not_treated_as_paused(self):
         self.kairos_sim_service.now_provider = lambda: datetime(2026, 4, 4, 10, 0, tzinfo=ZoneInfo("America/Chicago"))

@@ -8,6 +8,7 @@
 </head>
 <body>
     {% from '_delphi_header_macros.html' import render_delphi_header with context %}
+    {% set routes = delphi_routes if delphi_routes is defined and delphi_routes else {} %}
     <main class="page-shell">
         <section class="hero-card delphi-header-card delphi-shared-header delphi-header-card-subpage delphi-header-card-workspace">
             {{ render_delphi_header(
@@ -15,6 +16,7 @@
                 page_heading=page_heading|default('Research'),
                 page_copy=page_copy|default('Live and historical index lookup with Apollo structure review and provider-aware routing.'),
                 page_kicker=page_kicker|default(app_identity.page_kicker),
+                page_version=app_identity.version_label,
                 page_meta='Delphi research and workflow command surface.',
                 menu_status=menu_status,
             ) }}
@@ -41,7 +43,7 @@
                     </div>
                 </div>
 
-                <form method="post" action="{{ url_for('research') }}" class="lookup-form hero-lookup-form">
+                <form method="post" action="{{ routes.get('research', url_for('research')) }}" class="lookup-form hero-lookup-form">
                     <div class="hero-toolbar full-width">
                         <div class="hero-command-row">
                             <div class="field-group hero-query-group">
@@ -61,7 +63,7 @@
 
                             <div class="actions hero-actions">
                                 <button type="submit">Run Lookup</button>
-                                <a class="button-link button-link-secondary" href="{{ url_for('run_apollo', autorun=1) }}">Run Apollo</a>
+                                <a class="button-link button-link-secondary" href="{{ routes.get('apollo', url_for('run_apollo', autorun=1)) }}">Run Apollo</a>
                             </div>
                         </div>
                     </div>
@@ -113,6 +115,14 @@
                     </div>
                 </div>
             </section>
+
+            {% if apollo_result and hosted_mode and apollo_result.hosted_result_heading %}
+                <section class="panel">
+                    <div class="message message-{{ apollo_result.hosted_result_tone|default('info') }} message-inline">
+                        <strong>{{ apollo_result.hosted_result_heading }}</strong> {{ apollo_result.hosted_plain_english }}
+                    </div>
+                </section>
+            {% endif %}
         {% endif %}
 
         {% if result %}
@@ -239,11 +249,11 @@
 
                                 <details class="apollo-collapsible apollo-compact-panel apollo-notes-panel">
                                     <summary class="apollo-collapsible-summary">
-                                        <span>Notes and diagnostics</span>
+                                        <span>{{ 'Decision notes' if hosted_mode else 'Notes and diagnostics' }}</span>
                                         <span class="apollo-collapsible-meta">{{ apollo_result.reasons|length }} notes</span>
                                     </summary>
                                     <div class="apollo-collapsible-content">
-                                        {% if apollo_result.structure_attempted_sources %}
+                                        {% if apollo_result.structure_attempted_sources and not hosted_mode %}
                                             <div class="apollo-attempt-list">
                                                 {% for attempt in apollo_result.structure_attempted_sources %}
                                                     <div class="apollo-attempt-item">
@@ -271,11 +281,11 @@
 
                                         {% if apollo_result.apollo_trigger_note %}
                                             <div class="apollo-control-grid apollo-fallback-grid">
-                                                <div class="apollo-control-chip apollo-control-chip-wide"><span class="summary-label">Dev trigger</span><strong>{{ apollo_result.apollo_trigger_note }}</strong></div>
+                                                <div class="apollo-control-chip apollo-control-chip-wide"><span class="summary-label">Run source</span><strong>{{ apollo_result.apollo_trigger_note }}</strong></div>
                                             </div>
                                         {% endif %}
 
-                                        {% if apollo_result.structure_source_used != apollo_result.structure_preferred_source %}
+                                        {% if apollo_result.structure_source_used != apollo_result.structure_preferred_source and not hosted_mode %}
                                             <div class="apollo-control-grid apollo-fallback-grid">
                                                 <div class="apollo-control-chip"><span class="summary-label">Preferred source</span><strong>{{ apollo_result.structure_preferred_source }}</strong></div>
                                                 <div class="apollo-control-chip"><span class="summary-label">Source used</span><strong>{{ apollo_result.structure_source_used }}</strong></div>
@@ -378,6 +388,7 @@
                         </details>
                     </div>
 
+                    {% if not hosted_mode %}
                     <details class="apollo-collapsible apollo-macro-details">
                         <summary class="apollo-collapsible-summary">
                             <span>Macro diagnostics</span>
@@ -418,6 +429,7 @@
                             {% endif %}
                         </div>
                     </details>
+                    {% endif %}
 
                     </section>
                 </div>
@@ -435,7 +447,9 @@
                                 <p class="apollo-gate-kicker">Apollo Gate 3 -- Engine</p>
                                 <h4>Risk / Credit Map</h4>
                             </div>
-                            <p class="subtle">Linear x-axis spacing shows true strike distance from SPX, barriers, and each recommended spread.</p>
+                            {% if not hosted_mode %}
+                                <p class="subtle">Linear x-axis spacing shows true strike distance from SPX, barriers, and each recommended spread.</p>
+                            {% endif %}
                         </div>
                         {% set credit_map = apollo_result.get('trade_candidates_credit_map', {'available': False, 'guides': [], 'markers': []}) %}
                         {% if credit_map.available %}
@@ -545,21 +559,23 @@
                                             </div>
                                             <div class="apollo-candidate-stamp-row">
                                                 <div class="apollo-candidate-stamp">
-                                                    <span>Pass Type</span>
-                                                    <strong>{{ candidate.pass_type_label }}</strong>
-                                                </div>
-                                                <div class="apollo-candidate-stamp">
-                                                    <span>Target EM</span>
-                                                    <strong>{{ candidate.target_em }}</strong>
-                                                </div>
-                                                <div class="apollo-candidate-stamp">
                                                     <span>Credit Efficiency</span>
                                                     <strong>{{ candidate.credit_efficiency }}</strong>
                                                 </div>
-                                                <div class="apollo-candidate-stamp">
-                                                    <span>{{ 'Pricing Basis' if candidate.mode_key == 'fortress' else 'Fallback' }}</span>
-                                                    <strong>{{ candidate.pricing_basis if candidate.mode_key == 'fortress' else candidate.fallback_used }}</strong>
-                                                </div>
+                                                {% if not hosted_mode %}
+                                                    <div class="apollo-candidate-stamp">
+                                                        <span>Pass Type</span>
+                                                        <strong>{{ candidate.pass_type_label }}</strong>
+                                                    </div>
+                                                    <div class="apollo-candidate-stamp">
+                                                        <span>Target EM</span>
+                                                        <strong>{{ candidate.target_em }}</strong>
+                                                    </div>
+                                                    <div class="apollo-candidate-stamp">
+                                                        <span>{{ 'Pricing Basis' if candidate.mode_key == 'fortress' else 'Fallback' }}</span>
+                                                        <strong>{{ candidate.pricing_basis if candidate.mode_key == 'fortress' else candidate.fallback_used }}</strong>
+                                                    </div>
+                                                {% endif %}
                                             </div>
                                         </div>
                                     </div>
@@ -569,10 +585,12 @@
                                             <span class="summary-label apollo-metric-label"><span class="apollo-metric-icon" aria-hidden="true"><svg viewBox="0 0 24 24" role="presentation"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9 12h6M12 9v6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>Premium Received</span>
                                             <strong>{{ candidate.total_premium }}</strong>
                                             <p class="apollo-probability-text">Prob. Premium: {{ candidate.premium_probability }}</p>
-                                            {% if candidate.available %}
-                                                <p class="subtle">{{ candidate.premium_per_contract }} per contract across {{ candidate.recommended_contract_size }} contracts</p>
-                                            {% else %}
-                                                <p class="subtle">No premium is taken because the setup was rejected</p>
+                                            {% if not hosted_mode %}
+                                                {% if candidate.available %}
+                                                    <p class="subtle">{{ candidate.premium_per_contract }} per contract across {{ candidate.recommended_contract_size }} contracts</p>
+                                                {% else %}
+                                                    <p class="subtle">No premium is taken because the setup was rejected</p>
+                                                {% endif %}
                                             {% endif %}
                                         </div>
                                         <div class="apollo-mini-card apollo-mini-card-highlight apollo-mini-card-highlight-routine">
@@ -584,10 +602,12 @@
                                             </span>
                                             <strong>{{ candidate.routine_loss }}</strong>
                                             <p class="apollo-probability-text">Prob. Routine: {{ candidate.routine_probability }}</p>
-                                            {% if candidate.available %}
-                                                <p class="subtle">{{ candidate.loss_model_source }} · avg ROI {{ candidate.routine_loss_percentage }} · n={{ candidate.routine_loss_count }}</p>
-                                            {% else %}
-                                                <p class="subtle">Illustrative routine-loss bucket if the rejected setup had been taken</p>
+                                            {% if not hosted_mode %}
+                                                {% if candidate.available %}
+                                                    <p class="subtle">{{ candidate.loss_model_source }} · avg ROI {{ candidate.routine_loss_percentage }} · n={{ candidate.routine_loss_count }}</p>
+                                                {% else %}
+                                                    <p class="subtle">Illustrative routine-loss bucket if the rejected setup had been taken</p>
+                                                {% endif %}
                                             {% endif %}
                                         </div>
                                         <div class="apollo-mini-card apollo-mini-card-highlight apollo-mini-card-highlight-tail apollo-mini-card-wide">
@@ -599,12 +619,16 @@
                                             </span>
                                             <strong>{{ candidate.black_swan_loss }}</strong>
                                             <p class="apollo-probability-text">Prob. Tail: {{ candidate.tail_probability }}</p>
-                                            <p class="subtle">{{ candidate.loss_model_source }} · avg ROI {{ candidate.black_swan_loss_percentage }} · n={{ candidate.black_swan_loss_count }}</p>
+                                            {% if not hosted_mode %}
+                                                <p class="subtle">{{ candidate.loss_model_source }} · avg ROI {{ candidate.black_swan_loss_percentage }} · n={{ candidate.black_swan_loss_count }}</p>
+                                            {% endif %}
                                             <div class="apollo-tail-nested-metric">
                                                 <p class="apollo-tail-nested-row"><span>Max Risk</span><strong>{{ candidate.max_theoretical_risk }}</strong></p>
                                                 <p class="apollo-tail-nested-row"><span>Credit Efficiency</span><strong>{{ candidate.credit_efficiency }}</strong></p>
                                                 <p class="apollo-tail-nested-row"><span>Prob. Max</span><strong>{{ candidate.max_probability }}</strong></p>
-                                                <p class="subtle apollo-tail-nested-note">Theoretical reference · Per contract {{ candidate.max_loss_per_contract }}</p>
+                                                {% if not hosted_mode %}
+                                                    <p class="subtle apollo-tail-nested-note">Theoretical reference · Per contract {{ candidate.max_loss_per_contract }}</p>
+                                                {% endif %}
                                             </div>
                                         </div>
                                     </div>
@@ -617,14 +641,14 @@
 
                                     {% if candidate.available %}
                                         <div class="actions apollo-candidate-actions">
-                                            <form method="post" action="{{ url_for('apollo_prefill_candidate') }}" class="apollo-transfer-form" onsubmit="this.querySelectorAll('button').forEach((button) => { button.disabled = true; });">
+                                            <form method="post" action="{% if hosted_mode %}{{ hosted_apollo_prefill_url }}{% else %}{{ url_for('apollo_prefill_candidate') }}{% endif %}" class="apollo-transfer-form" onsubmit="this.querySelectorAll('button').forEach((button) => { button.disabled = true; });">
                                                 <input type="hidden" name="target_mode" value="real">
                                                 {% for key, value in candidate.prefill_fields.items() %}
                                                     <input type="hidden" name="{{ key }}" value="{{ value }}">
                                                 {% endfor %}
                                                 <button type="submit">Send to Real Trades</button>
                                             </form>
-                                            <form method="post" action="{{ url_for('apollo_prefill_candidate') }}" class="apollo-transfer-form" onsubmit="this.querySelectorAll('button').forEach((button) => { button.disabled = true; });">
+                                            <form method="post" action="{% if hosted_mode %}{{ hosted_apollo_prefill_url }}{% else %}{{ url_for('apollo_prefill_candidate') }}{% endif %}" class="apollo-transfer-form" onsubmit="this.querySelectorAll('button').forEach((button) => { button.disabled = true; });">
                                                 <input type="hidden" name="target_mode" value="simulated">
                                                 {% for key, value in candidate.prefill_fields.items() %}
                                                     <input type="hidden" name="{{ key }}" value="{{ value }}">
@@ -654,17 +678,19 @@
                                         </details>
                                     </div>
 
-                                    <details class="apollo-inline-details">
-                                        <summary class="apollo-inline-summary">Card diagnostics</summary>
-                                        <div class="apollo-candidate-section">
-                                            <ul class="apollo-detail-list apollo-detail-list-compact apollo-detail-list-tight">
-                                                {% for item in candidate.diagnostics %}
-                                                    <li>{{ item }}</li>
-                                                {% endfor %}
-                                            </ul>
-                                            <p class="subtle apollo-diagnostics-note">Probabilities are delta-based approximations, not historical forecasts.</p>
-                                        </div>
-                                    </details>
+                                    {% if not hosted_mode %}
+                                        <details class="apollo-inline-details">
+                                            <summary class="apollo-inline-summary">Card diagnostics</summary>
+                                            <div class="apollo-candidate-section">
+                                                <ul class="apollo-detail-list apollo-detail-list-compact apollo-detail-list-tight">
+                                                    {% for item in candidate.diagnostics %}
+                                                        <li>{{ item }}</li>
+                                                    {% endfor %}
+                                                </ul>
+                                                <p class="subtle apollo-diagnostics-note">Probabilities are delta-based approximations, not historical forecasts.</p>
+                                            </div>
+                                        </details>
+                                    {% endif %}
                                 </article>
                             {% endfor %}
                         </div>
@@ -672,6 +698,7 @@
                         <p class="subtle">No Gate 3 spread passed the current Apollo filters for this next-market-day SPX expiration.</p>
                     {% endif %}
 
+                    {% if not hosted_mode %}
                     <details class="apollo-collapsible apollo-compact-panel apollo-macro-details">
                         <summary class="apollo-collapsible-summary">
                             <span>Candidate diagnostics</span>
@@ -833,6 +860,7 @@
                             {% endif %}
                         </div>
                     </details>
+                    {% endif %}
                 </section>
             </section>
         {% endif %}
