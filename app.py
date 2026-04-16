@@ -2,24 +2,24 @@
 
 from __future__ import annotations
 
-import atexit
 import logging
+import copy
 import json
+import re
+import secrets
+import time
+import os
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from logging.handlers import RotatingFileHandler
-from threading import Timer
 from typing import Any, Dict, Optional
-from urllib.parse import urlparse
-from uuid import uuid4
 from zoneinfo import ZoneInfo
-import webbrowser
 
 import pandas as pd
-from flask import Flask, abort, current_app, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, abort, current_app, g, has_app_context, has_request_context, jsonify, redirect, render_template, request, send_file, session, url_for
 
-from config import get_app_config
+from config import AppConfig, get_app_config
 from services import (
     ApolloService,
     ExportService,
@@ -33,8 +33,33 @@ from services import (
     PerformanceEngine,
     PushoverService,
 )
-from services.performance_dashboard_service import PERFORMANCE_FILTER_GROUPS
-from services.kairos_scenario_repository import KairosScenarioRepository, get_persistent_data_dir
+from services.performance_dashboard_service import PERFORMANCE_FILTER_GROUPS, build_dashboard_payload
+from services.repositories.apollo_snapshot_repository import ApolloSnapshotRepository
+from services.repositories.hosted_runtime_state_repository import SupabaseHostedRuntimeStateRepository, SupabaseImportPreviewRepository
+from services.repositories.import_preview_repository import FileSystemImportPreviewRepository, ImportPreviewRepository
+from services.repositories.kairos_snapshot_repository import KairosSnapshotRepository
+from services.repositories.scenario_repository import SupabaseKairosScenarioRepository
+from services.repositories.trade_repository import TradeRepository
+from services.delphi4_sync_service import (
+    SYNC_STATUS_OBJECT_TYPE,
+    load_last_successful_sync_timestamp,
+    resolve_delphi4_source_paths,
+    run_incremental_delphi4_sync,
+)
+from services.runtime.auth_composition import HostedSupabaseAuthComposer, LocalAuthComposer
+from services.runtime.host_infrastructure import select_host_infrastructure_assembler
+from services.runtime.hosted_auth import HostedAuthConfig, HostedSessionAuthenticator, NoopHostedSessionAuthenticator, SupabaseEmailPasswordAuthenticator
+from services.runtime.hosted_composition import select_runtime_service_composer
+from services.runtime.private_access import AuthenticationRequiredError, PrivateAccessDeniedError, RequestIdentity, RequestIdentityResolver, PrivateAccessGate, SessionInvalidator, anonymous_request_identity
+from services.runtime.supabase_integration import SupabaseRequestError
+from services.runtime.launch import LaunchBehavior, WebBrowserLaunchBehavior
+from services.runtime.lifecycle import LocalRuntimeLifecycleCoordinator, RuntimeComponent, RuntimeLifecycleCoordinator
+from services.runtime.notifications import PushoverNotificationDelivery
+from services.runtime.provider_composition import LocalProviderComposer
+from services.runtime.profile import RuntimeProfile, select_runtime_profile
+from services.runtime.scheduler import ThreadingTimerScheduler
+from services.runtime.service_composition import RuntimeServiceComposer
+from services.runtime.workflow_state import FlaskSessionWorkflowState, WorkflowStateStore
 from services.trade_importer import parse_trade_import
 from services.trade_store import (
     DEFAULT_CANDIDATE_PROFILE,
@@ -48,6 +73,7 @@ from services.trade_store import (
     normalize_candidate_profile,
     normalize_expected_move_source,
     resolve_trade_credit_model,
+    resolve_trade_candidate_profile,
     resolve_trade_distance,
     resolve_trade_expected_move,
     summarize_trade_close_events,
@@ -60,6 +86,24 @@ CHICAGO_TZ = ZoneInfo(APP_CONFIG.app_timezone)
 APP_HOST = APP_CONFIG.app_host
 APP_PORT = APP_CONFIG.app_port
 LOCAL_DEV_HOSTS = {"127.0.0.1", "localhost"}
+HOSTED_SESSION_USER_ID_KEY = "hosted_user_id"
+HOSTED_SESSION_EMAIL_KEY = "hosted_user_email"
+HOSTED_SESSION_DISPLAY_NAME_KEY = "hosted_user_display_name"
+HOSTED_LOCAL_BROWSER_SESSION_COOKIE = "delphi_hosted_local_session"
+HOSTED_PAYLOAD_CACHE_EXTENSION_KEY = "hosted_payload_cache"
+HOSTED_DELPHI4_SYNC_RESULT_KEY = "hosted_delphi4_sync_result"
+HOSTED_PERFORMANCE_CACHE_SECONDS = 8
+HOSTED_OPEN_TRADES_CACHE_SECONDS = 8
+HOSTED_APOLLO_SNAPSHOT_CACHE_SECONDS = 5
+HOSTED_APOLLO_AUTORUN_CACHE_SECONDS = 45
+HOSTED_KAIROS_CACHE_SECONDS = 10
+HOSTED_SURFACE_REQUIRED_TABLES = {
+    "performance": ("journal_trades", "performance_metrics"),
+    "journal": ("journal_trades", "journal_trade_close_events"),
+    "manage-trades": ("journal_trades", "active_trades", "management_runtime_settings"),
+}
+HOSTED_LOCAL_DEBUG_EMAIL = "copilot-hosted-debug@example.com"
+LOCALHOST_DEV_CERT_BASENAME = "localhost+2"
 
 
 @dataclass(frozen=True)
@@ -88,6 +132,18 @@ class ValidationError(Exception):
     """Raised when the incoming form data is invalid."""
 
 
+class _HostedEmptyTradeStore:
+    @property
+    def database_path(self) -> str:
+        return ""
+
+    def list_trades(self, trade_mode: str) -> list[Dict[str, Any]]:
+        return []
+
+    def summarize(self, trade_mode: str) -> Dict[str, Any]:
+        return build_empty_trade_summary()
+
+
 QUERY_DEFINITIONS = [
     QueryDefinition("latest_spx", "Latest SPX data", "latest", "^GSPC", "SPX", "none"),
     QueryDefinition("spx_close_range", "SPX closing values for a date range", "range", "^GSPC", "SPX", "range"),
@@ -104,7 +160,7 @@ TRADE_MODE_DESCRIPTIONS = {
     "simulated": "Persistent paper-trade log for simulated execution review.",
 }
 TRADE_STATUS_OPTIONS = ["open", "closed", "expired", "cancelled"]
-TRADE_PROFILE_OPTIONS = ["Legacy", "Aggressive", "Fortress", "Standard"]
+TRADE_PROFILE_OPTIONS = ["Legacy", "Aggressive", "Fortress", "Standard", "Prime", "Subprime"]
 TRADE_OPTION_TYPE_OPTIONS = ["Put Credit Spread", "Call Credit Spread"]
 TRADE_SYSTEM_OPTIONS = ["Apollo", "Kairos", "Aegis"]
 TRADE_JOURNAL_OPTIONS = [JOURNAL_NAME_DEFAULT]
@@ -163,7 +219,7 @@ TRADE_FORM_FIELDS = [
 ]
 TRADE_FILTER_GROUPS = {
     "system": ["Apollo", "Kairos", "Aegis"],
-    "profile": ["Legacy", "Aggressive", "Fortress", "Standard"],
+    "profile": ["Legacy", "Aggressive", "Fortress", "Standard", "Prime", "Subprime"],
     "result": ["Win", "Loss", "Black Swan"],
 }
 
@@ -191,101 +247,204 @@ def mask_oauth_state(value: Any) -> str:
     return f"{text[:6]}...{text[-4:]}"
 
 
-def _build_kairos_replay_legacy_dirs(app: Flask) -> list[Path]:
-    storage_dir = Path(app.config["KAIROS_REPLAY_STORAGE_DIR"]).resolve()
-    legacy_candidates = [Path(app.instance_path) / "kairos_replays"]
-    if not app.config.get("TESTING"):
-        workspace_root = Path(__file__).resolve().parents[2]
-        legacy_candidates.extend(
-            [
-                workspace_root / "instance" / "kairos_replays",
-                get_persistent_data_dir() / "kairos_replays",
-            ]
-        )
-    legacy_dirs: list[Path] = []
-    seen_dirs: set[Path] = set()
-    for candidate in legacy_candidates:
-        resolved_candidate = candidate.resolve()
-        if resolved_candidate == storage_dir or resolved_candidate in seen_dirs:
-            continue
-        seen_dirs.add(resolved_candidate)
-        legacy_dirs.append(candidate)
-    return legacy_dirs
+def resolve_runtime_app_config(app: Flask, base_config: AppConfig) -> AppConfig:
+    """Merge Flask app overrides into the cached environment config for runtime composition."""
+    config_payload = asdict(base_config)
+    app_config_map = {
+        "RUNTIME_TARGET": "runtime_target",
+        "HOSTED_PUBLIC_BASE_URL": "hosted_public_base_url",
+        "SUPABASE_URL": "supabase_url",
+        "SUPABASE_PUBLISHABLE_KEY": "supabase_publishable_key",
+        "SUPABASE_SECRET_KEY": "supabase_secret_key",
+        "DELPHI_HOSTED_ALLOWED_EMAILS": "hosted_private_allowed_emails",
+        "DELPHI_HOSTED_ACCESS_TOKEN_COOKIE_NAME": "hosted_access_token_cookie_name",
+        "DELPHI_HOSTED_REFRESH_TOKEN_COOKIE_NAME": "hosted_refresh_token_cookie_name",
+        "APP_HOST": "app_host",
+        "APP_PORT": "app_port",
+        "APP_DISPLAY_NAME": "app_display_name",
+        "APP_PAGE_KICKER": "app_page_kicker",
+        "APP_VERSION_LABEL": "app_version_label",
+        "SESSION_COOKIE_NAME": "session_cookie_name",
+        "OAUTH_SESSION_NAMESPACE": "oauth_session_namespace",
+        "KAIROS_REPLAY_STORAGE_DIR": "kairos_replay_storage_dir",
+        "APP_LOG_PATH": "app_log_path",
+        "MARKET_DATA_PROVIDER": "market_data_provider",
+        "MARKET_DATA_LIVE_PROVIDER": "market_data_live_provider",
+        "VIX_HISTORICAL_PROVIDER": "vix_historical_provider",
+        "SPX_HISTORICAL_PROVIDER": "spx_historical_provider",
+        "APP_TIMEZONE": "app_timezone",
+        "APOLLO_ENABLED": "apollo_enabled",
+        "APOLLO_STRUCTURE_SOURCE": "apollo_structure_source",
+        "APOLLO_STRUCTURE_FALLBACK_SOURCE": "apollo_structure_fallback_source",
+        "APOLLO_OPTION_CHAIN_SOURCE": "apollo_option_chain_source",
+        "MACRO_PROVIDER": "macro_provider",
+        "APOLLO_ACCOUNT_VALUE": "apollo_account_value",
+        "APOLLO_ROUTINE_LOSS_MODIFIER": "apollo_routine_loss_modifier",
+        "FLASK_SECRET_KEY": "flask_secret_key",
+        "SCHWAB_CLIENT_ID": "schwab_client_id",
+        "SCHWAB_CLIENT_SECRET": "schwab_client_secret",
+        "SCHWAB_REDIRECT_URI": "schwab_redirect_uri",
+        "SCHWAB_AUTH_URL": "schwab_auth_url",
+        "SCHWAB_TOKEN_URL": "schwab_token_url",
+        "SCHWAB_BASE_URL": "schwab_base_url",
+        "SCHWAB_TOKEN_PATH": "schwab_token_path",
+        "SCHWAB_ES_PRIMARY_SYMBOL": "schwab_es_primary_symbol",
+        "SCHWAB_ES_FALLBACK_SYMBOL": "schwab_es_fallback_symbol",
+        "SCHWAB_SPX_OPTION_CHAIN_SYMBOL": "schwab_spx_option_chain_symbol",
+        "SCHWAB_HISTORY_PERIOD_TYPE": "schwab_history_period_type",
+        "SCHWAB_HISTORY_PERIOD": "schwab_history_period",
+        "SCHWAB_HISTORY_FREQUENCY_TYPE": "schwab_history_frequency_type",
+        "SCHWAB_HISTORY_FREQUENCY": "schwab_history_frequency",
+        "SCHWAB_HISTORY_NEED_EXTENDED_HOURS": "schwab_history_need_extended_hours",
+        "PUSHOVER_USER_KEY": "pushover_user_key",
+        "PUSHOVER_API_TOKEN": "pushover_api_token",
+    }
+    for app_key, config_key in app_config_map.items():
+        if app_key in app.config and app.config.get(app_key) is not None:
+            config_payload[config_key] = app.config.get(app_key)
+
+    runtime_target = str(config_payload.get("runtime_target") or "local").strip().lower() or "local"
+    hosted_public_base_url = str(config_payload.get("hosted_public_base_url") or "").strip()
+    if runtime_target == "hosted" and hosted_public_base_url:
+        config_payload["schwab_redirect_uri"] = f"{hosted_public_base_url.rstrip('/')}/callback"
+        config_payload["schwab_token_path"] = "supabase://hosted_runtime_state/schwab_oauth_token/default"
+
+    return AppConfig(**config_payload)
+
+
+def get_runtime_app_config(app: Optional[Flask] = None) -> AppConfig:
+    container = _resolve_flask_container(app)
+    runtime_config = container.extensions.get("runtime_app_config")
+    if runtime_config is None:
+        runtime_config = resolve_runtime_app_config(container, APP_CONFIG)
+        container.extensions["runtime_app_config"] = runtime_config
+    return runtime_config
 
 
 def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     """Application factory."""
     app = Flask(__name__, instance_relative_config=True)
-    app.secret_key = APP_CONFIG.flask_secret_key
-    app.config["SESSION_COOKIE_NAME"] = APP_CONFIG.session_cookie_name
-    app.config["OAUTH_SESSION_NAMESPACE"] = APP_CONFIG.oauth_session_namespace
-    app.config["APP_DISPLAY_NAME"] = APP_CONFIG.app_display_name
-    app.config["APP_PAGE_KICKER"] = APP_CONFIG.app_page_kicker
-    app.config["APP_VERSION_LABEL"] = APP_CONFIG.app_version_label
     if test_config:
-        app.config.update(test_config)
-    app.config.setdefault("TRADE_DATABASE", str(Path(app.instance_path) / "horme_trades.db"))
-    app.config.setdefault(
-        "KAIROS_REPLAY_STORAGE_DIR",
-        APP_CONFIG.kairos_replay_storage_dir or str(get_persistent_data_dir() / "kairos_replays"),
+        normalized_test_config = dict(test_config)
+        normalized_test_config.setdefault("RUNTIME_TARGET", "local")
+        app.config.update(normalized_test_config)
+    runtime_app_config = resolve_runtime_app_config(app, APP_CONFIG)
+    host_infrastructure_assembler = select_host_infrastructure_assembler(app, runtime_app_config)
+    host_infrastructure = host_infrastructure_assembler.assemble(app)
+    configure_logging(app, host_infrastructure)
+    runtime_app_config = resolve_runtime_app_config(app, APP_CONFIG)
+    runtime_profile = select_runtime_profile(app, runtime_app_config)
+    launch_behavior = WebBrowserLaunchBehavior()
+    lifecycle_coordinator = LocalRuntimeLifecycleCoordinator(
+        runtime_profile,
+        launch_behavior=launch_behavior,
+        scheduler=ThreadingTimerScheduler(),
+        shutdown_registrar=__import__("atexit").register,
     )
-    configure_logging(app)
-
-    market_data_service = MarketDataService(config=APP_CONFIG)
-    export_service = ExportService()
-    apollo_service = ApolloService(market_data_service=market_data_service, config=APP_CONFIG)
-    kairos_scenario_repository = KairosScenarioRepository(
-        app.config["KAIROS_REPLAY_STORAGE_DIR"],
-        legacy_storage_dirs=_build_kairos_replay_legacy_dirs(app),
+    if app.config.get("RUNTIME_TARGET") == "hosted":
+        supabase_context = host_infrastructure.supabase_context
+        supabase_integration = host_infrastructure.supabase_integration
+        if supabase_context is None or supabase_integration is None or not supabase_context.configured:
+            raise RuntimeError("Hosted Delphi 6.0 cannot start without configured Supabase infrastructure.")
+        auth_composer = HostedSupabaseAuthComposer(
+            runtime_app_config,
+            context=supabase_context,
+            gateway=supabase_integration.create_table_gateway(),
+        )
+    else:
+        auth_composer = LocalAuthComposer(runtime_app_config, token_path=host_infrastructure.storage.schwab_token_path)
+    provider_composer = LocalProviderComposer(runtime_app_config, auth_composer)
+    service_composer = select_runtime_service_composer(
+        app,
+        runtime_app_config,
+        host_infrastructure=host_infrastructure,
+        auth_composer=auth_composer,
+        provider_composer=provider_composer,
+        trade_prefill_key=APOLLO_PREFILL_SESSION_KEY,
+        trade_close_prefill_key=MANAGEMENT_CLOSE_PREFILL_SESSION_KEY,
+        trade_form_fields=TRADE_FORM_FIELDS,
+        trade_mode_resolver=resolve_trade_mode,
     )
-    trade_store = TradeStore(app.config["TRADE_DATABASE"], market_data_service=market_data_service)
-    kairos_live_service = KairosService(
-        market_data_service=market_data_service,
-        config=APP_CONFIG,
-        scenario_repository=kairos_scenario_repository,
-        pushover_service=PushoverService(config=APP_CONFIG),
-        trade_store=trade_store,
+    service_bundle = service_composer.compose(app)
+    market_data_service = service_bundle.market_data_service
+    export_service = service_bundle.export_service
+    apollo_service = service_bundle.apollo_service
+    apollo_snapshot_repository = service_bundle.apollo_snapshot_repository
+    kairos_snapshot_repository = service_bundle.kairos_snapshot_repository
+    runtime_scheduler = service_bundle.runtime_scheduler
+    kairos_scenario_repository_backend = service_bundle.kairos_scenario_repository_backend
+    kairos_scenario_repository = service_bundle.kairos_scenario_repository
+    trade_store_backend = service_bundle.trade_store_backend
+    trade_store = service_bundle.trade_store
+    import_preview_repository = service_bundle.import_preview_repository
+    workflow_state = service_bundle.workflow_state
+    request_identity_resolver = service_bundle.request_identity_resolver
+    private_access_gate = service_bundle.private_access_gate
+    session_invalidator = service_bundle.session_invalidator
+    hosted_auth_config = HostedAuthConfig.resolve(app, runtime_app_config, host_infrastructure.supabase_context)
+    hosted_session_authenticator = (
+        SupabaseEmailPasswordAuthenticator(
+            context=host_infrastructure.supabase_context,
+            auth_config=hosted_auth_config,
+            secure_cookies=runtime_profile.use_https,
+        )
+        if app.config.get("RUNTIME_TARGET") == "hosted"
+        else NoopHostedSessionAuthenticator()
     )
-    kairos_sim_service = KairosService(
-        market_data_service=market_data_service,
-        config=APP_CONFIG,
-        replay_storage_dir=app.config["KAIROS_REPLAY_STORAGE_DIR"],
-        scenario_repository=kairos_scenario_repository,
-        trade_store=trade_store,
-    )
-    pushover_service = kairos_live_service.pushover_service or PushoverService(config=APP_CONFIG)
-    kairos_sim_service.configure_runtime({"mode": "Simulation"})
-    performance_service = PerformanceDashboardService(trade_store)
-    performance_engine = PerformanceEngine(trade_store)
-    trade_store.initialize()
-    open_trade_manager = OpenTradeManager(
-        trade_store=trade_store,
-        market_data_service=market_data_service,
-        apollo_service=apollo_service,
-        options_chain_service=apollo_service.options_chain_service,
-        pushover_service=pushover_service,
-        kairos_service=kairos_live_service,
-        config=APP_CONFIG,
-    )
-    open_trade_manager.initialize()
+    pushover_service = service_bundle.pushover_service
+    notification_delivery = service_bundle.notification_delivery
+    kairos_live_service = service_bundle.kairos_live_service
+    kairos_sim_service = service_bundle.kairos_sim_service
+    performance_service = service_bundle.performance_service
+    performance_engine = service_bundle.performance_engine
+    open_trade_manager = service_bundle.open_trade_manager
+    app.extensions["auth_composer"] = auth_composer
+    app.extensions["host_infrastructure_assembler"] = host_infrastructure_assembler
+    app.extensions["host_infrastructure"] = host_infrastructure
+    app.extensions["runtime_app_config"] = runtime_app_config
+    app.extensions["supabase_integration"] = host_infrastructure.supabase_integration
+    app.extensions["supabase_context"] = host_infrastructure.supabase_context
+    app.extensions["provider_composer"] = provider_composer
+    app.extensions["service_composer"] = service_composer
+    app.extensions["service_bundle"] = service_bundle
     app.extensions["trade_store"] = trade_store
+    app.extensions["trade_store_backend"] = trade_store_backend
     app.extensions["market_data_service"] = market_data_service
     app.extensions["apollo_service"] = apollo_service
+    app.extensions["apollo_snapshot_repository"] = apollo_snapshot_repository
     app.extensions["kairos_service"] = kairos_live_service
     app.extensions["kairos_live_service"] = kairos_live_service
+    app.extensions["kairos_snapshot_repository"] = kairos_snapshot_repository
     app.extensions["kairos_sim_service"] = kairos_sim_service
     app.extensions["kairos_scenario_repository"] = kairos_scenario_repository
+    app.extensions["kairos_scenario_repository_backend"] = kairos_scenario_repository_backend
+    app.extensions["import_preview_repository"] = import_preview_repository
+    app.extensions["workflow_state"] = workflow_state
+    app.extensions["request_identity_resolver"] = request_identity_resolver
+    app.extensions["private_access_gate"] = private_access_gate
+    app.extensions["session_invalidator"] = session_invalidator
+    app.extensions["hosted_auth_config"] = hosted_auth_config
+    app.extensions["hosted_session_authenticator"] = hosted_session_authenticator
+    app.extensions["runtime_scheduler"] = runtime_scheduler
+    app.extensions["notification_delivery"] = notification_delivery
+    app.extensions["runtime_profile"] = runtime_profile
+    app.extensions["launch_behavior"] = launch_behavior
+    app.extensions["runtime_lifecycle"] = lifecycle_coordinator
     app.extensions["performance_service"] = performance_service
     app.extensions["performance_engine"] = performance_engine
     app.extensions["open_trade_manager"] = open_trade_manager
     app.extensions["pushover_service"] = pushover_service
-    app.extensions["oauth_session_keys"] = build_oauth_session_keys(APP_CONFIG.oauth_session_namespace)
+    app.extensions["oauth_session_keys"] = build_oauth_session_keys(app.config["OAUTH_SESSION_NAMESPACE"])
+    runtime_components = service_bundle.runtime_components
+    for component in runtime_components:
+        lifecycle_coordinator.register_component(component)
+    app.extensions["runtime_components"] = runtime_components
 
-    if not app.config.get("TESTING"):
-        open_trade_manager.start_background_monitoring()
-        atexit.register(open_trade_manager.shutdown)
-        atexit.register(kairos_live_service.shutdown)
-        atexit.register(kairos_sim_service.shutdown)
+    lifecycle_coordinator.start_runtime()
+
+    @app.before_request
+    def resolve_request_identity_for_runtime() -> None:
+        g.request_identity = get_request_identity_resolver(app).resolve_request_identity(request)
 
     @app.context_processor
     def inject_universal_header_status() -> Dict[str, Any]:
@@ -297,10 +456,13 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
                 "version_label": app.config["APP_VERSION_LABEL"],
                 "session_cookie_name": app.config["SESSION_COOKIE_NAME"],
             },
+            "request_identity": get_request_identity(),
         }
 
     @app.route("/", methods=["GET", "POST"])
     def index() -> str:
+        if app.config.get("RUNTIME_TARGET") == "hosted":
+            return redirect(url_for("hosted_shell_home"))
         if request.method == "POST":
             return app.view_functions["research"]()
 
@@ -321,6 +483,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         page_browser_title: str,
         page_heading: str,
         page_copy: str,
+        **template_context: Any,
     ) -> str:
         return render_template(
             "index.html",
@@ -337,10 +500,15 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             page_kicker="Delphi 2.0",
             page_heading=page_heading,
             page_copy=page_copy,
+            **template_context,
         )
 
     @app.route("/research", methods=["GET", "POST"])
     def research() -> str:
+        if app.config.get("RUNTIME_TARGET") == "hosted":
+            if request.method == "POST":
+                return app.view_functions["hosted_research"]()
+            return redirect(url_for("hosted_research"))
         form_data = get_form_data(request.form if request.method == "POST" else None)
         result = None
         error_message = None
@@ -386,6 +554,887 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             page_copy="Live and historical SPX / VIX research workspace with provider-aware routing and export-ready lookup tools.",
         )
 
+    @app.route("/hosted/research", methods=["GET", "POST"])
+    def hosted_research() -> str:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+
+        form_data = get_form_data(request.form if request.method == "POST" else None)
+        result = None
+        error_message = None
+        info_message = pop_status_message()
+        diagnostic_message = None
+        apollo_result = None
+        query = None
+
+        if request.method == "POST":
+            try:
+                query = parse_query_request(request.form)
+                result = execute_query(query=query, service=market_data_service)
+                form_data = get_form_data(request.form)
+                app.logger.info("Completed hosted query %s for %s", query.definition.key, query.definition.ticker)
+            except MarketDataReauthenticationRequired as exc:
+                set_status_message(str(exc), level="warning")
+                app.logger.warning("Provider session expired during hosted research: %s", exc)
+                return redirect(url_for("login"))
+            except MarketDataAuthenticationError as exc:
+                error_message = str(exc)
+                app.logger.warning("Provider login required during hosted research: %s", exc)
+            except ValidationError as exc:
+                error_message = str(exc)
+                app.logger.warning("Hosted research validation error: %s", exc)
+            except MarketDataError as exc:
+                error_message = str(exc)
+                diagnostic_message = build_diagnostic_message(query, str(exc), market_data_service)
+                app.logger.warning("Hosted market data error: %s", exc)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                error_message = "An unexpected error occurred while processing the hosted request. Check the log for details."
+                app.logger.exception("Unexpected hosted query error: %s", exc)
+
+        return render_research_page(
+            form_data=form_data,
+            result=result,
+            apollo_result=apollo_result,
+            error_message=error_message,
+            info_message=info_message,
+            diagnostic_message=diagnostic_message,
+            active_page="research",
+            page_browser_title="Research | Delphi 5.2 Hosted",
+            page_heading="Research",
+            page_copy="Hosted Delphi research workspace using the shared Schwab-backed data path behind private access.",
+            **build_hosted_template_context(identity),
+        )
+
+    @app.route("/hosted/private-access-check", methods=["GET"])
+    def hosted_private_access_check() -> Any:
+        if app.config.get("RUNTIME_TARGET") != "hosted":
+            abort(404)
+        identity = get_request_identity()
+        try:
+            resolved_identity = get_private_access_gate(app).require_private_access(identity)
+        except AuthenticationRequiredError as exc:
+            return jsonify({"ok": False, "error": "authentication_required", "detail": str(exc)}), 401
+        except PrivateAccessDeniedError as exc:
+            return jsonify({"ok": False, "error": "private_access_denied", "detail": str(exc)}), 403
+        return jsonify(
+            {
+                "ok": True,
+                "user_id": resolved_identity.user_id,
+                "email": resolved_identity.email,
+                "display_name": resolved_identity.display_name,
+                "auth_source": resolved_identity.auth_source,
+            }
+        )
+
+    @app.route("/hosted/logout", methods=["POST"])
+    def hosted_logout() -> Any:
+        if app.config.get("RUNTIME_TARGET") != "hosted":
+            abort(404)
+        response = jsonify({"ok": True, "logged_out": True})
+        invalidate_hosted_browser_cache_session(response, app=app)
+        clear_hosted_browser_session()
+        get_session_invalidator(app).invalidate_response(response)
+        return response
+
+    @app.route("/hosted/login", methods=["GET", "POST"])
+    def hosted_login_entry() -> Any:
+        if app.config.get("RUNTIME_TARGET") != "hosted":
+            abort(404)
+        next_path = sanitize_hosted_next_path(request.values.get("next"))
+        if request.method == "POST":
+            email = str(request.form.get("email") or "").strip()
+            password = str(request.form.get("password") or "")
+            try:
+                session = get_hosted_session_authenticator(app).sign_in(email=email, password=password)
+                identity = get_private_access_gate(app).require_private_access(session.to_request_identity())
+            except AuthenticationRequiredError as exc:
+                return render_template(
+                    "hosted_login.html",
+                    page_browser_title="Hosted Login",
+                    page_heading="Hosted Delphi 5.2 Sign In",
+                    page_copy="Sign in with your hosted Delphi credentials to access the browser shell.",
+                    next_path=next_path,
+                    form_email=email,
+                    error_message=str(exc),
+                ), 401
+            except PrivateAccessDeniedError as exc:
+                response = render_template(
+                    "hosted_shell_access_error.html",
+                    page_browser_title="Hosted Access Restricted",
+                    page_heading="Hosted Access Restricted",
+                    page_copy="This hosted Delphi 5.2 shell is currently limited to the approved private-access allowlist.",
+                    error_code="private_access_denied",
+                    error_detail=str(exc),
+                )
+                browser_response = current_app.make_response((response, 403))
+                get_session_invalidator(app).invalidate_response(browser_response)
+                return browser_response
+            response = redirect(next_path or url_for("hosted_shell_home"))
+            get_hosted_session_authenticator(app).establish_response_session(response, session)
+            remember_hosted_browser_session(identity)
+            establish_hosted_browser_cache_session(identity, response, app=app)
+            current_app.logger.info("Hosted browser sign-in established for %s", identity.email)
+            return response
+
+        try:
+            require_hosted_private_access(app)
+            return redirect(next_path or url_for("hosted_shell_home"))
+        except PrivateAccessDeniedError as exc:
+            browser_response = current_app.make_response(
+                (
+                    render_template(
+                        "hosted_shell_access_error.html",
+                        page_browser_title="Hosted Access Restricted",
+                        page_heading="Hosted Access Restricted",
+                        page_copy="This hosted Delphi 5.2 shell is currently limited to the approved private-access allowlist.",
+                        error_code="private_access_denied",
+                        error_detail=str(exc),
+                    ),
+                    403,
+                )
+            )
+            get_session_invalidator(app).invalidate_response(browser_response)
+            return browser_response
+        except AuthenticationRequiredError:
+            return render_template(
+                "hosted_login.html",
+                page_browser_title="Hosted Login",
+                page_heading="Hosted Delphi 5.2 Sign In",
+                page_copy="Sign in with your hosted Delphi credentials to access the browser shell.",
+                next_path=next_path,
+                form_email="",
+                error_message="",
+            )
+
+    @app.route("/hosted/sign-out", methods=["POST"])
+    def hosted_browser_sign_out() -> Any:
+        if app.config.get("RUNTIME_TARGET") != "hosted":
+            abort(404)
+        response = redirect(url_for("hosted_login_entry"))
+        invalidate_hosted_browser_cache_session(response, app=app)
+        clear_hosted_browser_session()
+        get_session_invalidator(app).invalidate_response(response)
+        return response
+
+    @app.route("/hosted/actions/performance-summary", methods=["GET"])
+    def hosted_performance_summary_action() -> Any:
+        _, error_response = authorize_hosted_private_action_request(app)
+        if error_response is not None:
+            return error_response
+        filters = parse_performance_request_filters(request.args)
+        try:
+            return jsonify(build_hosted_performance_summary_action_response(filters=filters, app=app))
+        except SupabaseRequestError as exc:
+            if not is_missing_hosted_trade_table_error(exc):
+                raise
+            return jsonify(build_hosted_schema_error_payload("performance", exc)), 503
+
+    @app.route("/hosted/performance/data", methods=["GET"])
+    def hosted_performance_data() -> Any:
+        _, error_response = authorize_hosted_private_action_request(app)
+        if error_response is not None:
+            return error_response
+        filters = parse_performance_request_filters(request.args)
+        try:
+            payload = build_hosted_performance_dashboard(filters=filters, app=app)
+            current_app.logger.warning(
+                "Hosted performance data route counts: total=%s filtered=%s",
+                payload.get("records_total"),
+                payload.get("records_filtered"),
+            )
+            return jsonify(payload)
+        except SupabaseRequestError as exc:
+            if not is_missing_hosted_trade_table_error(exc):
+                raise
+            return jsonify(build_hosted_schema_error_payload("performance", exc)), 503
+
+    @app.route("/hosted/actions/journal-trades", methods=["GET"])
+    def hosted_journal_trades_action() -> Any:
+        _, error_response = authorize_hosted_private_action_request(app)
+        if error_response is not None:
+            return error_response
+        trade_mode = resolve_trade_mode(request.args.get("trade_mode") or "real")
+        try:
+            payload = build_hosted_journal_trades_action_response(trade_mode=trade_mode, app=app)
+        except SupabaseRequestError as exc:
+            if not is_missing_hosted_trade_table_error(exc):
+                raise
+            return jsonify(build_hosted_schema_error_payload("journal", exc, trade_mode=trade_mode)), 503
+        current_app.logger.warning(
+            "Hosted journal action count: trade_mode=%s count=%s",
+            trade_mode,
+            payload.get("trade_count"),
+        )
+        return jsonify(payload)
+
+    @app.route("/hosted/actions/open-trades", methods=["GET"])
+    def hosted_open_trades_action() -> Any:
+        _, error_response = authorize_hosted_private_action_request(app)
+        if error_response is not None:
+            return error_response
+        requested_trade_mode = str(request.args.get("trade_mode") or "").strip().lower()
+        trade_mode_filter = "all" if not requested_trade_mode else resolve_hosted_trade_mode_filter(requested_trade_mode)
+        try:
+            payload = build_hosted_open_trades_action_response(trade_mode=trade_mode_filter, app=app)
+        except SupabaseRequestError as exc:
+            if not is_missing_hosted_trade_table_error(exc):
+                raise
+            return jsonify(build_hosted_schema_error_payload("manage-trades", exc, trade_mode=trade_mode_filter)), 503
+        current_app.logger.warning(
+            "Hosted open-trades action count: trade_mode=%s open_trade_count=%s",
+            trade_mode_filter,
+            payload.get("open_trade_count"),
+        )
+        return jsonify(payload)
+
+    @app.route("/hosted/actions/apollo", methods=["GET"])
+    def hosted_apollo_action() -> Any:
+        _, error_response = authorize_hosted_private_action_request(app)
+        if error_response is not None:
+            return error_response
+        return jsonify(build_hosted_apollo_action_response(app=app))
+
+    @app.route("/hosted/actions/apollo/run", methods=["POST"])
+    def hosted_apollo_run_action() -> Any:
+        _, error_response = authorize_hosted_private_action_request(app)
+        if error_response is not None:
+            return error_response
+        try:
+            _clear_hosted_payload_cache("hosted:apollo:live", app=app)
+            _clear_hosted_payload_cache("hosted:apollo:snapshot", app=app)
+            return jsonify({
+                "ok": True,
+                "action": "apollo-run",
+                "live_execution": True,
+                "snapshot_available": True,
+                "payload": build_hosted_apollo_live_payload(app=app, force_refresh=True),
+            })
+        except MarketDataReauthenticationRequired as exc:
+            return jsonify({"ok": False, "error": str(exc), "requires_login": True}), 401
+        except MarketDataAuthenticationError as exc:
+            return jsonify({"ok": False, "error": str(exc), "requires_login": True}), 401
+        except MarketDataError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception as exc:  # pragma: no cover - defensive logging
+            app.logger.exception("Hosted Apollo live execution failed: %s", exc)
+            return jsonify({"ok": False, "error": "Hosted Apollo live execution failed unexpectedly."}), 500
+
+    @app.route("/hosted/actions/kairos", methods=["GET"])
+    def hosted_kairos_action() -> Any:
+        _, error_response = authorize_hosted_private_action_request(app)
+        if error_response is not None:
+            return error_response
+        return jsonify(build_hosted_kairos_action_response(app=app))
+
+    @app.route("/hosted/actions/kairos/run", methods=["POST"])
+    def hosted_kairos_run_action() -> Any:
+        _, error_response = authorize_hosted_private_action_request(app)
+        if error_response is not None:
+            return error_response
+        try:
+            _clear_hosted_payload_cache("hosted:kairos", app=app)
+            payload = execute_hosted_kairos_live_run(app=app)
+            return jsonify(payload)
+        except MarketDataReauthenticationRequired as exc:
+            return jsonify({"ok": False, "error": str(exc), "requires_login": True}), 401
+        except MarketDataAuthenticationError as exc:
+            return jsonify({"ok": False, "error": str(exc), "requires_login": True}), 401
+        except MarketDataError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception as exc:  # pragma: no cover - defensive logging
+            app.logger.exception("Hosted Kairos live execution failed: %s", exc)
+            return jsonify({"ok": False, "error": "Hosted Kairos live execution failed unexpectedly."}), 500
+
+    @app.route("/hosted", methods=["GET"])
+    def hosted_shell_home() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        dev_sync_panel = build_hosted_delphi4_sync_panel_context(identity, app=app)
+        return render_template(
+            "home.html",
+            info_message=pop_status_message(),
+            hosted_delphi4_sync_panel=dev_sync_panel,
+            **build_hosted_template_context(identity, app=app),
+        )
+
+    @app.route("/hosted/dev/sync-delphi4", methods=["POST"])
+    def hosted_delphi4_sync_action() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        if not is_hosted_local_dev_request():
+            abort(404)
+
+        requested_action = str(request.form.get("sync_action") or "").strip().lower()
+        dry_run = requested_action != "sync"
+        try:
+            result = run_incremental_delphi4_sync(
+                gateway=get_hosted_supabase_table_gateway(app),
+                kairos_repository=get_hosted_kairos_scenario_repository(app),
+                status_store=get_hosted_delphi4_sync_status_repository(app),
+                source_paths=resolve_delphi4_source_paths(),
+                dry_run=dry_run,
+            )
+            result_payload = {"ok": True, **result.to_payload()}
+            remember_hosted_delphi4_sync_result(result_payload)
+            if dry_run:
+                set_status_message(build_delphi4_sync_flash_message(result_payload, dry_run=True), level="info")
+            else:
+                set_status_message(build_delphi4_sync_flash_message(result_payload, dry_run=False), level="info")
+        except FileNotFoundError as exc:
+            remember_hosted_delphi4_sync_result({"ok": False, "error": str(exc)})
+            set_status_message(str(exc), level="warning")
+        except RuntimeError as exc:
+            remember_hosted_delphi4_sync_result({"ok": False, "error": str(exc)})
+            set_status_message(str(exc), level="warning")
+        except SupabaseRequestError as exc:
+            app.logger.warning("Delphi 4.3 sync failed due to Supabase error: %s", exc)
+            remember_hosted_delphi4_sync_result({"ok": False, "error": "Hosted Delphi 6.0 could not reach Supabase during the sync."})
+            set_status_message("Hosted Delphi 6.0 could not reach Supabase during the sync.", level="warning")
+        return redirect(url_for("hosted_shell_home"))
+
+    @app.route("/hosted/performance", methods=["GET"])
+    def hosted_shell_performance() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        filters = parse_performance_request_filters(request.args)
+        admin_error = get_hosted_storage_preflight_error("performance", app=app)
+        if admin_error is None:
+            try:
+                dashboard_payload = build_hosted_performance_dashboard(filters=filters, app=app)
+            except SupabaseRequestError as exc:
+                if not is_missing_hosted_trade_table_error(exc):
+                    raise
+                admin_error = build_hosted_schema_error_payload("performance", exc)
+                dashboard_payload = build_dashboard_payload([], filters=filters)
+        else:
+            dashboard_payload = build_dashboard_payload([], filters=filters)
+        response = render_template(
+            "performance.html",
+            dashboard_payload=dashboard_payload,
+            filter_groups=PERFORMANCE_FILTER_GROUPS,
+            error_message=admin_error["detail"] if admin_error else None,
+            info_message=pop_status_message(),
+            hosted_admin_error=admin_error,
+            performance_data_url=url_for("hosted_performance_data", **request.args.to_dict(flat=False)),
+            **build_hosted_template_context(identity),
+        )
+        return (response, 503) if admin_error else response
+
+    @app.route("/hosted/journal", methods=["GET", "POST"])
+    def hosted_shell_journal() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        trade_mode = resolve_trade_mode(request.args.get("trade_mode") or "real")
+        info_message = pop_status_message()
+        prefill_requested = str(request.args.get("prefill", "")).strip().lower() in {"1", "true", "yes", "on"}
+        admin_error = get_hosted_storage_preflight_error("journal", app=app, trade_mode=trade_mode)
+        if admin_error is not None:
+            context = build_trade_page_context(
+                store=_HostedEmptyTradeStore(),
+                trade_mode=trade_mode,
+                form_values=blank_trade_form(trade_mode),
+                form_action=url_for("hosted_shell_journal", trade_mode=trade_mode),
+                form_title="Journal",
+                editing_trade_id=None,
+                error_message=admin_error["detail"],
+                info_message=info_message,
+                prefill_active=False,
+                hosted_prefill_enabled=True,
+            )
+            return render_hosted_journal_page(identity=identity, context=context, admin_error=admin_error, app=app)
+
+        trade_store = get_trade_store(app)
+
+        if request.method == "POST":
+            submitted_values = coerce_trade_form_input(request.form)
+            try:
+                if is_apollo_prefill_submission(submitted_values):
+                    duplicate = trade_store.find_recent_duplicate(submitted_values, window_seconds=15)
+                    if duplicate:
+                        clear_trade_prefill(trade_mode)
+                        set_status_message(
+                            "Apollo draft already saved recently. Review the existing trade instead of submitting twice.",
+                            level="warning",
+                        )
+                        return redirect(url_for("hosted_shell_journal", trade_mode=trade_mode))
+
+                trade_id = trade_store.create_trade(submitted_values)
+                redirect_mode = str(submitted_values.get("trade_mode") or trade_mode)
+                created_trade = dict(submitted_values)
+                created_trade.setdefault("id", trade_id)
+                created_trade["trade_mode"] = redirect_mode
+                clear_trade_prefill(redirect_mode)
+                _clear_hosted_payload_cache(app=app)
+                save_message, save_level = build_trade_save_status(created_trade, action="saved")
+                set_status_message(save_message, level=save_level)
+                return redirect(url_for("hosted_shell_journal", trade_mode=redirect_mode))
+            except SupabaseRequestError as exc:
+                admin_error = build_hosted_storage_error_payload("journal", exc, trade_mode=trade_mode)
+                prefill_source = str(submitted_values.get("prefill_source") or "").strip()
+                prefill_meta = get_trade_prefill_metadata(submitted_values) if prefill_source else {"title": "Journal", "notice": ""}
+                context = build_trade_page_context(
+                    store=trade_store,
+                    trade_mode=trade_mode,
+                    form_values=submitted_values,
+                    form_action=url_for("hosted_shell_journal", trade_mode=trade_mode),
+                    form_title=prefill_meta["title"] if prefill_source else "Journal",
+                    editing_trade_id=None,
+                    error_message=admin_error["detail"],
+                    info_message=info_message,
+                    prefill_active=bool(prefill_source),
+                    prefill_notice=prefill_meta["notice"] if prefill_source else "",
+                    hosted_prefill_enabled=True,
+                )
+                return render_hosted_journal_page(identity=identity, context=context, admin_error=admin_error, app=app)
+            except ValueError as exc:
+                prefill_source = str(submitted_values.get("prefill_source") or "").strip()
+                prefill_meta = get_trade_prefill_metadata(submitted_values) if prefill_source else {"title": "Journal", "notice": ""}
+                context = build_trade_page_context(
+                    store=trade_store,
+                    trade_mode=trade_mode,
+                    form_values=submitted_values,
+                    form_action=url_for("hosted_shell_journal", trade_mode=trade_mode),
+                    form_title=prefill_meta["title"] if prefill_source else "Journal",
+                    editing_trade_id=None,
+                    error_message=str(exc),
+                    info_message=info_message,
+                    prefill_active=bool(prefill_source),
+                    prefill_notice=prefill_meta["notice"] if prefill_source else "",
+                    hosted_prefill_enabled=True,
+                )
+                return render_hosted_journal_page(identity=identity, context=context, app=app)
+
+        form_values = blank_trade_form(trade_mode)
+        form_title = "Journal"
+        prefill_active = False
+        prefill_notice = ""
+        if prefill_requested:
+            draft_values = get_trade_prefill(trade_mode)
+            if draft_values:
+                form_values = merge_trade_form_values(form_values, draft_values)
+                prefill_meta = get_trade_prefill_metadata(form_values)
+                form_title = prefill_meta["title"]
+                prefill_notice = prefill_meta["notice"]
+                prefill_active = True
+
+        try:
+            form_values["trade_number"] = form_values.get("trade_number") or str(trade_store.next_trade_number())
+            context = build_trade_page_context(
+                store=trade_store,
+                trade_mode=trade_mode,
+                form_values=form_values,
+                form_action=url_for("hosted_shell_journal", trade_mode=trade_mode),
+                form_title=form_title,
+                editing_trade_id=None,
+                error_message=None,
+                info_message=info_message,
+                prefill_active=prefill_active,
+                prefill_notice=prefill_notice,
+                hosted_prefill_enabled=True,
+            )
+        except SupabaseRequestError as exc:
+            if not is_missing_hosted_trade_table_error(exc):
+                raise
+            admin_error = build_hosted_schema_error_payload("journal", exc, trade_mode=trade_mode)
+            context = build_trade_page_context(
+                store=_HostedEmptyTradeStore(),
+                trade_mode=trade_mode,
+                form_values=form_values,
+                form_action=url_for("hosted_shell_journal", trade_mode=trade_mode),
+                form_title=form_title,
+                editing_trade_id=None,
+                error_message=admin_error["detail"],
+                info_message=info_message,
+                prefill_active=prefill_active,
+                prefill_notice=prefill_notice,
+                hosted_prefill_enabled=True,
+            )
+        return render_hosted_journal_page(identity=identity, context=context, admin_error=admin_error, app=app)
+
+    @app.route("/hosted/journal/<trade_mode>/<int:trade_id>/edit", methods=["GET", "POST"])
+    def hosted_trade_edit(trade_mode: str, trade_id: int) -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+
+        normalized_mode = resolve_trade_mode(trade_mode)
+        info_message = pop_status_message()
+        admin_error = get_hosted_storage_preflight_error("journal", app=app, trade_mode=normalized_mode)
+        if admin_error is not None:
+            context = build_trade_page_context(
+                store=_HostedEmptyTradeStore(),
+                trade_mode=normalized_mode,
+                form_values=blank_trade_form(normalized_mode),
+                form_action=url_for("hosted_trade_edit", trade_mode=normalized_mode, trade_id=trade_id),
+                form_title="Journal",
+                editing_trade_id=None,
+                error_message=admin_error["detail"],
+                info_message=info_message,
+                prefill_active=False,
+            )
+            return render_hosted_journal_page(identity=identity, context=context, admin_error=admin_error, app=app)
+
+        trade_store = get_trade_store(app)
+        try:
+            trade = trade_store.get_trade(trade_id)
+        except SupabaseRequestError as exc:
+            if not is_missing_hosted_trade_table_error(exc):
+                raise
+            admin_error = build_hosted_schema_error_payload("journal", exc, trade_mode=normalized_mode)
+            context = build_trade_page_context(
+                store=_HostedEmptyTradeStore(),
+                trade_mode=normalized_mode,
+                form_values=blank_trade_form(normalized_mode),
+                form_action=url_for("hosted_trade_edit", trade_mode=normalized_mode, trade_id=trade_id),
+                form_title="Journal",
+                editing_trade_id=None,
+                error_message=admin_error["detail"],
+                info_message=info_message,
+                prefill_active=False,
+            )
+            return render_hosted_journal_page(identity=identity, context=context, admin_error=admin_error, app=app)
+
+        if not trade:
+            set_status_message("Trade not found.", level="error")
+            return redirect(url_for("hosted_shell_journal", trade_mode=normalized_mode))
+
+        if request.method == "POST":
+            submitted_values = coerce_trade_form_input(request.form)
+            submitted_close_events = coerce_trade_close_event_input(request.form)
+            if submitted_close_events is not None:
+                submitted_values["close_events"] = submitted_close_events
+            try:
+                trade_store.update_trade(trade_id, submitted_values)
+                redirect_mode = str(submitted_values.get("trade_mode") or trade.get("trade_mode") or normalized_mode)
+                updated_trade = dict(trade)
+                updated_trade.update(submitted_values)
+                updated_trade["trade_mode"] = redirect_mode
+                clear_trade_close_prefill(trade_id)
+                _clear_hosted_payload_cache(app=app)
+                save_message, save_level = build_trade_save_status(updated_trade, action="updated")
+                set_status_message(save_message, level=save_level)
+                return redirect(url_for("hosted_shell_journal", trade_mode=redirect_mode))
+            except SupabaseRequestError as exc:
+                admin_error = build_hosted_storage_error_payload("journal", exc, trade_mode=normalized_mode)
+                context = build_trade_page_context(
+                    store=trade_store,
+                    trade_mode=normalized_mode,
+                    form_values=submitted_values,
+                    form_action=url_for("hosted_trade_edit", trade_mode=normalized_mode, trade_id=trade_id),
+                    form_title=f"Edit Trade #{trade.get('trade_number') or trade_id}",
+                    editing_trade_id=trade_id,
+                    editing_trade=build_edit_trade_preview(trade, submitted_values, submitted_close_events),
+                    error_message=admin_error["detail"],
+                    info_message=info_message,
+                    prefill_active=False,
+                )
+                return render_hosted_journal_page(identity=identity, context=context, admin_error=admin_error, app=app)
+            except ValueError as exc:
+                context = build_trade_page_context(
+                    store=trade_store,
+                    trade_mode=normalized_mode,
+                    form_values=submitted_values,
+                    form_action=url_for("hosted_trade_edit", trade_mode=normalized_mode, trade_id=trade_id),
+                    form_title=f"Edit Trade #{trade.get('trade_number') or trade_id}",
+                    editing_trade_id=trade_id,
+                    editing_trade=build_edit_trade_preview(trade, submitted_values, submitted_close_events),
+                    error_message=str(exc),
+                    info_message=info_message,
+                    prefill_active=False,
+                )
+                return render_hosted_journal_page(identity=identity, context=context, app=app)
+
+        edit_mode = str(trade.get("trade_mode") or normalized_mode)
+        close_prefill = get_trade_close_prefill(trade_id)
+        editing_trade = apply_trade_close_prefill(trade, close_prefill)
+        context = build_trade_page_context(
+            store=trade_store,
+            trade_mode=edit_mode,
+            form_values=form_trade_record(trade),
+            form_action=url_for("hosted_trade_edit", trade_mode=edit_mode, trade_id=trade_id),
+            form_title=f"Edit Trade #{trade.get('trade_number') or trade_id}",
+            editing_trade_id=trade_id,
+            editing_trade=editing_trade,
+            error_message=None,
+            info_message=info_message,
+            prefill_active=False,
+        )
+        return render_hosted_journal_page(identity=identity, context=context, app=app)
+
+    @app.post("/hosted/journal/<trade_mode>/<int:trade_id>/delete")
+    def hosted_trade_delete(trade_mode: str, trade_id: int) -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+
+        normalized_mode = resolve_trade_mode(trade_mode)
+        admin_error = get_hosted_storage_preflight_error("journal", app=app, trade_mode=normalized_mode)
+        if admin_error is not None:
+            set_status_message(admin_error["detail"], level="error")
+            return redirect(url_for("hosted_shell_journal", trade_mode=normalized_mode))
+
+        trade_store = get_trade_store(app)
+        trade = trade_store.get_trade(trade_id)
+        if trade:
+            trade_store.delete_trade(trade_id)
+            clear_trade_close_prefill(trade_id)
+            _clear_hosted_payload_cache(app=app)
+            set_status_message(f"Deleted trade #{trade.get('trade_number') or trade_id}.", level="info")
+            return redirect(url_for("hosted_shell_journal", trade_mode=str(trade.get("trade_mode") or normalized_mode)))
+
+        set_status_message("Trade not found.", level="error")
+        return redirect(url_for("hosted_shell_journal", trade_mode=normalized_mode))
+
+    @app.route("/hosted/open-trades", methods=["GET"])
+    def hosted_shell_open_trades() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        return redirect(url_for("hosted_shell_manage_trades"))
+
+    @app.route("/hosted/manage-trades", methods=["GET"])
+    def hosted_shell_manage_trades() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        admin_error = get_hosted_storage_preflight_error("manage-trades", app=app)
+        if admin_error is None:
+            try:
+                management_payload = build_hosted_open_trade_management_payload(app=app)
+            except SupabaseRequestError as exc:
+                if not is_missing_hosted_trade_table_error(exc):
+                    raise
+                admin_error = build_hosted_schema_error_payload("manage-trades", exc)
+                management_payload = build_hosted_empty_management_payload()
+        else:
+            management_payload = build_hosted_empty_management_payload()
+        response = render_template(
+            "open_trade_management.html",
+            management_payload=management_payload,
+            error_message=admin_error["detail"] if admin_error else None,
+            info_message=pop_status_message(),
+            management_actions_enabled=True,
+            management_action_urls={
+                "toggle_notifications": url_for("hosted_open_trade_management_toggle_notifications"),
+                "real_status_update": url_for("hosted_open_trade_management_status_update", trade_mode="real"),
+                "simulated_status_update": url_for("hosted_open_trade_management_status_update", trade_mode="simulated"),
+                "prefill_close": "hosted_open_trade_management_prefill_close",
+            },
+            suppress_open_positions_copy=True,
+            hosted_admin_error=admin_error,
+            **build_hosted_template_context(identity),
+        )
+        return (response, 503) if admin_error else response
+
+    @app.post("/hosted/manage-trades/notifications-toggle")
+    def hosted_open_trade_management_toggle_notifications() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        enabled = str(request.form.get("notifications_enabled") or "").strip().lower() == "true"
+        get_open_trade_manager(app).set_notifications_enabled(enabled)
+        _clear_hosted_payload_cache("hosted:open-trades", app=app)
+        set_status_message(
+            f"Notifications turned {'ON' if enabled else 'OFF'} for real-time trade alerts.",
+            level="info",
+        )
+        return redirect(url_for("hosted_shell_manage_trades"))
+
+    @app.post("/hosted/manage-trades/status-update/<trade_mode>")
+    def hosted_open_trade_management_status_update(trade_mode: str) -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        normalized_trade_mode = str(trade_mode or "").strip().lower()
+        if normalized_trade_mode not in {"real", "simulated"}:
+            abort(404)
+        result = get_open_trade_manager(app).send_manual_status_update(trade_mode=normalized_trade_mode)
+        trade_mode_label = "real" if normalized_trade_mode == "real" else "simulated"
+        if result["sent"]:
+            suffix = " Automatic notifications remain OFF." if not get_open_trade_manager(app).notifications_enabled() else ""
+            set_status_message(
+                f"Sent Pushover status update for {result['record_count']} {trade_mode_label} open trade(s).{suffix}",
+                level="info",
+            )
+        elif result["record_count"] == 0:
+            set_status_message(
+                f"No open {trade_mode_label} trades are available for a status update.",
+                level="warning",
+            )
+        else:
+            set_status_message(
+                f"Pushover {trade_mode_label} status update failed: {result['error'] or 'Unable to send notification.'}",
+                level="warning",
+            )
+        _clear_hosted_payload_cache("hosted:open-trades", app=app)
+        return redirect(url_for("hosted_shell_manage_trades"))
+
+    @app.post("/hosted/manage-trades/<int:trade_id>/prefill-close")
+    def hosted_open_trade_management_prefill_close(trade_id: int) -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+
+        trade_store = get_trade_store(app)
+        trade = trade_store.get_trade(trade_id)
+        if not trade:
+            set_status_message("Trade not found.", level="error")
+            return redirect(url_for("hosted_shell_manage_trades"))
+
+        management_payload = build_hosted_open_trade_management_payload(app=app)
+        record = next((item for item in management_payload["records"] if int(item.get("trade_id") or 0) == trade_id), None)
+        if record is None:
+            set_status_message("Open trade record was not available for management prefill.", level="warning")
+            return redirect(url_for("hosted_shell_manage_trades"))
+        if record.get("current_spread_mark") in {None, ""}:
+            set_status_message("Current close cost could not be derived from the live option chain, so no journal prefill was created.", level="warning")
+            return redirect(url_for("hosted_shell_manage_trades"))
+        if int(record.get("contracts") or 0) <= 0:
+            set_status_message("No remaining contracts were available to prefill.", level="warning")
+            return redirect(url_for("hosted_shell_manage_trades"))
+
+        store_trade_close_prefill(trade_id, build_manage_trade_close_prefill(record))
+        set_status_message(
+            f"Prefilled a close event for trade #{trade.get('trade_number') or trade_id}. Review the journal entry and click Save Trade to commit it.",
+            level="info",
+        )
+        return redirect(url_for("hosted_trade_edit", trade_mode=str(trade.get("trade_mode") or "real"), trade_id=trade_id, _anchor="position-management"))
+
+    @app.post("/hosted/apollo/prefill-candidate")
+    def hosted_apollo_prefill_candidate() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+
+        target_mode = resolve_trade_mode(request.form.get("target_mode") or request.form.get("trade_mode") or "simulated")
+        draft_values = coerce_apollo_trade_input(request.form, trade_mode=target_mode)
+        store_trade_prefill(target_mode, draft_values)
+        set_status_message(
+            f"Apollo {draft_values.get('candidate_profile') or 'Candidate'} sent to {TRADE_MODE_LABELS[target_mode]}. Review the draft, then click Save Trade to commit it.",
+            level="info",
+        )
+        return redirect(url_for("hosted_shell_journal", trade_mode=target_mode, prefill=1, _anchor="trade-entry-form"))
+
+    @app.post("/hosted/kairos/prefill-candidate")
+    def hosted_kairos_prefill_candidate() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+
+        target_mode = resolve_trade_mode(request.form.get("target_mode") or request.form.get("trade_mode") or "simulated")
+        draft_values = coerce_kairos_trade_input(request.form, trade_mode=target_mode)
+        store_trade_prefill(target_mode, draft_values)
+        set_status_message(
+            f"Kairos {draft_values.get('candidate_profile') or 'Candidate'} sent to {TRADE_MODE_LABELS[target_mode]}. Review the draft, then click Save Trade to commit it.",
+            level="info",
+        )
+        return redirect(url_for("hosted_shell_journal", trade_mode=target_mode, prefill=1, _anchor="trade-entry-form"))
+
+    @app.route("/hosted/apollo", methods=["GET", "POST"])
+    def hosted_shell_apollo() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        error_message = None
+        info_message = pop_status_message()
+        apollo_result: Optional[Dict[str, Any]] = None
+
+        if request.method == "POST":
+            try:
+                _clear_hosted_payload_cache("hosted:apollo:live", app=app)
+                _clear_hosted_payload_cache("hosted:apollo:snapshot", app=app)
+                apollo_result = build_hosted_apollo_live_payload(app=app, force_refresh=True)
+                app.logger.info("Completed hosted Apollo live execution for %s", identity.email or identity.user_id)
+            except MarketDataReauthenticationRequired as exc:
+                error_message = str(exc)
+            except MarketDataAuthenticationError as exc:
+                error_message = str(exc)
+            except MarketDataError as exc:
+                error_message = str(exc)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                error_message = "Hosted Apollo live execution failed unexpectedly."
+                app.logger.exception("Unexpected hosted Apollo page execution error: %s", exc)
+        else:
+            autorun_requested = str(request.args.get("autorun") or "").strip().lower() in {"1", "true", "yes", "on"}
+            if autorun_requested:
+                try:
+                    apollo_result = build_hosted_apollo_live_payload(app=app)
+                except MarketDataReauthenticationRequired as exc:
+                    error_message = str(exc)
+                except MarketDataAuthenticationError as exc:
+                    error_message = str(exc)
+                except MarketDataError as exc:
+                    error_message = str(exc)
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    error_message = "Hosted Apollo live execution failed unexpectedly."
+                    app.logger.exception("Unexpected hosted Apollo autorun error: %s", exc)
+            if apollo_result is None:
+                action_payload = build_hosted_apollo_action_response(app=app)
+                apollo_result = action_payload["payload"]
+
+        return render_research_page(
+            form_data=get_form_data(None),
+            result=None,
+            apollo_result=apollo_result,
+            error_message=error_message,
+            info_message=info_message,
+            diagnostic_message=None,
+            active_page="apollo",
+            page_browser_title="Apollo | Delphi",
+            page_heading="Apollo",
+            page_copy="Delphi Apollo workflow for live structure, macro review, and next-market-day candidate selection.",
+            hosted_apollo_json_url=url_for("hosted_apollo_action"),
+            hosted_apollo_run_url=url_for("hosted_shell_apollo"),
+            hosted_apollo_prefill_url=url_for("hosted_apollo_prefill_candidate"),
+            **build_hosted_template_context(identity, app=app),
+        )
+
+    @app.route("/hosted/kairos", methods=["GET"])
+    def hosted_shell_kairos() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        return render_hosted_kairos_workspace(identity=identity, workspace="live", service=get_kairos_live_service(app), app=app)
+
+    @app.route("/hosted/kairos/live", methods=["GET"])
+    def hosted_kairos_live_page() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        return render_hosted_kairos_workspace(identity=identity, workspace="live", service=get_kairos_live_service(app), app=app)
+
+    @app.route("/hosted/kairos/sim", methods=["GET"])
+    def hosted_kairos_sim_page() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        return render_hosted_kairos_workspace(identity=identity, workspace="sim", service=get_kairos_sim_service(app), app=app)
+
+    def render_hosted_kairos_workspace(
+        *,
+        identity: RequestIdentity,
+        workspace: str,
+        service: KairosService,
+        app: Optional[Flask] = None,
+    ) -> Any:
+        kairos_payload = (
+            service.initialize_live_kairos_on_page_load()
+            if workspace == "live" and hasattr(service, "initialize_live_kairos_on_page_load")
+            else service.get_dashboard_payload()
+        )
+        return render_template(
+            "kairos.html",
+            kairos_payload=prepare_hosted_kairos_workspace_payload(kairos_payload),
+            workspace=workspace,
+            info_message=pop_status_message(),
+            **build_hosted_template_context(identity, app=app),
+        )
+
     def get_request_payload() -> Dict[str, Any]:
         payload = request.get_json(silent=True)
         if payload is None:
@@ -400,6 +1449,131 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             normalized_payload["mode"] = "Simulation"
         return normalized_payload
 
+    def build_kairos_runner_response(payload: Dict[str, Any]) -> Dict[str, Any]:
+        response_mode = str(request.args.get("response") or request.headers.get("X-Kairos-Response") or "").strip().lower()
+        if response_mode != "runner":
+            return payload
+        allowed_keys = (
+            "title",
+            "subtitle",
+            "mode",
+            "mode_key",
+            "mode_badge_text",
+            "is_simulation_mode",
+            "session_date",
+            "session_date_display",
+            "current_state",
+            "current_state_key",
+            "current_state_display",
+            "current_state_display_key",
+            "session_status",
+            "session_status_key",
+            "market_session_status",
+            "market_session_status_key",
+            "armed_for_day",
+            "scan_engine_running",
+            "session_complete",
+            "stopped_manually",
+            "auto_ended",
+            "window_found",
+            "status_note",
+            "activated_at",
+            "last_scan_at",
+            "next_scan_at",
+            "last_scan_display",
+            "next_scan_display",
+            "countdown_seconds",
+            "countdown_display",
+            "total_scans_completed",
+            "scan_interval_seconds",
+            "live_scan_interval_seconds",
+            "latest_scan",
+            "latest_transition",
+            "scan_log",
+            "scan_log_count",
+            "scan_log_note",
+            "bar_map",
+            "lifecycle_items",
+            "classification_note",
+            "simulation_runner",
+        )
+        return {
+            "partial_response": "runner",
+            **{key: payload.get(key) for key in allowed_keys if key in payload},
+        }
+
+    def get_kairos_workspace_service(workspace: str) -> KairosService:
+        return kairos_sim_service if workspace == "sim" else kairos_live_service
+
+    def build_kairos_trade_open_response(*, hosted_mode: bool = False) -> Dict[str, Any]:
+        payload = kairos_live_service.open_live_trade(get_request_payload())
+        prefill = payload.pop("journal_prefill", None)
+        if prefill:
+            store_trade_prefill("real", prefill)
+            set_status_message("Kairos live trade data is loaded into a journal draft. Review it before saving.", level="info")
+            if hosted_mode:
+                payload["redirect_url"] = url_for("hosted_shell_journal", trade_mode="real", prefill=1, _anchor="trade-entry-form")
+            else:
+                payload["redirect_url"] = url_for("trade_dashboard", trade_mode="real", prefill=1, _anchor="trade-entry-form")
+        return payload
+
+    def dispatch_kairos_workspace_action(*, workspace: str, action_path: str, hosted_mode: bool = False) -> Dict[str, Any]:
+        normalized_workspace = "sim" if workspace == "sim" else "live"
+        service = get_kairos_workspace_service(normalized_workspace)
+        action = str(action_path or "").strip().strip("/").lower()
+        payload = normalize_kairos_workspace_payload(normalized_workspace, get_request_payload())
+
+        if request.method == "GET" and action == "status":
+            return service.get_dashboard_payload()
+
+        if request.method != "POST":
+            raise KeyError(action)
+
+        if action == "activate":
+            return service.activate_for_today()
+        if action == "configure":
+            return service.configure_runtime(payload)
+        if action == "stop":
+            return service.stop_for_today()
+        if action == "runner/start":
+            return service.start_simulation_runner(payload)
+        if action == "runner/pause":
+            return service.pause_simulation_runner()
+        if action == "runner/resume":
+            response = service.resume_simulation_runner(payload)
+            return build_kairos_runner_response(response) if normalized_workspace == "sim" else response
+        if action == "runner/restart":
+            return service.restart_simulation_runner(payload)
+        if action == "runner/candidate/select":
+            return service.select_simulation_trade_candidate(payload)
+        if action == "runner/candidate/take":
+            payload["pause_on_exit_gates"] = True
+            return service.take_simulation_trade_candidate(payload)
+        if action == "runner/candidate/ignore":
+            return service.ignore_simulation_trade_candidate()
+        if action == "runner/end":
+            return service.end_simulation_runner()
+        if action == "best-trade":
+            response = service.request_best_trade_override()
+            return build_kairos_runner_response(response) if normalized_workspace == "sim" else response
+
+        if normalized_workspace == "live":
+            if action == "trade/open":
+                return build_kairos_trade_open_response(hosted_mode=hosted_mode)
+            if action == "trade/exit/accept":
+                return kairos_live_service.accept_live_exit_recommendation()
+            if action == "trade/exit/skip":
+                return kairos_live_service.skip_live_exit_recommendation()
+        else:
+            if action == "replay/import":
+                return kairos_sim_service.import_historical_replay_template(get_request_payload())
+            if action == "runner/exit/accept":
+                return kairos_sim_service.accept_simulation_exit_gate()
+            if action == "runner/exit/skip":
+                return kairos_sim_service.skip_simulation_exit_gate()
+
+        raise KeyError(action)
+
     def render_kairos_workspace(*, workspace: str, service: KairosService) -> str:
         kairos_payload = service.initialize_live_kairos_on_page_load() if workspace == "live" else service.get_dashboard_payload()
         return render_template(
@@ -409,16 +1583,35 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             info_message=pop_status_message(),
         )
 
+    @app.route("/hosted/actions/kairos-workspace/<workspace>/<path:action_path>", methods=["GET", "POST"])
+    def hosted_kairos_workspace_action(workspace: str, action_path: str) -> Any:
+        _, error_response = authorize_hosted_private_action_request(app)
+        if error_response is not None:
+            return error_response
+        normalized_workspace = str(workspace or "").strip().lower()
+        if normalized_workspace not in {"live", "sim"}:
+            abort(404)
+        try:
+            return jsonify(dispatch_kairos_workspace_action(workspace=normalized_workspace, action_path=action_path, hosted_mode=True))
+        except KeyError:
+            abort(404)
+
     @app.get("/kairos")
     def kairos_placeholder() -> Any:
+        if app.config.get("RUNTIME_TARGET") == "hosted":
+            return redirect(url_for("hosted_kairos_live_page"))
         return redirect(url_for("kairos_live_page"))
 
     @app.get("/kairos/live")
     def kairos_live_page() -> str:
+        if app.config.get("RUNTIME_TARGET") == "hosted":
+            return redirect(url_for("hosted_kairos_live_page"))
         return render_kairos_workspace(workspace="live", service=kairos_live_service)
 
     @app.get("/kairos/sim")
     def kairos_sim_page() -> str:
+        if app.config.get("RUNTIME_TARGET") == "hosted":
+            return redirect(url_for("hosted_kairos_sim_page"))
         return render_kairos_workspace(workspace="sim", service=kairos_sim_service)
 
     @app.get("/kairos/status")
@@ -435,24 +1628,27 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
     @app.post("/api/text-status")
     def text_status_api() -> Any:
+        display_name = str(app.config.get("APP_DISPLAY_NAME") or APP_CONFIG.app_display_name or "Delphi").strip() or "Delphi"
+        title = f"{display_name} Test Alert"
         if not open_trade_manager.notifications_enabled():
-            return jsonify({"ok": False, "error": "Notifications are currently OFF.", "title": "Delphi 4.3 Test Alert"}), 409
+            return jsonify({"ok": False, "error": "Notifications are currently OFF.", "title": title}), 409
         status_timestamp = datetime.now(CHICAGO_TZ)
         spx_snapshot = get_status_snapshot(market_data_service, "^GSPC", query_type="pushover_status_spx")
         vix_snapshot = get_status_snapshot(market_data_service, "^VIX", query_type="pushover_status_vix")
-        title = "Delphi 4.3 Test Alert"
         message = build_pushover_test_message(
             spx_snapshot=spx_snapshot,
             vix_snapshot=vix_snapshot,
             generated_at=status_timestamp,
+            source_label=display_name,
         )
         result = pushover_service.send_notification(title=title, message=message, priority=0)
         status_code = int(result.get("status_code") or 200)
         if result.get("ok"):
-            app.logger.info("Manual Delphi 4.3 Dev Pushover test notification sent.")
+            app.logger.info("Manual %s Pushover test notification sent.", display_name)
         else:
             app.logger.warning(
-                "Manual Delphi 4.3 Dev Pushover test notification failed: %s",
+                "Manual %s Pushover test notification failed: %s",
+                display_name,
                 result.get("error") or "Unknown error",
             )
         response_payload = {
@@ -526,7 +1722,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     @app.post("/kairos/sim/runner/resume")
     def kairos_sim_runner_resume() -> Any:
         payload = normalize_kairos_workspace_payload("sim", get_request_payload())
-        return jsonify(kairos_sim_service.resume_simulation_runner(payload))
+        return jsonify(build_kairos_runner_response(kairos_sim_service.resume_simulation_runner(payload)))
 
     @app.post("/kairos/runner/restart")
     def kairos_runner_restart() -> Any:
@@ -621,13 +1817,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
     @app.post("/kairos/live/trade/open")
     def kairos_live_trade_open() -> Any:
-        payload = kairos_live_service.open_live_trade(get_request_payload())
-        prefill = payload.pop("journal_prefill", None)
-        if prefill:
-            store_trade_prefill("real", prefill)
-            set_status_message("Kairos live trade data is loaded into a journal draft. Review it before saving.", level="info")
-            payload["redirect_url"] = url_for("trade_dashboard", trade_mode="real", prefill=1, _anchor="trade-entry-form")
-        return jsonify(payload)
+        return jsonify(build_kairos_trade_open_response())
 
     @app.post("/kairos/live/trade/exit/accept")
     def kairos_live_trade_exit_accept() -> Any:
@@ -639,7 +1829,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
     @app.post("/kairos/sim/runner/best-trade")
     def kairos_sim_runner_best_trade() -> Any:
-        return jsonify(kairos_sim_service.request_best_trade_override())
+        return jsonify(build_kairos_runner_response(kairos_sim_service.request_best_trade_override()))
 
     @app.post("/kairos/stop")
     def kairos_stop() -> Any:
@@ -665,6 +1855,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         if trigger_source:
             try:
                 apollo_result = execute_apollo_precheck(apollo_service, trigger_source=trigger_source)
+                save_apollo_snapshot(apollo_result, app=app)
                 app.logger.info("Completed Apollo pre-check via %s", trigger_source)
             except MarketDataReauthenticationRequired as exc:
                 set_status_message(str(exc), level="warning")
@@ -700,6 +1891,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
         try:
             apollo_result = execute_apollo_precheck(apollo_service, trigger_source="autorun URL")
+            save_apollo_snapshot(apollo_result, app=app)
             app.logger.info("Completed Apollo debug pre-check")
         except MarketDataReauthenticationRequired as exc:
             app.logger.warning("Provider session expired during Apollo debug run: %s", exc)
@@ -770,30 +1962,33 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
         auth_service = provider.auth_service
         oauth_session_keys = app.extensions["oauth_session_keys"]
+        workflow_state = get_workflow_state(app)
         state = auth_service.build_state_token()
-        session.pop("schwab_oauth_state", None)
-        session[oauth_session_keys["oauth_state"]] = state
-        session[oauth_session_keys["pkce_verifier"]] = ""
-        session[oauth_session_keys["login_in_progress"]] = True
-        session[oauth_session_keys["callback_pending"]] = True
-        session[oauth_session_keys["connected"]] = False
-        session[oauth_session_keys["authorized"]] = False
+        workflow_state.pop("schwab_oauth_state", None)
+        workflow_state.put(oauth_session_keys["oauth_state"], state)
+        workflow_state.put(oauth_session_keys["pkce_verifier"], "")
+        workflow_state.put(oauth_session_keys["login_in_progress"], True)
+        workflow_state.put(oauth_session_keys["callback_pending"], True)
+        workflow_state.put(oauth_session_keys["connected"], False)
+        workflow_state.put(oauth_session_keys["authorized"], False)
         app.logger.info(
             "OAuth state created | env=%s | port=%s | redirect_uri=%s | token_target_path=%s | session_cookie=%s | oauth_namespace=%s | oauth_state=%s",
-            APP_CONFIG.app_display_name,
-            APP_CONFIG.app_port,
-            APP_CONFIG.schwab_redirect_uri,
-            APP_CONFIG.schwab_token_path,
-            APP_CONFIG.session_cookie_name,
-            APP_CONFIG.oauth_session_namespace,
+            runtime_app_config.app_display_name,
+            runtime_app_config.app_port,
+            runtime_app_config.schwab_redirect_uri,
+            getattr(auth_service.token_store, "file_path", runtime_app_config.schwab_token_path),
+            runtime_app_config.session_cookie_name,
+            runtime_app_config.oauth_session_namespace,
             mask_oauth_state(state),
         )
 
         try:
-            return redirect(auth_service.build_authorization_url(state=state))
+            authorize_url = auth_service.build_authorization_url(state=state)
+            app.logger.info("Schwab authorize URL | %s", authorize_url)
+            return redirect(authorize_url)
         except Exception as exc:
-            session[oauth_session_keys["login_in_progress"]] = False
-            session[oauth_session_keys["callback_pending"]] = False
+            workflow_state.put(oauth_session_keys["login_in_progress"], False)
+            workflow_state.put(oauth_session_keys["callback_pending"], False)
             set_status_message(str(exc), level="error")
             app.logger.warning("Unable to build Schwab authorization URL: %s", exc)
             return redirect(url_for("index"))
@@ -806,42 +2001,43 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             return redirect(url_for("index"))
 
         oauth_session_keys = app.extensions["oauth_session_keys"]
+        workflow_state = get_workflow_state(app)
         received_state = request.args.get("state")
         authorization_code = request.args.get("code")
         app.logger.info(
             "OAuth callback received | env=%s | port=%s | redirect_uri=%s | token_target_path=%s | session_cookie=%s | oauth_namespace=%s | has_code=%s | oauth_state=%s",
-            APP_CONFIG.app_display_name,
-            APP_CONFIG.app_port,
-            APP_CONFIG.schwab_redirect_uri,
-            APP_CONFIG.schwab_token_path,
-            APP_CONFIG.session_cookie_name,
-            APP_CONFIG.oauth_session_namespace,
+            runtime_app_config.app_display_name,
+            runtime_app_config.app_port,
+            runtime_app_config.schwab_redirect_uri,
+            getattr(provider.auth_service.token_store, "file_path", runtime_app_config.schwab_token_path),
+            runtime_app_config.session_cookie_name,
+            runtime_app_config.oauth_session_namespace,
             bool(authorization_code),
             mask_oauth_state(received_state),
         )
 
         error = request.args.get("error")
         if error:
-            session[oauth_session_keys["login_in_progress"]] = False
-            session[oauth_session_keys["callback_pending"]] = False
+            workflow_state.put(oauth_session_keys["login_in_progress"], False)
+            workflow_state.put(oauth_session_keys["callback_pending"], False)
             set_status_message(f"Schwab authorization failed: {error}", level="error")
             return redirect(url_for("index"))
 
-        expected_state = session.pop(oauth_session_keys["oauth_state"], None)
-        session.pop("schwab_oauth_state", None)
+        expected_state = workflow_state.pop(oauth_session_keys["oauth_state"], None)
+        workflow_state.pop("schwab_oauth_state", None)
         if not expected_state or received_state != expected_state:
-            session[oauth_session_keys["login_in_progress"]] = False
-            session[oauth_session_keys["callback_pending"]] = False
-            session[oauth_session_keys["connected"]] = False
-            session[oauth_session_keys["authorized"]] = False
-            session.pop(oauth_session_keys["pkce_verifier"], None)
+            workflow_state.put(oauth_session_keys["login_in_progress"], False)
+            workflow_state.put(oauth_session_keys["callback_pending"], False)
+            workflow_state.put(oauth_session_keys["connected"], False)
+            workflow_state.put(oauth_session_keys["authorized"], False)
+            workflow_state.pop(oauth_session_keys["pkce_verifier"], None)
             app.logger.warning(
                 "OAuth state validation failed | env=%s | port=%s | redirect_uri=%s | token_target_path=%s | oauth_namespace=%s | expected_state=%s | received_state=%s",
-                APP_CONFIG.app_display_name,
-                APP_CONFIG.app_port,
-                APP_CONFIG.schwab_redirect_uri,
-                APP_CONFIG.schwab_token_path,
-                APP_CONFIG.oauth_session_namespace,
+                runtime_app_config.app_display_name,
+                runtime_app_config.app_port,
+                runtime_app_config.schwab_redirect_uri,
+                getattr(provider.auth_service.token_store, "file_path", runtime_app_config.schwab_token_path),
+                runtime_app_config.oauth_session_namespace,
                 mask_oauth_state(expected_state),
                 mask_oauth_state(received_state),
             )
@@ -849,33 +2045,33 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             return redirect(url_for("index"))
         app.logger.info(
             "OAuth state validation passed | env=%s | port=%s | redirect_uri=%s | token_target_path=%s | oauth_namespace=%s | oauth_state=%s",
-            APP_CONFIG.app_display_name,
-            APP_CONFIG.app_port,
-            APP_CONFIG.schwab_redirect_uri,
-            APP_CONFIG.schwab_token_path,
-            APP_CONFIG.oauth_session_namespace,
+            runtime_app_config.app_display_name,
+            runtime_app_config.app_port,
+            runtime_app_config.schwab_redirect_uri,
+            getattr(provider.auth_service.token_store, "file_path", runtime_app_config.schwab_token_path),
+            runtime_app_config.oauth_session_namespace,
             mask_oauth_state(received_state),
         )
 
         if not authorization_code:
-            session[oauth_session_keys["login_in_progress"]] = False
-            session[oauth_session_keys["callback_pending"]] = False
+            workflow_state.put(oauth_session_keys["login_in_progress"], False)
+            workflow_state.put(oauth_session_keys["callback_pending"], False)
             set_status_message("Schwab did not return an authorization code.", level="error")
             return redirect(url_for("index"))
 
         try:
             provider.auth_service.exchange_code_for_tokens(authorization_code)
-            session[oauth_session_keys["login_in_progress"]] = False
-            session[oauth_session_keys["callback_pending"]] = False
-            session[oauth_session_keys["connected"]] = True
-            session[oauth_session_keys["authorized"]] = True
-            session.pop(oauth_session_keys["pkce_verifier"], None)
+            workflow_state.put(oauth_session_keys["login_in_progress"], False)
+            workflow_state.put(oauth_session_keys["callback_pending"], False)
+            workflow_state.put(oauth_session_keys["connected"], True)
+            workflow_state.put(oauth_session_keys["authorized"], True)
+            workflow_state.pop(oauth_session_keys["pkce_verifier"], None)
             set_status_message("Connected to Schwab successfully.", level="info")
         except Exception as exc:
-            session[oauth_session_keys["login_in_progress"]] = False
-            session[oauth_session_keys["callback_pending"]] = False
-            session[oauth_session_keys["connected"]] = False
-            session[oauth_session_keys["authorized"]] = False
+            workflow_state.put(oauth_session_keys["login_in_progress"], False)
+            workflow_state.put(oauth_session_keys["callback_pending"], False)
+            workflow_state.put(oauth_session_keys["connected"], False)
+            workflow_state.put(oauth_session_keys["authorized"], False)
             set_status_message(str(exc), level="error")
             app.logger.warning("Schwab token exchange failed: %s", exc)
 
@@ -884,6 +2080,8 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     @app.get("/trades/<trade_mode>")
     def trade_dashboard(trade_mode: str):
         normalized_mode = resolve_trade_mode(trade_mode)
+        if app.config.get("RUNTIME_TARGET") == "hosted":
+            return redirect(url_for("hosted_shell_journal", trade_mode=normalized_mode, **request.args.to_dict(flat=False)))
         prefill_requested = str(request.args.get("prefill", "")).strip().lower() in {"1", "true", "yes", "on"}
         form_values = blank_trade_form(normalized_mode)
         form_values["trade_number"] = str(trade_store.next_trade_number())
@@ -1204,6 +2402,8 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
     @app.get("/performance")
     def performance_dashboard() -> str:
+        if app.config.get("RUNTIME_TARGET") == "hosted":
+            return redirect(url_for("hosted_shell_performance", **request.args.to_dict(flat=False)))
         dashboard_payload = performance_service.build_dashboard()
         return render_template(
             "performance.html",
@@ -1214,6 +2414,8 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
     @app.get("/management/open-trades")
     def open_trade_management_page() -> str:
+        if app.config.get("RUNTIME_TARGET") == "hosted":
+            return redirect(url_for("hosted_shell_manage_trades", **request.args.to_dict(flat=False)))
         management_payload = open_trade_manager.evaluate_open_trades(send_alerts=False)
         return render_template(
             "open_trade_management.html",
@@ -1289,6 +2491,8 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
     @app.get("/performance-summary")
     def performance_summary() -> str:
+        if app.config.get("RUNTIME_TARGET") == "hosted":
+            return redirect(url_for("hosted_shell_performance", **request.args.to_dict(flat=False)))
         enriched_trades = performance_engine.load_trades()
         return render_template(
             "performance_summary.html",
@@ -1355,10 +2559,14 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     return app
 
 
-def configure_logging(app: Flask) -> None:
+def configure_logging(app: Flask, host_infrastructure: Any | None = None) -> None:
     """Configure console and rotating-file logging."""
     formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
-    log_path = Path(APP_CONFIG.app_log_path).expanduser() if APP_CONFIG.app_log_path else Path(app.root_path) / "market_lookup.log"
+    infrastructure = host_infrastructure or app.extensions.get("host_infrastructure")
+    if infrastructure is not None:
+        log_path = infrastructure.storage.app_log_path
+    else:
+        log_path = Path(APP_CONFIG.app_log_path).expanduser() if APP_CONFIG.app_log_path else Path(app.root_path) / "market_lookup.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     file_handler = RotatingFileHandler(log_path, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
     file_handler.setFormatter(formatter)
@@ -1391,6 +2599,7 @@ def build_startup_menu_payload(market_data_service: MarketDataService) -> Dict[s
     requires_auth = bool(provider_meta.get("requires_auth"))
     authenticated = bool(provider_meta.get("authenticated", True))
     notes: list[str] = []
+    auth_status = {"requires_login": False, "requires_refresh": False}
 
     def _snapshot_card(label: str, ticker: str, key: str) -> Dict[str, str]:
         try:
@@ -1404,6 +2613,7 @@ def build_startup_menu_payload(market_data_service: MarketDataService) -> Dict[s
                 "meta": format_value(snapshot.get("As Of")),
             }
         except MarketDataReauthenticationRequired:
+            auth_status["requires_refresh"] = True
             notes.append(f"{label} unavailable until the Schwab session is refreshed.")
             return {
                 "label": label,
@@ -1413,6 +2623,7 @@ def build_startup_menu_payload(market_data_service: MarketDataService) -> Dict[s
                 "meta": "Session refresh required",
             }
         except MarketDataAuthenticationError:
+            auth_status["requires_login"] = True
             notes.append(f"{label} unavailable until Schwab login is completed.")
             return {
                 "label": label,
@@ -1440,29 +2651,36 @@ def build_startup_menu_payload(market_data_service: MarketDataService) -> Dict[s
                 "meta": "Unavailable",
             }
 
-    connection_label = "Connected"
     connection_meta = provider_meta.get("live_provider_name", "Unknown Provider")
-    if requires_auth and not authenticated:
+    cards = [
+        _snapshot_card("SPX", "^GSPC", "spx"),
+        _snapshot_card("VIX", "^VIX", "vix"),
+    ]
+
+    connection_label = "Connected"
+    if auth_status["requires_refresh"]:
+        connection_label = "Session refresh required"
+    elif auth_status["requires_login"] or (requires_auth and not authenticated):
         connection_label = "Login required"
     elif not requires_auth:
         connection_label = "Ready"
+
+    cards.append(
+        {
+            "label": "Schwab connection",
+            "value": connection_label,
+            "value_trend": "connection",
+            "change": "",
+            "meta": connection_meta,
+        }
+    )
 
     return {
         "brand_name": "Delphi",
         "connection_label": connection_label,
         "connection_meta": connection_meta,
-        "connection_requires_login": requires_auth and not authenticated,
-        "cards": [
-            _snapshot_card("SPX", "^GSPC", "spx"),
-            _snapshot_card("VIX", "^VIX", "vix"),
-            {
-                "label": "Schwab connection",
-                "value": connection_label,
-                "value_trend": "connection",
-                "change": "",
-                "meta": connection_meta,
-            },
-        ],
+        "connection_requires_login": auth_status["requires_login"] or (requires_auth and not authenticated),
+        "cards": cards,
         "notes": notes,
     }
 
@@ -1511,15 +2729,16 @@ def build_pushover_test_message(
     spx_snapshot: Optional[Dict[str, Any]],
     vix_snapshot: Optional[Dict[str, Any]],
     generated_at: datetime,
+    source_label: str,
 ) -> str:
-    """Build the Delphi 4.3 Dev header-button Pushover test message."""
+    """Build the Delphi header-button Pushover test message."""
     return "\n".join(
         [
             "SPX Update",
             f"SPX: {format_notification_snapshot(spx_snapshot)}",
             f"VIX: {format_notification_snapshot(vix_snapshot)}",
             f"Time: {generated_at.strftime('%Y-%m-%d %I:%M %p %Z').lstrip('0')}",
-            "Source: Delphi 4.3 Dev Pushover test",
+            f"Source: {source_label} Pushover test",
         ]
     )
 
@@ -1538,112 +2757,1180 @@ def format_notification_snapshot(snapshot: Optional[Dict[str, Any]]) -> str:
 def parse_performance_request_filters(source: Any) -> Dict[str, list[str]]:
     filters: Dict[str, list[str]] = {}
     for key in PERFORMANCE_FILTER_GROUPS:
+        group_is_active = bool(source.get(f"{key}__active")) if hasattr(source, "get") else False
         values = source.getlist(key) if hasattr(source, "getlist") else source.get(key, [])
         if isinstance(values, str):
             values = [item for item in values.split(",") if item]
-        filters[key] = list(values or [])
+        if values or group_is_active:
+            filters[key] = list(values or [])
     return filters
+
+
+def _build_hosted_cache_key(prefix: str, **parts: Any) -> str:
+    if not parts:
+        return prefix
+    serialized = json.dumps(parts, sort_keys=True, default=str, separators=(",", ":"))
+    return f"{prefix}:{serialized}"
+
+
+def _get_hosted_payload_cache(app: Optional[Flask] = None) -> dict[str, dict[str, Any]]:
+    container = _resolve_flask_container(app)
+    cache = container.extensions.get(HOSTED_PAYLOAD_CACHE_EXTENSION_KEY)
+    if cache is None:
+        cache = {}
+        container.extensions[HOSTED_PAYLOAD_CACHE_EXTENSION_KEY] = cache
+    return cache
+
+
+def _get_cached_hosted_payload(
+    cache_key: str,
+    *,
+    ttl_seconds: int,
+    builder: Any,
+    app: Optional[Flask] = None,
+) -> Any:
+    cache = _get_hosted_payload_cache(app)
+    cached = cache.get(cache_key)
+    now = time.monotonic()
+    if cached and (now - float(cached.get("stored_at") or 0.0)) <= ttl_seconds:
+        return copy.deepcopy(cached.get("payload"))
+    payload = builder()
+    cache[cache_key] = {"stored_at": now, "payload": copy.deepcopy(payload)}
+    return payload
+
+
+def _clear_hosted_payload_cache(*prefixes: str, app: Optional[Flask] = None) -> None:
+    cache = _get_hosted_payload_cache(app)
+    if not prefixes:
+        cache.clear()
+        return
+    for cache_key in list(cache.keys()):
+        if any(cache_key == prefix or cache_key.startswith(f"{prefix}:") for prefix in prefixes):
+            cache.pop(cache_key, None)
+
+
+def get_workflow_state(app: Optional[Flask] = None) -> WorkflowStateStore:
+    container = app or current_app
+    workflow_state = container.extensions.get("workflow_state")
+    if workflow_state is None:
+        workflow_state = FlaskSessionWorkflowState(
+            trade_prefill_key=APOLLO_PREFILL_SESSION_KEY,
+            trade_close_prefill_key=MANAGEMENT_CLOSE_PREFILL_SESSION_KEY,
+            trade_form_fields=TRADE_FORM_FIELDS,
+            trade_mode_resolver=resolve_trade_mode,
+        )
+        container.extensions["workflow_state"] = workflow_state
+    return workflow_state
+
+
+def authorize_hosted_private_action_request(app: Optional[Flask] = None) -> tuple[Optional[RequestIdentity], Optional[Any]]:
+    try:
+        return require_hosted_private_access(app), None
+    except AuthenticationRequiredError as exc:
+        return None, (jsonify({"ok": False, "error": "authentication_required", "detail": str(exc)}), 401)
+    except PrivateAccessDeniedError as exc:
+        return None, (jsonify({"ok": False, "error": "private_access_denied", "detail": str(exc)}), 403)
+
+
+def authorize_hosted_private_browser_request(app: Optional[Flask] = None) -> tuple[Optional[RequestIdentity], Optional[Any]]:
+    try:
+        return require_hosted_private_access(app), None
+    except AuthenticationRequiredError:
+        return None, redirect(url_for("hosted_login_entry", next=build_hosted_browser_next_path()))
+    except PrivateAccessDeniedError as exc:
+        return None, (
+            render_template(
+                "hosted_shell_access_error.html",
+                page_browser_title="Hosted Access Restricted",
+                page_heading="Hosted Access Restricted",
+                page_copy="This hosted Delphi 5.2 shell is currently limited to the approved private-access allowlist.",
+                error_code="private_access_denied",
+                error_detail=str(exc),
+            ),
+            403,
+        )
+
+
+def require_hosted_private_access(app: Optional[Flask] = None) -> RequestIdentity:
+    container = _resolve_flask_container(app)
+    if container.config.get("RUNTIME_TARGET") != "hosted":
+        abort(404)
+    identity = get_request_identity(container)
+    if not identity.authenticated:
+        local_debug_identity = resolve_local_hosted_debug_identity(container)
+        if local_debug_identity is not None:
+            return local_debug_identity
+    return get_private_access_gate(container).require_private_access(identity)
+
+
+def build_hosted_browser_next_path() -> str:
+    full_path = str(request.full_path or request.path or url_for("hosted_shell_home")).strip()
+    return sanitize_hosted_next_path(full_path)
+
+
+def sanitize_hosted_next_path(value: Any) -> str:
+    candidate = str(value or "").strip()
+    if not candidate or candidate == "?":
+        return url_for("hosted_shell_home") if has_request_context() else "/hosted"
+    if candidate.endswith("?"):
+        candidate = candidate[:-1]
+    if not candidate.startswith("/hosted") or candidate.startswith("//"):
+        return url_for("hosted_shell_home") if has_request_context() else "/hosted"
+    return candidate
+
+
+def is_missing_hosted_trade_table_error(error: Exception) -> bool:
+    detail = str(error or "")
+    return "PGRST205" in detail and "public." in detail
+
+
+def extract_missing_hosted_table_name(error: Exception) -> str:
+    detail = str(error or "")
+    match = re.search(r"public\.([a-zA-Z0-9_]+)", detail)
+    return match.group(1) if match else "unknown"
+
+
+def build_hosted_schema_error_payload(surface: str, error: Exception | None = None, **extra: Any) -> Dict[str, Any]:
+    required_tables = list(HOSTED_SURFACE_REQUIRED_TABLES.get(surface, ("journal_trades",)))
+    missing_table = extract_missing_hosted_table_name(error) if error is not None else required_tables[0]
+    detail = (
+        f"Hosted Delphi 6.0 cannot load {surface} because the Supabase public schema is not provisioned correctly. "
+        f"Missing or inaccessible table: {missing_table}. Required tables for this surface: {', '.join(required_tables)}."
+    )
+    if error is None:
+        current_app.logger.error("Hosted Supabase schema preflight failed on %s: hosted trade storage is unavailable.", surface)
+    else:
+        current_app.logger.error("Hosted Supabase schema error on %s: %s", surface, error)
+    payload = {
+        "ok": False,
+        "error": "supabase_schema_missing",
+        "surface": surface,
+        "missing_table": missing_table,
+        "required_tables": required_tables,
+        "detail": detail,
+        "admin_visible": True,
+    }
+    payload.update(extra)
+    return payload
+
+
+def build_hosted_storage_error_payload(surface: str, error: Exception, **extra: Any) -> Dict[str, Any]:
+    if is_missing_hosted_trade_table_error(error):
+        return build_hosted_schema_error_payload(surface, error, **extra)
+
+    required_tables = list(HOSTED_SURFACE_REQUIRED_TABLES.get(surface, ("journal_trades",)))
+    detail = (
+        f"Hosted Delphi 6.0 could not access {surface} because Supabase returned an error while processing the request. "
+        f"Details: {error}"
+    )
+    current_app.logger.error("Hosted Supabase storage error on %s: %s", surface, error)
+    payload = {
+        "ok": False,
+        "error": "supabase_storage_unavailable",
+        "surface": surface,
+        "required_tables": required_tables,
+        "detail": detail,
+        "admin_visible": True,
+    }
+    payload.update(extra)
+    return payload
+
+
+def get_hosted_storage_preflight_error(surface: str, *, app: Optional[Flask] = None, **extra: Any) -> Optional[Dict[str, Any]]:
+    target = resolve_hosted_storage_target(surface, app=app)
+    if target is None:
+        return None
+    checker = getattr(target, "is_trade_storage_available", None)
+    if callable(checker):
+        try:
+            if not checker():
+                return build_hosted_schema_error_payload(surface, None, **extra)
+        except SupabaseRequestError as exc:
+            return build_hosted_storage_error_payload(surface, exc, **extra)
+    return None
+
+
+def resolve_hosted_storage_target(surface: str, *, app: Optional[Flask] = None) -> Any:
+    if surface == "performance":
+        performance_service = get_performance_service(app)
+        return getattr(performance_service, "store", None)
+    if surface == "manage-trades":
+        container = _resolve_flask_container(app)
+        manager = container.extensions.get("open_trade_manager")
+        if manager is None:
+            manager = get_open_trade_manager(container)
+        trade_store = getattr(manager, "trade_store", None)
+        if trade_store is not None:
+            return trade_store
+        return getattr(manager, "store", None)
+    return get_trade_store(app)
+
+
+def build_empty_trade_summary() -> Dict[str, Any]:
+    return {
+        "total_trades": 0,
+        "open_trades": 0,
+        "closed_trades": 0,
+        "total_pnl": 0.0,
+        "average_pnl": 0.0,
+        "win_count": 0,
+        "loss_count": 0,
+    }
+
+
+def build_hosted_empty_trade_page_context(*, trade_mode: str, info_message: Optional[Dict[str, str]]) -> Dict[str, Any]:
+    return build_trade_page_context(
+        store=_HostedEmptyTradeStore(),
+        trade_mode=trade_mode,
+        form_values=blank_trade_form(trade_mode),
+        form_action=url_for("hosted_shell_journal", trade_mode=trade_mode),
+        form_title="Journal",
+        editing_trade_id=None,
+        error_message=None,
+        info_message=info_message,
+        prefill_active=False,
+    )
+
+
+def render_hosted_journal_page(
+    *,
+    identity: RequestIdentity,
+    context: Dict[str, Any],
+    admin_error: Optional[Dict[str, Any]] = None,
+    app: Optional[Flask] = None,
+) -> Any:
+    response = render_template(
+        "trades.html",
+        trade_mode_links={
+            "real": url_for("hosted_shell_journal", trade_mode="real"),
+            "simulated": url_for("hosted_shell_journal", trade_mode="simulated"),
+        },
+        hosted_read_only=True,
+        hosted_edit_enabled=True,
+        hosted_delete_enabled=True,
+        hosted_admin_error=admin_error,
+        **context,
+        **build_hosted_template_context(identity, app=app),
+    )
+    return (response, 503) if admin_error else response
+
+
+def build_hosted_empty_management_payload() -> Dict[str, Any]:
+    return {
+        "evaluated_at": "",
+        "evaluated_at_display": "Not yet evaluated",
+        "open_trade_count": 0,
+        "alerts_sent": 0,
+        "alert_failures": [],
+        "notifications_enabled": True,
+        "last_morning_snapshot_date": "",
+        "last_eod_summary_date": "",
+        "status_counts": [],
+        "records": [],
+    }
+
+
+def build_hosted_performance_summary_action_response(
+    *,
+    filters: Optional[Dict[str, list[str]]] = None,
+    app: Optional[Flask] = None,
+) -> Dict[str, Any]:
+    normalized_filters = {
+        "system": [],
+        "profile": [],
+        "result": [],
+        "trade_mode": [],
+        "macro_grade": [],
+        "structure_grade": [],
+    }
+    normalized_filters.update(filters or {})
+    payload = build_hosted_performance_dashboard(filters=normalized_filters, app=app)
+    return {
+        "ok": True,
+        "action": "performance-summary",
+        "payload": payload,
+    }
+
+
+def build_hosted_journal_trades_action_response(*, trade_mode: str, app: Optional[Flask] = None) -> Dict[str, Any]:
+    trade_store = get_trade_store(app)
+    loaded_trades = trade_store.list_trades(trade_mode)
+    summary = summarize_loaded_trade_rows(loaded_trades)
+    trades = [build_trade_row_payload(item) for item in loaded_trades]
+    return {
+        "ok": True,
+        "action": "journal-trades",
+        "trade_mode": trade_mode,
+        "trade_mode_label": TRADE_MODE_LABELS[trade_mode],
+        "summary": summary,
+        "summary_metrics": build_trade_summary_metrics(summary),
+        "trade_count": len(trades),
+        "trades": trades,
+    }
+
+
+def build_hosted_open_trades_action_response(*, trade_mode: str, app: Optional[Flask] = None) -> Dict[str, Any]:
+    management_payload = build_hosted_open_trade_management_payload(app=app)
+    return {
+        "ok": True,
+        "action": "open-trades",
+        **build_open_trade_action_payload(management_payload, trade_mode=trade_mode),
+    }
+
+
+def build_hosted_apollo_action_response(*, app: Optional[Flask] = None) -> Dict[str, Any]:
+    snapshot = _get_cached_hosted_payload(
+        "hosted:apollo:snapshot",
+        ttl_seconds=HOSTED_APOLLO_SNAPSHOT_CACHE_SECONDS,
+        builder=lambda: get_apollo_snapshot_repository(app).load_snapshot(),
+        app=app,
+    )
+    return {
+        "ok": True,
+        "action": "apollo-summary",
+        "snapshot_available": snapshot is not None,
+        "payload": prepare_hosted_apollo_payload(snapshot or build_empty_hosted_apollo_payload()),
+    }
+
+
+def build_hosted_kairos_action_response(*, app: Optional[Flask] = None) -> Dict[str, Any]:
+    return _get_cached_hosted_payload(
+        "hosted:kairos:summary",
+        ttl_seconds=HOSTED_KAIROS_CACHE_SECONDS,
+        builder=lambda: _build_hosted_kairos_action_response_uncached(app=app),
+        app=app,
+    )
+
+
+def _build_hosted_kairos_action_response_uncached(*, app: Optional[Flask] = None) -> Dict[str, Any]:
+    dashboard = get_kairos_live_service(app).get_dashboard_payload()
+    snapshot = get_kairos_snapshot_repository(app).load_snapshot()
+    use_snapshot = bool(snapshot) and (not dashboard.get("scan_log_count") and not dashboard.get("last_scan_at"))
+    payload = snapshot if use_snapshot else build_hosted_kairos_payload(dashboard)
+    return {
+        "ok": True,
+        "action": "kairos-summary",
+        "snapshot_available": bool(snapshot),
+        "payload": prepare_hosted_kairos_payload(payload),
+    }
+
+
+def build_hosted_shell_navigation() -> list[Dict[str, str]]:
+    route_map = build_delphi_route_map(hosted=True)
+    return [
+        {"key": "home", "label": "Home", "href": route_map["home"]},
+        {"key": "research", "label": "Research", "href": route_map["research"]},
+        {"key": "performance", "label": "Performance", "href": route_map["performance"]},
+        {"key": "journal", "label": "Journal", "href": route_map["journal"]},
+        {"key": "manage-trades", "label": "Manage Trades", "href": route_map["management"]},
+        {"key": "apollo", "label": "Apollo", "href": route_map["apollo"]},
+        {"key": "kairos", "label": "Kairos", "href": route_map["kairos"]},
+    ]
+
+
+def build_delphi_route_map(*, hosted: bool = False) -> Dict[str, str]:
+    if hosted:
+        return {
+            "home": url_for("hosted_shell_home"),
+            "research": url_for("hosted_research"),
+            "apollo": url_for("hosted_shell_apollo", autorun=1),
+            "kairos": url_for("hosted_kairos_live_page"),
+            "management": url_for("hosted_shell_manage_trades"),
+            "performance": url_for("hosted_shell_performance"),
+            "journal": url_for("hosted_shell_journal", trade_mode="real"),
+            "journal_real": url_for("hosted_shell_journal", trade_mode="real"),
+            "journal_simulated": url_for("hosted_shell_journal", trade_mode="simulated"),
+            "open_trades": url_for("hosted_shell_open_trades"),
+            "performance_data": url_for("hosted_performance_data"),
+            "text_status": url_for("text_status_api"),
+            "logout": url_for("hosted_browser_sign_out"),
+        }
+
+    return {
+        "home": url_for("index"),
+        "research": url_for("research"),
+        "apollo": url_for("run_apollo", autorun=1),
+        "kairos": url_for("kairos_live_page"),
+        "management": url_for("open_trade_management_page"),
+        "performance": url_for("performance_dashboard"),
+        "journal": url_for("trade_dashboard", trade_mode="real"),
+        "journal_real": url_for("trade_dashboard", trade_mode="real"),
+        "journal_simulated": url_for("trade_dashboard", trade_mode="simulated"),
+        "open_trades": url_for("open_trade_management_page"),
+        "performance_data": url_for("performance_dashboard_data"),
+        "text_status": url_for("text_status_api"),
+    }
+
+
+def build_hosted_template_context(
+    identity: RequestIdentity,
+    *,
+    app: Optional[Flask] = None,
+    extra_status_items: Optional[list[Dict[str, str]]] = None,
+) -> Dict[str, Any]:
+    routes = build_delphi_route_map(hosted=True)
+    return {
+        "hosted_mode": True,
+        "hosted_identity": identity,
+        "hosted_sign_out_url": routes["logout"],
+        "delphi_routes": routes,
+        "header_status_items": build_hosted_header_status_items(identity, app=app, extra_items=extra_status_items),
+    }
+
+
+def build_hosted_delphi4_sync_panel_context(
+    identity: RequestIdentity,
+    *,
+    app: Optional[Flask] = None,
+) -> Dict[str, Any] | None:
+    if not is_hosted_local_dev_request():
+        return None
+    sync_result = pop_hosted_delphi4_sync_result()
+    last_successful_sync_at = load_last_successful_sync_timestamp(get_hosted_delphi4_sync_status_repository(app))
+    source_summary = None
+    source_warning = None
+    try:
+        source_paths = resolve_delphi4_source_paths()
+        source_summary = {
+            "source_root": str(source_paths.source_root),
+            "trade_database_path": str(source_paths.trade_database_path),
+            "kairos_replay_dir": str(source_paths.kairos_replay_dir),
+        }
+    except FileNotFoundError as exc:
+        source_warning = str(exc)
+    return {
+        "visible": True,
+        "identity_label": identity.display_name or identity.email or "Hosted Debug",
+        "source_summary": source_summary,
+        "source_warning": source_warning,
+        "last_successful_sync_at": last_successful_sync_at,
+        "last_result": sync_result,
+        "action_url": url_for("hosted_delphi4_sync_action"),
+    }
+
+
+def build_hosted_header_status_items(
+    identity: RequestIdentity,
+    *,
+    app: Optional[Flask] = None,
+    extra_items: Optional[list[Dict[str, str]]] = None,
+) -> list[Dict[str, str]]:
+    provider_meta = get_market_data_service(app).get_provider_metadata()
+    requires_auth = bool(provider_meta.get("requires_auth"))
+    schwab_connected = not requires_auth or bool(provider_meta.get("authenticated", True))
+    items = [
+        {
+            "label": "Hosted session",
+            "value": "Authenticated" if identity.authenticated else "Sign-in required",
+            "meta": identity.display_name or identity.email or "Approved user",
+            "tone": "good" if identity.authenticated else "warning",
+        },
+        {
+            "label": "Schwab",
+            "value": "Connected" if schwab_connected else "Login required",
+            "meta": str(provider_meta.get("live_provider_name") or "Unknown Provider"),
+            "tone": "good" if schwab_connected else "warning",
+        },
+    ]
+    if extra_items:
+        items.extend(extra_items)
+    return items
+
+
+def get_hosted_auth_config(app: Optional[Flask] = None) -> HostedAuthConfig:
+    container = _resolve_flask_container(app)
+    auth_config = container.extensions.get("hosted_auth_config")
+    if auth_config is None:
+        auth_config = HostedAuthConfig.resolve(container, get_runtime_app_config(container), container.extensions.get("supabase_context"))
+        container.extensions["hosted_auth_config"] = auth_config
+    return auth_config
+
+
+def get_hosted_session_authenticator(app: Optional[Flask] = None) -> HostedSessionAuthenticator:
+    container = _resolve_flask_container(app)
+    authenticator = container.extensions.get("hosted_session_authenticator")
+    if authenticator is None:
+        authenticator = SupabaseEmailPasswordAuthenticator(
+            context=container.extensions.get("supabase_context"),
+            auth_config=get_hosted_auth_config(container),
+        )
+        container.extensions["hosted_session_authenticator"] = authenticator
+    return authenticator
+
+
+def get_trade_store(app: Optional[Flask] = None) -> TradeRepository:
+    container = _resolve_flask_container(app)
+    store = container.extensions.get("trade_store")
+    if store is None:
+        store = container.extensions["service_bundle"].trade_store
+        container.extensions["trade_store"] = store
+    return store
+
+
+def get_hosted_supabase_table_gateway(app: Optional[Flask] = None):
+    container = _resolve_flask_container(app)
+    integration = container.extensions.get("supabase_integration")
+    if integration is None:
+        raise RuntimeError("Hosted Delphi 6.0 sync requires Supabase integration.")
+    gateway = container.extensions.get("hosted_supabase_table_gateway")
+    if gateway is None:
+        gateway = integration.create_table_gateway()
+        container.extensions["hosted_supabase_table_gateway"] = gateway
+    return gateway
+
+
+def get_hosted_kairos_scenario_repository(app: Optional[Flask] = None) -> SupabaseKairosScenarioRepository:
+    container = _resolve_flask_container(app)
+    repository = container.extensions.get("hosted_kairos_scenario_repository")
+    if repository is None:
+        context = container.extensions.get("supabase_context")
+        if context is None or not getattr(context, "configured", False):
+            raise RuntimeError("Hosted Delphi 6.0 sync requires a configured Supabase runtime context.")
+        repository = SupabaseKairosScenarioRepository(
+            context=context,
+            gateway=get_hosted_supabase_table_gateway(container),
+        )
+        container.extensions["hosted_kairos_scenario_repository"] = repository
+    return repository
+
+
+def get_hosted_delphi4_sync_status_repository(app: Optional[Flask] = None) -> SupabaseHostedRuntimeStateRepository:
+    container = _resolve_flask_container(app)
+    repository = container.extensions.get("hosted_delphi4_sync_status_repository")
+    if repository is None:
+        context = container.extensions.get("supabase_context")
+        if context is None or not getattr(context, "configured", False):
+            raise RuntimeError("Hosted Delphi 6.0 sync requires a configured Supabase runtime context.")
+        repository = SupabaseHostedRuntimeStateRepository(
+            context=context,
+            gateway=get_hosted_supabase_table_gateway(container),
+            object_type=SYNC_STATUS_OBJECT_TYPE,
+        )
+        container.extensions["hosted_delphi4_sync_status_repository"] = repository
+    return repository
+
+
+def get_apollo_snapshot_repository(app: Optional[Flask] = None) -> ApolloSnapshotRepository:
+    container = _resolve_flask_container(app)
+    repository = container.extensions.get("apollo_snapshot_repository")
+    if repository is None:
+        repository = container.extensions["service_bundle"].apollo_snapshot_repository
+        container.extensions["apollo_snapshot_repository"] = repository
+    return repository
+
+
+def get_kairos_snapshot_repository(app: Optional[Flask] = None) -> KairosSnapshotRepository:
+    container = _resolve_flask_container(app)
+    repository = container.extensions.get("kairos_snapshot_repository")
+    if repository is None:
+        repository = container.extensions["service_bundle"].kairos_snapshot_repository
+        container.extensions["kairos_snapshot_repository"] = repository
+    return repository
+
+
+def get_apollo_service(app: Optional[Flask] = None) -> ApolloService:
+    container = _resolve_flask_container(app)
+    service = container.extensions.get("apollo_service")
+    if service is None:
+        service = container.extensions["service_bundle"].apollo_service
+        container.extensions["apollo_service"] = service
+    return service
+
+
+def get_market_data_service(app: Optional[Flask] = None) -> MarketDataService:
+    container = _resolve_flask_container(app)
+    service = container.extensions.get("market_data_service")
+    if service is None:
+        service = container.extensions["service_bundle"].market_data_service
+        container.extensions["market_data_service"] = service
+    return service
+
+
+def get_performance_service(app: Optional[Flask] = None) -> PerformanceDashboardService:
+    container = _resolve_flask_container(app)
+    service = container.extensions.get("performance_service")
+    if service is None:
+        service = PerformanceDashboardService(get_trade_store(container))
+        container.extensions["performance_service"] = service
+    return service
+
+
+def get_open_trade_manager(app: Optional[Flask] = None) -> OpenTradeManager:
+    container = _resolve_flask_container(app)
+    manager = container.extensions.get("open_trade_manager")
+    trade_store = get_trade_store(container)
+    if manager is None:
+        manager = container.extensions["service_bundle"].open_trade_manager
+        container.extensions["open_trade_manager"] = manager
+    if getattr(manager, "trade_store", None) is not trade_store:
+        manager.trade_store = trade_store
+    return manager
+
+
+def get_kairos_live_service(app: Optional[Flask] = None) -> KairosService:
+    container = _resolve_flask_container(app)
+    service = container.extensions.get("kairos_live_service") or container.extensions.get("kairos_service")
+    if service is None:
+        service = container.extensions["service_bundle"].kairos_live_service
+        container.extensions["kairos_live_service"] = service
+        container.extensions["kairos_service"] = service
+    return service
+
+
+def get_kairos_sim_service(app: Optional[Flask] = None) -> KairosService:
+    container = _resolve_flask_container(app)
+    service = container.extensions.get("kairos_sim_service")
+    if service is None:
+        service = container.extensions["service_bundle"].kairos_sim_service
+        container.extensions["kairos_sim_service"] = service
+    return service
+
+
+def get_request_identity_resolver(app: Optional[Flask] = None) -> RequestIdentityResolver:
+    container = _resolve_flask_container(app)
+    resolver = container.extensions.get("request_identity_resolver")
+    if resolver is None:
+        resolver = container.extensions["service_bundle"].request_identity_resolver
+        container.extensions["request_identity_resolver"] = resolver
+    return resolver
+
+
+def get_private_access_gate(app: Optional[Flask] = None) -> PrivateAccessGate:
+    container = _resolve_flask_container(app)
+    gate = container.extensions.get("private_access_gate")
+    if gate is None:
+        gate = container.extensions["service_bundle"].private_access_gate
+        container.extensions["private_access_gate"] = gate
+    return gate
+
+
+def get_session_invalidator(app: Optional[Flask] = None) -> SessionInvalidator:
+    container = _resolve_flask_container(app)
+    invalidator = container.extensions.get("session_invalidator")
+    if invalidator is None:
+        invalidator = container.extensions["service_bundle"].session_invalidator
+        container.extensions["session_invalidator"] = invalidator
+    return invalidator
+
+
+def get_request_identity(app: Optional[Flask] = None) -> RequestIdentity:
+    if has_request_context() and hasattr(g, "request_identity"):
+        return g.request_identity
+    if app is None and not has_request_context() and not has_app_context():
+        return anonymous_request_identity(auth_source="unbound")
+    if not has_request_context():
+        return anonymous_request_identity(auth_source="out-of-request")
+    cached_identity = resolve_hosted_browser_cache_identity(app)
+    if cached_identity is not None:
+        return cached_identity
+    identity = get_request_identity_resolver(app).resolve_request_identity(request)
+    if identity.authenticated:
+        return identity
+    session_identity = resolve_hosted_browser_session_identity()
+    if session_identity is not None:
+        return session_identity
+    return identity
+
+
+def remember_hosted_browser_session(identity: RequestIdentity) -> None:
+    if not has_request_context():
+        return
+    session[HOSTED_SESSION_USER_ID_KEY] = identity.user_id
+    session[HOSTED_SESSION_EMAIL_KEY] = identity.email
+    session[HOSTED_SESSION_DISPLAY_NAME_KEY] = identity.display_name
+
+
+def clear_hosted_browser_session() -> None:
+    if not has_request_context():
+        return
+    session.pop(HOSTED_SESSION_USER_ID_KEY, None)
+    session.pop(HOSTED_SESSION_EMAIL_KEY, None)
+    session.pop(HOSTED_SESSION_DISPLAY_NAME_KEY, None)
+
+
+def resolve_hosted_browser_session_identity() -> RequestIdentity | None:
+    if not has_request_context():
+        return None
+    user_id = str(session.get(HOSTED_SESSION_USER_ID_KEY) or "").strip()
+    email = str(session.get(HOSTED_SESSION_EMAIL_KEY) or "").strip().lower()
+    display_name = str(session.get(HOSTED_SESSION_DISPLAY_NAME_KEY) or email or user_id).strip()
+    if not user_id or not email:
+        return None
+    return RequestIdentity(
+        user_id=user_id,
+        email=email,
+        display_name=display_name,
+        authenticated=True,
+        private_access_granted=False,
+        auth_source="flask-hosted-session",
+        claims={},
+    )
+
+
+def get_hosted_browser_session_cache(app: Optional[Flask] = None) -> dict[str, RequestIdentity]:
+    container = _resolve_flask_container(app)
+    cache = container.extensions.get("hosted_browser_session_cache")
+    if cache is None:
+        cache = {}
+        container.extensions["hosted_browser_session_cache"] = cache
+    return cache
+
+
+def establish_hosted_browser_cache_session(identity: RequestIdentity, response: Any, *, app: Optional[Flask] = None) -> None:
+    if not has_request_context():
+        return
+    token = secrets.token_urlsafe(24)
+    get_hosted_browser_session_cache(app)[token] = identity
+    response.headers.add(
+        "Set-Cookie",
+        f"{HOSTED_LOCAL_BROWSER_SESSION_COOKIE}={token}; HttpOnly; Path=/; SameSite=Lax",
+    )
+
+
+def invalidate_hosted_browser_cache_session(response: Any, *, app: Optional[Flask] = None) -> None:
+    if not has_request_context():
+        return
+    token = str(request.cookies.get(HOSTED_LOCAL_BROWSER_SESSION_COOKIE) or "").strip()
+    if token:
+        get_hosted_browser_session_cache(app).pop(token, None)
+    response.headers.add(
+        "Set-Cookie",
+        f"{HOSTED_LOCAL_BROWSER_SESSION_COOKIE}=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; HttpOnly; Path=/; SameSite=Lax",
+    )
+
+
+def resolve_hosted_browser_cache_identity(app: Optional[Flask] = None) -> RequestIdentity | None:
+    if not has_request_context():
+        return None
+    token = str(request.cookies.get(HOSTED_LOCAL_BROWSER_SESSION_COOKIE) or "").strip()
+    if not token:
+        return None
+    return get_hosted_browser_session_cache(app).get(token)
+
+
+def resolve_local_hosted_debug_identity(app: Optional[Flask] = None) -> RequestIdentity | None:
+    if not has_request_context():
+        return None
+    host = str(request.host.split(":", 1)[0] or "").strip().lower()
+    if host not in LOCAL_DEV_HOSTS:
+        return None
+    allowed_emails = {
+        item.strip().lower()
+        for item in str(_resolve_flask_container(app).config.get("DELPHI_HOSTED_ALLOWED_EMAILS") or get_runtime_app_config(app).hosted_private_allowed_emails or "").split(",")
+        if item.strip()
+    }
+    if HOSTED_LOCAL_DEBUG_EMAIL not in allowed_emails:
+        return None
+    return RequestIdentity(
+        user_id="localhost-hosted-debug",
+        email=HOSTED_LOCAL_DEBUG_EMAIL,
+        display_name="Hosted Debug",
+        authenticated=True,
+        private_access_granted=True,
+        auth_source="localhost-hosted-debug",
+        claims={},
+    )
+
+
+def is_hosted_local_dev_request() -> bool:
+    if not has_request_context():
+        return False
+    if current_app.config.get("RUNTIME_TARGET") != "hosted":
+        return False
+    host = str(request.host.split(":", 1)[0] or "").strip().lower()
+    return host in LOCAL_DEV_HOSTS
+
+
+def build_delphi4_sync_flash_message(result: Dict[str, Any], *, dry_run: bool) -> str:
+    trade_count = len(result.get("new_trade_numbers") or [])
+    close_event_count = int(result.get("new_close_event_count") or 0)
+    tape_count = len(result.get("new_tape_scenario_keys") or [])
+    if not result.get("had_changes"):
+        return "Delphi 4.3 sync check completed. Nothing new was found."
+    prefix = "Dry run found" if dry_run else "Imported"
+    return f"{prefix} {trade_count} trades, {close_event_count} close events, and {tape_count} live Kairos tapes."
+
+
+def save_apollo_snapshot(apollo_result: Optional[Dict[str, Any]], app: Optional[Flask] = None) -> None:
+    if not apollo_result:
+        return
+    container = _resolve_flask_container(app)
+    try:
+        get_apollo_snapshot_repository(container).save_snapshot(apollo_result)
+    except OSError as exc:
+        container.logger.warning("Unable to persist Apollo snapshot for hosted read mode: %s", exc)
+
+
+def save_kairos_snapshot(kairos_result: Optional[Dict[str, Any]], app: Optional[Flask] = None) -> None:
+    if not kairos_result:
+        return
+    container = _resolve_flask_container(app)
+    try:
+        get_kairos_snapshot_repository(container).save_snapshot(kairos_result)
+    except OSError as exc:
+        container.logger.warning("Unable to persist Kairos snapshot for hosted live execution: %s", exc)
+
+
+def execute_hosted_apollo_live_run(*, app: Optional[Flask] = None) -> Dict[str, Any]:
+    container = _resolve_flask_container(app)
+    result = prepare_hosted_apollo_payload(execute_apollo_precheck(
+        get_apollo_service(container),
+        trigger_source="hosted live execution",
+        force_refresh=True,
+    ))
+    save_apollo_snapshot(result, app=container)
+    return {
+        "ok": True,
+        "action": "apollo-run",
+        "live_execution": True,
+        "snapshot_available": True,
+        "payload": result,
+    }
+
+
+def execute_hosted_kairos_live_run(*, app: Optional[Flask] = None) -> Dict[str, Any]:
+    container = _resolve_flask_container(app)
+    provider_meta = get_market_data_service(container).get_provider_metadata()
+    if provider_meta.get("requires_auth") and not provider_meta.get("authenticated"):
+        raise MarketDataAuthenticationError("Click login to connect to Schwab")
+
+    # Surface Schwab auth/data failures explicitly before Kairos' internal fallback handling can hide them.
+    get_market_data_service(container).get_fresh_latest_snapshot("^GSPC", query_type="hosted_kairos_preflight_spx")
+    get_market_data_service(container).get_fresh_latest_snapshot("^VIX", query_type="hosted_kairos_preflight_vix")
+
+    trigger_id = datetime.now(CHICAGO_TZ).strftime("%Y%m%d%H%M%S")
+    kairos_service = get_kairos_live_service(container)
+    current_dashboard = kairos_service.get_dashboard_payload()
+    if current_dashboard.get("armed_for_day"):
+        dashboard = kairos_service.run_scan_cycle(
+            trigger_reason=f"hosted-live-execution-{trigger_id}",
+            force_refresh=True,
+        )
+    else:
+        dashboard = kairos_service.initialize_live_kairos_on_page_load(force_refresh=True)
+
+    payload = prepare_hosted_kairos_payload(build_hosted_kairos_payload(dashboard))
+    if str(payload.get("market_session_status") or "").strip().lower() != "open":
+        raise MarketDataError(str(payload.get("summary_text") or payload.get("classification_note") or "Kairos live execution requires an open market session."))
+    payload["execution_source_label"] = "Hosted live execution"
+    payload["live_data_provider"] = "Schwab"
+    payload["run_timestamp"] = payload.get("last_scan_display") or "—"
+    save_kairos_snapshot(payload, app=container)
+    return {
+        "ok": True,
+        "action": "kairos-run",
+        "live_execution": True,
+        "snapshot_available": True,
+        "payload": payload,
+    }
+
+
+def build_empty_hosted_apollo_payload() -> Dict[str, Any]:
+    return prepare_hosted_apollo_payload({
+        "title": "Apollo Gate 1 -- SPX Structure",
+        "status": "No Snapshot",
+        "status_class": "not-available",
+        "run_timestamp": "Not captured yet",
+        "execution_source_label": "No live execution captured",
+        "live_data_provider": "Schwab",
+        "provider_name": "Awaiting local Apollo run",
+        "structure_grade": "—",
+        "macro_grade": "—",
+        "trade_candidates_count": 0,
+        "trade_candidates_valid_count": 0,
+        "next_market_day": "—",
+        "spx_value": "—",
+        "spx_as_of": "—",
+        "vix_value": "—",
+        "vix_as_of": "—",
+        "option_chain_status": "Unavailable",
+        "option_chain_heading_date": "—",
+        "trade_candidates_items": [],
+        "reasons": ["No Apollo run has been captured yet. Run Apollo locally to publish the latest hosted read-only snapshot."],
+    })
+
+
+def prepare_hosted_apollo_payload(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    apollo_payload = dict(payload or {})
+    provider_display = str(apollo_payload.get("live_data_provider") or apollo_payload.get("provider_name") or "Schwab")
+    apollo_payload["provider_name"] = provider_display
+    status_text = str(apollo_payload.get("status") or "Blocked").strip() or "Blocked"
+    status_key = str(apollo_payload.get("status_class") or status_text).strip().lower().replace(" ", "-")
+    allowed = status_key == "allowed"
+    candidates = [item for item in apollo_payload.get("trade_candidates_items") or [] if isinstance(item, dict)]
+    ready_candidates = [item for item in candidates if item.get("available")]
+    first_ready = ready_candidates[0] if ready_candidates else None
+    block_reason = ""
+    if not allowed:
+        block_reason = next(
+            (
+                str(item.get("no_trade_message") or "").strip()
+                for item in candidates
+                if str(item.get("no_trade_message") or "").strip()
+            ),
+            "",
+        )
+        if not block_reason:
+            block_reason = next((str(reason).strip() for reason in apollo_payload.get("reasons") or [] if str(reason).strip()), "")
+    recommendation = (
+        f"{first_ready.get('mode_label', 'Apollo')} {first_ready.get('short_strike', '—')} / {first_ready.get('long_strike', '—')}"
+        if first_ready
+        else "Stand aside"
+    )
+    apollo_payload["hosted_connection_status"] = "Connected" if provider_display == "Schwab" else provider_display
+    apollo_payload["hosted_live_data_label"] = str(apollo_payload.get("live_data_mode") or apollo_payload.get("execution_source_label") or "Live data")
+    apollo_payload["hosted_decision_label"] = "Allowed" if allowed else ("No Snapshot" if status_key == "not-available" else "Blocked")
+    apollo_payload["hosted_recommendation"] = recommendation
+    apollo_payload["hosted_plain_english"] = (
+        f"Apollo approved a live Schwab-backed setup. Recommended trade: {recommendation}."
+        if allowed and first_ready
+        else (
+            f"Apollo is standing aside. {block_reason}"
+            if block_reason
+            else "Apollo does not have a captured result yet. Run the live check to populate this page."
+        )
+    )
+    apollo_payload["hosted_result_tone"] = "success" if allowed else ("warning" if status_key != "not-available" else "info")
+    apollo_payload["hosted_result_heading"] = "Approved for next market day" if allowed else ("Awaiting Apollo run" if status_key == "not-available" else "Stand aside")
+    apollo_payload["apollo_trigger_note"] = "Hosted live execution" if str(apollo_payload.get("execution_source_label") or "").lower().startswith("hosted") else str(apollo_payload.get("apollo_trigger_note") or "")
+    return apollo_payload
+
+
+def build_hosted_kairos_payload(dashboard: Dict[str, Any]) -> Dict[str, Any]:
+    latest_scan = dashboard.get("latest_scan") or {}
+    live_workspace = dashboard.get("live_workspace") or {}
+    return {
+        "title": str(dashboard.get("title") or "Kairos"),
+        "mode": str(dashboard.get("mode") or "Live"),
+        "execution_source_label": "Hosted live execution" if dashboard.get("mode") == "Live" else "Kairos snapshot",
+        "live_data_provider": "Schwab",
+        "session_status": str(dashboard.get("session_status") or "Inactive"),
+        "session_status_key": str(dashboard.get("session_status_key") or "inactive"),
+        "current_state_display": str(dashboard.get("current_state_display") or "Inactive"),
+        "market_session_status": str(dashboard.get("market_session_status") or "Closed"),
+        "last_scan_display": str(dashboard.get("last_scan_display") or "—"),
+        "next_scan_display": str(dashboard.get("next_scan_display") or "—"),
+        "total_scans_completed": int(dashboard.get("total_scans_completed") or 0),
+        "window_found": bool(dashboard.get("window_found")),
+        "summary_text": str(live_workspace.get("summary_text") or latest_scan.get("summary_text") or dashboard.get("status_note") or "No Kairos scan has completed yet."),
+        "classification_note": str(live_workspace.get("classification_note") or dashboard.get("classification_note") or "—"),
+        "structure_status": str(latest_scan.get("structure_status") or "Awaiting scan"),
+        "momentum_status": str(latest_scan.get("momentum_status") or "Awaiting scan"),
+        "timing_status": str(latest_scan.get("timing_status") or "Awaiting scan"),
+        "kairos_state": str(latest_scan.get("kairos_state") or dashboard.get("current_state_display") or "Inactive"),
+        "spx_value": str(latest_scan.get("spx_value_display") or latest_scan.get("spx_value") or "—"),
+        "vix_value": str(latest_scan.get("vix_value_display") or latest_scan.get("vix_value") or "—"),
+        "stamps": list(live_workspace.get("stamps") or []),
+        "candidate_cards": list(live_workspace.get("candidate_cards") or []),
+        "lifecycle_items": list(dashboard.get("lifecycle_items") or []),
+        "scan_log_count": int(dashboard.get("scan_log_count") or 0),
+        "run_timestamp": str(dashboard.get("last_scan_display") or "—"),
+    }
+
+
+def prepare_hosted_kairos_payload(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    kairos_payload = dict(payload or {})
+    provider_display = str(kairos_payload.get("live_data_provider") or "Schwab")
+    kairos_payload["live_data_provider"] = provider_display
+    market_session = str(kairos_payload.get("market_session_status") or "Closed")
+    candidate_cards = [dict(item) for item in kairos_payload.get("candidate_cards") or [] if isinstance(item, dict)]
+    for item in candidate_cards:
+        normalized_slot_label = normalize_candidate_profile(item.get("slot_label"))
+        if normalized_slot_label in {"Prime", "Subprime"}:
+            item["slot_label"] = map_hosted_kairos_profile_label(normalized_slot_label)
+            item["headline"] = item["slot_label"]
+    kairos_payload["candidate_cards"] = candidate_cards
+    tradeable_cards = [item for item in candidate_cards if item.get("tradeable")]
+    first_tradeable = tradeable_cards[0] if tradeable_cards else None
+    kairos_payload["hosted_market_note"] = (
+        "Market is closed. Kairos can show the latest captured live state, but a fresh live scan requires an open session."
+        if market_session.lower() != "open"
+        else str(kairos_payload.get("summary_text") or "Kairos is monitoring the live session.")
+    )
+    kairos_payload["hosted_recommendation"] = (
+        f"{first_tradeable.get('slot_label', 'Window Open')}: {first_tradeable.get('strike_label', '—')}"
+        if first_tradeable
+        else ("No live window is tradeable right now" if market_session.lower() == "open" else "Waiting for the next open market session")
+    )
+    kairos_payload["hosted_result_tone"] = "success" if first_tradeable else ("warning" if market_session.lower() == "open" else "info")
+    kairos_payload["market_session_status_key"] = str(kairos_payload.get("market_session_status_key") or market_session).strip().lower().replace(" ", "-")
+    return kairos_payload
+
+
+def map_hosted_kairos_profile_label(label: Any) -> str:
+    normalized_label = normalize_candidate_profile(label)
+    if normalized_label == "Subprime":
+        return "Best Available"
+    if normalized_label == "Prime":
+        return "Window Open"
+    return str(label or normalized_label or "Kairos").strip() or "Kairos"
+
+
+def prepare_hosted_kairos_workspace_payload(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    serialized_payload = json.loads(json.dumps(payload or {}, default=str))
+    if not isinstance(serialized_payload, dict):
+        return {}
+    serialized_payload.setdefault("simulation_controls", {})
+    serialized_payload.setdefault(
+        "simulation_runner",
+        {
+            "status": "Idle",
+            "status_key": "idle",
+            "trade_candidate_card": {"visible": False, "profiles": []},
+            "active_trade_lock_in": None,
+            "trade_exit_prompt": {"visible": False},
+            "trade_exit_status": {"visible": False},
+            "scenario_options": [],
+            "pause_event_options": [],
+            "pause_event_filters": [],
+            "pause_status": {},
+            "run_mode": "Idle",
+            "simulated_time_display": "—",
+            "current_bar_number": 0,
+            "total_bars": 390,
+            "progress_percent": 0,
+            "completed_steps": 0,
+            "total_steps": 390,
+            "pause_reason": "",
+            "session_metrics": None,
+            "current_candle": None,
+            "can_request_best_trade_override": False,
+            "best_trade_override_disabled_reason": "",
+        },
+    )
+    serialized_payload.setdefault(
+        "bar_map",
+        {
+            "mode_key": "live",
+            "mode_label": "Live Tape",
+            "processed_bars": 0,
+            "total_bars": 390,
+            "progress_percent": 0,
+            "latest_timestamp": "—",
+            "tape_source": "Live SPX 1m",
+            "note": "No session tape available yet.",
+            "bars": [],
+            "event_markers": [],
+        },
+    )
+    serialized_payload.setdefault(
+        "live_trade_manager",
+        {
+            "active_trade": None,
+            "exit_prompt": {"visible": False},
+            "exit_status": {"visible": False},
+        },
+    )
+    serialized_payload.setdefault("scan_log", [])
+    serialized_payload.setdefault("scan_log_note", "No Kairos scans have been logged for this market day yet.")
+    live_workspace = serialized_payload.get("live_workspace")
+    if not isinstance(live_workspace, dict):
+        live_workspace = {}
+        serialized_payload["live_workspace"] = live_workspace
+    live_workspace.setdefault("stamps", [])
+    live_workspace.setdefault("candidate_cards", [])
+    live_workspace.setdefault("credit_map", {"available": False, "slot_statuses": []})
+    candidate_cards = [item for item in live_workspace.get("candidate_cards") or [] if isinstance(item, dict)]
+    for item in candidate_cards:
+        hosted_label = map_hosted_kairos_profile_label(item.get("slot_label"))
+        item["slot_label"] = hosted_label
+        if normalize_candidate_profile(item.get("headline")) in {"Prime", "Subprime"}:
+            item["headline"] = hosted_label
+    credit_map = live_workspace.get("credit_map")
+    if isinstance(credit_map, dict):
+        slot_statuses = [item for item in credit_map.get("slot_statuses") or [] if isinstance(item, dict)]
+        for item in slot_statuses:
+            item["label"] = map_hosted_kairos_profile_label(item.get("label"))
+    return serialized_payload
 
 
 def set_status_message(message: str, level: str = "info") -> None:
     """Store a one-time UI message in the session."""
-    session["status_message"] = {"text": message, "level": level}
+    get_workflow_state().set_status_message(message, level=level)
 
 
 def pop_status_message() -> Optional[Dict[str, str]]:
     """Retrieve and clear a one-time UI message from the session."""
-    return session.pop("status_message", None)
+    return get_workflow_state().pop_status_message()
+
+
+def remember_hosted_delphi4_sync_result(payload: Dict[str, Any]) -> None:
+    if not has_request_context():
+        return
+    session[HOSTED_DELPHI4_SYNC_RESULT_KEY] = payload
+
+
+def pop_hosted_delphi4_sync_result() -> Optional[Dict[str, Any]]:
+    if not has_request_context():
+        return None
+    payload = session.pop(HOSTED_DELPHI4_SYNC_RESULT_KEY, None)
+    return payload if isinstance(payload, dict) else None
 
 
 def store_trade_prefill(trade_mode: str, values: Dict[str, Any]) -> None:
-    drafts = dict(session.get(APOLLO_PREFILL_SESSION_KEY, {}))
-    drafts[resolve_trade_mode(trade_mode)] = {key: values.get(key, "") for key in TRADE_FORM_FIELDS}
-    session[APOLLO_PREFILL_SESSION_KEY] = drafts
+    get_workflow_state().store_trade_prefill(trade_mode, values)
 
 
 def get_trade_prefill(trade_mode: str) -> Optional[Dict[str, Any]]:
-    drafts = session.get(APOLLO_PREFILL_SESSION_KEY, {}) or {}
-    draft = drafts.get(resolve_trade_mode(trade_mode))
-    return dict(draft) if isinstance(draft, dict) else None
+    return get_workflow_state().get_trade_prefill(trade_mode)
 
 
 def clear_trade_prefill(trade_mode: Optional[str] = None) -> None:
-    if trade_mode is None:
-        session.pop(APOLLO_PREFILL_SESSION_KEY, None)
-        return
-
-    drafts = dict(session.get(APOLLO_PREFILL_SESSION_KEY, {}))
-    drafts.pop(resolve_trade_mode(trade_mode), None)
-    if drafts:
-        session[APOLLO_PREFILL_SESSION_KEY] = drafts
-    else:
-        session.pop(APOLLO_PREFILL_SESSION_KEY, None)
+    get_workflow_state().clear_trade_prefill(trade_mode)
 
 
 def store_trade_close_prefill(trade_id: int, values: Dict[str, Any]) -> None:
-    drafts = dict(session.get(MANAGEMENT_CLOSE_PREFILL_SESSION_KEY, {}))
-    drafts[str(int(trade_id))] = dict(values)
-    session[MANAGEMENT_CLOSE_PREFILL_SESSION_KEY] = drafts
+    get_workflow_state().store_trade_close_prefill(trade_id, values)
 
 
 def get_trade_close_prefill(trade_id: int) -> Optional[Dict[str, Any]]:
-    drafts = session.get(MANAGEMENT_CLOSE_PREFILL_SESSION_KEY, {}) or {}
-    draft = drafts.get(str(int(trade_id)))
-    return dict(draft) if isinstance(draft, dict) else None
+    return get_workflow_state().get_trade_close_prefill(trade_id)
 
 
 def clear_trade_close_prefill(trade_id: Optional[int] = None) -> None:
-    if trade_id is None:
-        session.pop(MANAGEMENT_CLOSE_PREFILL_SESSION_KEY, None)
-        return
-    drafts = dict(session.get(MANAGEMENT_CLOSE_PREFILL_SESSION_KEY, {}))
-    drafts.pop(str(int(trade_id)), None)
-    if drafts:
-        session[MANAGEMENT_CLOSE_PREFILL_SESSION_KEY] = drafts
-    else:
-        session.pop(MANAGEMENT_CLOSE_PREFILL_SESSION_KEY, None)
+    get_workflow_state().clear_trade_close_prefill(trade_id)
 
 
-def get_trade_import_preview_directory(app: Flask) -> Path:
-    directory = Path(app.instance_path) / TRADE_IMPORT_PREVIEW_DIRNAME
-    directory.mkdir(parents=True, exist_ok=True)
-    return directory
+def get_trade_import_preview_repository(app: Flask) -> ImportPreviewRepository:
+    repository = app.extensions.get("import_preview_repository")
+    if repository is None:
+        host_infrastructure = app.extensions.get("host_infrastructure")
+        if app.config.get("RUNTIME_TARGET") == "hosted":
+            integration = getattr(host_infrastructure, "supabase_integration", None)
+            context = getattr(host_infrastructure, "supabase_context", None)
+            if integration is None or context is None or not context.configured:
+                raise RuntimeError("Hosted Delphi 6.0 import previews require Supabase-backed runtime state.")
+            repository = SupabaseImportPreviewRepository(
+                context=context,
+                gateway=integration.create_table_gateway(),
+            )
+        else:
+            import_preview_root = host_infrastructure.storage.import_preview_root if host_infrastructure is not None else Path(app.instance_path)
+            repository = FileSystemImportPreviewRepository(import_preview_root)
+        app.extensions["import_preview_repository"] = repository
+    return repository
 
 
 def store_trade_import_preview(app: Flask, trade_mode: str, preview_payload: Dict[str, Any]) -> str:
-    token = uuid4().hex
-    payload = {"trade_mode": resolve_trade_mode(trade_mode), **preview_payload}
-    preview_path = get_trade_import_preview_directory(app) / f"{token}.json"
-    preview_path.write_text(json.dumps(payload), encoding="utf-8")
-    return token
+    return get_trade_import_preview_repository(app).store_preview(resolve_trade_mode(trade_mode), preview_payload)
 
 
 def load_trade_import_preview(app: Flask, token: str) -> Optional[Dict[str, Any]]:
-    normalized_token = "".join(character for character in str(token or "") if character.isalnum())
-    if not normalized_token:
-        return None
-    preview_path = get_trade_import_preview_directory(app) / f"{normalized_token}.json"
-    if not preview_path.exists():
-        return None
-    try:
-        return json.loads(preview_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return None
+    return get_trade_import_preview_repository(app).load_preview(token)
 
 
 def delete_trade_import_preview(app: Flask, token: str) -> None:
-    normalized_token = "".join(character for character in str(token or "") if character.isalnum())
-    if not normalized_token:
-        return
-    preview_path = get_trade_import_preview_directory(app) / f"{normalized_token}.json"
-    if preview_path.exists():
-        preview_path.unlink()
+    get_trade_import_preview_repository(app).delete_preview(token)
 
 
 def coerce_trade_form_input(source: Any) -> Dict[str, Any]:
     values = {key: source.get(key, "") for key in TRADE_FORM_FIELDS}
     values["trade_mode"] = source.get("trade_mode") or source.get("trade_mode_filter") or "real"
     values["journal_name"] = source.get("journal_name") or JOURNAL_NAME_DEFAULT
+    values["net_credit_per_contract"] = ""
+    values["premium_per_contract"] = ""
+    values["total_premium"] = ""
+    values["max_theoretical_risk"] = ""
     return values
 
 
@@ -1724,7 +4011,7 @@ def coerce_apollo_trade_input(source: Any, trade_mode: Optional[str] = None) -> 
         "trade_mode": resolved_trade_mode,
         "system_name": "Apollo",
         "journal_name": JOURNAL_NAME_DEFAULT,
-        "system_version": "4.3",
+        "system_version": "5.4",
         "candidate_profile": candidate_profile,
         "status": "open",
         "trade_date": timestamp.split("T", 1)[0],
@@ -1777,7 +4064,7 @@ def coerce_kairos_trade_input(source: Any, trade_mode: Optional[str] = None) -> 
         "trade_mode": resolved_trade_mode,
         "system_name": "Kairos",
         "journal_name": source.get("journal_name") or JOURNAL_NAME_DEFAULT,
-        "system_version": source.get("system_version") or "4.0",
+        "system_version": source.get("system_version") or "5.4",
         "candidate_profile": candidate_profile,
         "status": "open",
         "trade_date": timestamp.split("T", 1)[0],
@@ -1829,13 +4116,15 @@ def build_trade_page_context(
     info_message: Optional[Dict[str, str]],
     prefill_active: bool = False,
     prefill_notice: str = "",
+    hosted_prefill_enabled: bool = False,
     import_preview: Optional[Dict[str, Any]] = None,
     import_journal_name: str = JOURNAL_NAME_DEFAULT,
     editing_trade: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     normalized_mode = resolve_trade_mode(trade_mode)
-    trades = [build_trade_row_payload(item) for item in store.list_trades(normalized_mode)]
-    summary = store.summarize(normalized_mode)
+    loaded_trades = store.list_trades(normalized_mode)
+    trades = [build_trade_row_payload(item) for item in loaded_trades]
+    summary = summarize_loaded_trade_rows(loaded_trades)
     return {
         "trade_mode": normalized_mode,
         "trade_mode_label": TRADE_MODE_LABELS[normalized_mode],
@@ -1847,15 +4136,7 @@ def build_trade_page_context(
         "system_name_options": TRADE_SYSTEM_OPTIONS,
         "filter_groups": TRADE_FILTER_GROUPS,
         "journal_name_options": TRADE_JOURNAL_OPTIONS,
-        "summary_metrics": [
-            {"label": "Total trades", "value": format_value(summary["total_trades"])},
-            {"label": "Open trades", "value": format_value(summary["open_trades"])},
-            {"label": "Closed trades", "value": format_value(summary["closed_trades"])},
-            {"label": "Total P/L", "value": format_currency(summary["total_pnl"])},
-            {"label": "Average P/L", "value": format_currency(summary["average_pnl"])},
-            {"label": "Wins", "value": format_value(summary["win_count"])},
-            {"label": "Losses", "value": format_value(summary["loss_count"])},
-        ],
+        "summary_metrics": build_trade_summary_metrics(summary),
         "trades": trades,
         "form_values": prepare_trade_form_values(form_values),
         "distance_field_meta": build_distance_field_context(form_values),
@@ -1869,9 +4150,123 @@ def build_trade_page_context(
         "info_message": info_message,
         "prefill_active": prefill_active,
         "prefill_notice": prefill_notice,
+        "hosted_prefill_enabled": hosted_prefill_enabled,
         "import_preview": import_preview,
         "import_journal_name": import_journal_name,
     }
+
+
+def summarize_loaded_trade_rows(rows: list[Dict[str, Any]]) -> Dict[str, Any]:
+    total_pnl = sum(float(row.get("gross_pnl") or 0.0) for row in rows)
+    pnl_values = [float(row.get("gross_pnl") or 0.0) for row in rows if row.get("gross_pnl") is not None]
+    return {
+        "total_trades": len(rows),
+        "open_trades": sum(1 for row in rows if row.get("derived_status_raw") in {"open", "reduced"}),
+        "closed_trades": sum(1 for row in rows if row.get("derived_status_raw") not in {"open", "reduced"}),
+        "total_pnl": total_pnl,
+        "average_pnl": (sum(pnl_values) / len(pnl_values)) if pnl_values else 0.0,
+        "win_count": sum(1 for row in rows if row.get("win_loss_result") == "Win"),
+        "loss_count": sum(1 for row in rows if row.get("win_loss_result") in {"Loss", "Black Swan"}),
+    }
+
+
+def build_trade_summary_metrics(summary: Dict[str, Any]) -> list[Dict[str, str]]:
+    return [
+        {"label": "Total trades", "value": format_value(summary["total_trades"])} ,
+        {"label": "Open trades", "value": format_value(summary["open_trades"])} ,
+        {"label": "Closed trades", "value": format_value(summary["closed_trades"])} ,
+        {"label": "Total P/L", "value": format_currency(summary["total_pnl"])} ,
+        {"label": "Average P/L", "value": format_currency(summary["average_pnl"])} ,
+        {"label": "Wins", "value": format_value(summary["win_count"])} ,
+        {"label": "Losses", "value": format_value(summary["loss_count"])} ,
+    ]
+
+
+def resolve_hosted_trade_mode_filter(trade_mode: str) -> str:
+    normalized_trade_mode = str(trade_mode or "").strip().lower()
+    if normalized_trade_mode == "all":
+        return "all"
+    return resolve_trade_mode(normalized_trade_mode)
+
+
+def build_open_trade_action_payload(management_payload: Dict[str, Any], *, trade_mode: str) -> Dict[str, Any]:
+    records = list(management_payload.get("records") or [])
+    if trade_mode != "all":
+        records = [item for item in records if resolve_hosted_trade_mode_filter(str(item.get("trade_mode") or "")) == trade_mode]
+    return {
+        "trade_mode": trade_mode,
+        "evaluated_at": management_payload.get("evaluated_at") or "",
+        "evaluated_at_display": management_payload.get("evaluated_at_display") or "",
+        "notifications_enabled": bool(management_payload.get("notifications_enabled", True)),
+        "alerts_sent": int(management_payload.get("alerts_sent") or 0),
+        "alert_failures": list(management_payload.get("alert_failures") or []),
+        "records_total": len(management_payload.get("records") or []),
+        "records_filtered": len(records),
+        "open_trade_count": len(records),
+        "status_counts": build_open_trade_status_counts(records),
+        "records": records,
+    }
+
+
+def build_hosted_performance_dashboard(*, filters: Dict[str, list[str]], app: Optional[Flask] = None) -> Dict[str, Any]:
+    cache_key = _build_hosted_cache_key("hosted:performance", filters=filters)
+    return _get_cached_hosted_payload(
+        cache_key,
+        ttl_seconds=HOSTED_PERFORMANCE_CACHE_SECONDS,
+        builder=lambda: _build_hosted_performance_dashboard_uncached(filters=filters, app=app),
+        app=app,
+    )
+
+
+def _build_hosted_performance_dashboard_uncached(*, filters: Dict[str, list[str]], app: Optional[Flask] = None) -> Dict[str, Any]:
+    performance_service = get_performance_service(app)
+    load_records = getattr(performance_service, "load_records", None)
+    if not callable(load_records):
+        return performance_service.build_dashboard(filters=filters)
+    records = _get_cached_hosted_payload(
+        "hosted:performance:records",
+        ttl_seconds=HOSTED_PERFORMANCE_CACHE_SECONDS,
+        builder=load_records,
+        app=app,
+    )
+    return build_dashboard_payload(records, filters=filters)
+
+
+def build_hosted_open_trade_management_payload(*, app: Optional[Flask] = None) -> Dict[str, Any]:
+    return _get_cached_hosted_payload(
+        "hosted:open-trades",
+        ttl_seconds=HOSTED_OPEN_TRADES_CACHE_SECONDS,
+        builder=lambda: get_open_trade_manager(app).evaluate_open_trades(send_alerts=False),
+        app=app,
+    )
+
+
+def build_hosted_apollo_live_payload(*, app: Optional[Flask] = None, force_refresh: bool = False) -> Dict[str, Any]:
+    if force_refresh:
+        _clear_hosted_payload_cache("hosted:apollo:live", app=app)
+    return _get_cached_hosted_payload(
+        "hosted:apollo:live",
+        ttl_seconds=HOSTED_APOLLO_AUTORUN_CACHE_SECONDS,
+        builder=lambda: execute_hosted_apollo_live_run(app=app)["payload"],
+        app=app,
+    )
+
+
+def build_open_trade_status_counts(records: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    counts: Dict[str, Dict[str, Any]] = {}
+    for item in records:
+        status = str(item.get("status") or "Unknown").strip() or "Unknown"
+        entry = counts.setdefault(
+            status,
+            {
+                "status": status,
+                "status_severity": int(item.get("status_severity") or 0),
+                "count": 0,
+            },
+        )
+        entry["count"] += 1
+        entry["status_severity"] = max(int(entry.get("status_severity") or 0), int(item.get("status_severity") or 0))
+    return sorted(counts.values(), key=lambda item: (-int(item.get("status_severity") or 0), str(item.get("status") or "")))
 
 
 def prepare_trade_form_values(values: Dict[str, Any]) -> Dict[str, str]:
@@ -1965,6 +4360,14 @@ def build_trade_row_payload(trade: Dict[str, Any]) -> Dict[str, Any]:
     closed_contracts = trade.get("contracts_closed") if trade.get("contracts_closed") is not None else trade.get("closed_contracts")
     remaining_contracts = trade.get("contracts_remaining") if trade.get("contracts_remaining") is not None else trade.get("remaining_contracts")
     realized_pnl = trade.get("realized_pnl") if trade.get("realized_pnl") is not None else trade.get("gross_pnl")
+    projected_open_pnl = None
+    if derived_status_raw in {"open", "reduced"} and realized_pnl is None:
+        credit_model = resolve_trade_credit_model(trade)
+        remaining_open_contracts = remaining_contracts if remaining_contracts is not None else original_contracts
+        net_credit_per_contract = credit_model.get("net_credit_per_contract")
+        if net_credit_per_contract is not None and remaining_open_contracts not in {None, ""}:
+            projected_open_pnl = float(net_credit_per_contract) * float(remaining_open_contracts) * 100.0
+    pnl_display_value = projected_open_pnl if projected_open_pnl is not None else realized_pnl
     distance_metadata = resolve_trade_distance(trade)
     total_max_loss = trade.get("total_max_loss")
     if total_max_loss is None:
@@ -1977,7 +4380,7 @@ def build_trade_row_payload(trade: Dict[str, Any]) -> Dict[str, Any]:
         "trade_number_raw": trade.get("trade_number") or 0,
         "status": str(trade.get("derived_status_label") or trade.get("status") or "—").title(),
         "status_raw": derived_status_raw,
-        "candidate_profile": normalize_candidate_profile(trade.get("candidate_profile")),
+        "candidate_profile": resolve_trade_candidate_profile(trade),
         "system_name": normalize_system_name(trade.get("system_name")),
         "system_version": trade.get("system_version") or "—",
         "trade_date": trade.get("trade_date") or "—",
@@ -2003,8 +4406,8 @@ def build_trade_row_payload(trade: Dict[str, Any]) -> Dict[str, Any]:
         "distance_to_short": format_value(distance_metadata.get("value")),
         "distance_to_short_raw": distance_metadata.get("value") if distance_metadata.get("value") is not None else "",
         "distance_source": distance_metadata.get("source") or trade.get("distance_source"),
-        "gross_pnl": format_currency(realized_pnl),
-        "gross_pnl_raw": realized_pnl if realized_pnl is not None else "",
+        "gross_pnl": format_currency(pnl_display_value),
+        "gross_pnl_raw": pnl_display_value if pnl_display_value is not None else "",
         "max_risk": format_currency(trade.get("max_risk")),
         "roi_on_risk": format_ratio_percent(trade.get("roi_on_risk")),
         "roi_on_risk_raw": trade.get("roi_on_risk") if trade.get("roi_on_risk") is not None else "",
@@ -2021,7 +4424,7 @@ def build_trade_row_payload(trade: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def build_trade_import_preview(store: TradeStore, preview_source: Dict[str, Any]) -> Dict[str, Any]:
+def build_trade_import_preview(store: TradeRepository, preview_source: Dict[str, Any]) -> Dict[str, Any]:
     preview_rows = []
     importable_rows = []
     seen_signatures: set[tuple[Any, ...]] = set()
@@ -2299,12 +4702,16 @@ def build_diagnostic_message(
     return None
 
 
-def execute_apollo_precheck(apollo_service: ApolloService, trigger_source: str) -> Dict[str, Any]:
+def execute_apollo_precheck(apollo_service: ApolloService, trigger_source: str, *, force_refresh: bool = False) -> Dict[str, Any]:
     """Run Apollo once and convert the result into a template-ready payload."""
-    return build_apollo_result_payload(
-        apollo_service.run_precheck(),
+    payload = build_apollo_result_payload(
+        apollo_service.run_precheck(force_refresh=force_refresh),
         trigger_source=trigger_source,
     )
+    payload["execution_source_label"] = str(trigger_source or "unknown").title()
+    payload["live_data_provider"] = apollo_service.market_data_service.get_provider_metadata().get("live_provider_name", "Unknown Provider")
+    payload["live_data_mode"] = "Fresh live data" if force_refresh else "Live data"
+    return payload
 
 
 def get_apollo_trigger_source() -> Optional[str]:
@@ -2347,7 +4754,7 @@ def build_apollo_candidate_prefill_fields(
     return {
         "system_name": "Apollo",
         "journal_name": JOURNAL_NAME_DEFAULT,
-        "system_version": "4.3",
+        "system_version": "5.4",
         "candidate_profile": candidate_profile,
         "expiration_date": option_chain.get("expiration_date") or trade_candidates.get("expiration_date") or "",
         "underlying_symbol": option_chain.get("symbol_requested") or "SPX",
@@ -2798,7 +5205,17 @@ def get_real_trade_outcome_profile() -> Dict[str, Any]:
             "routine_loss_percentage": 0.0,
             "black_swan_loss_percentage": 0.0,
         }
-    return trade_store.build_real_trade_outcome_profile()
+    try:
+        return trade_store.build_real_trade_outcome_profile()
+    except Exception as exc:  # pragma: no cover - defensive fallback for hosted reachability issues
+        if current_app:
+            current_app.logger.warning("Falling back to neutral Apollo historical loss profile: %s", exc)
+        return {
+            "routine_loss_percentage": 0.0,
+            "black_swan_loss_percentage": 0.0,
+            "loss_count": 0,
+            "black_swan_count": 0,
+        }
 
 
 def project_historical_loss(max_loss: Any, percentage: Any) -> float | None:
@@ -3398,33 +5815,123 @@ def format_value(value: Any) -> str:
 
 def open_browser() -> None:
     """Open the local app in the default browser."""
-    webbrowser.open_new(get_launch_url())
+    root_app = _resolve_flask_container(None)
+    get_launch_behavior(root_app).launch(get_runtime_profile(root_app))
 
 
 def get_launch_url() -> str:
     """Return the local URL that should open in the browser."""
-    if should_use_https():
-        parsed = urlparse(APP_CONFIG.schwab_redirect_uri)
-        host = parsed.hostname or APP_HOST
-        port = parsed.port or APP_PORT
-        return f"https://{host}:{port}"
-    return f"http://localhost:{APP_PORT}"
+    return get_runtime_profile().launch_url
 
 
 def should_use_https() -> bool:
     """Return whether the local app should start with an HTTPS dev server."""
-    return APP_CONFIG.market_data_provider == "schwab" and APP_CONFIG.schwab_redirect_uri.startswith("https://")
+    return get_runtime_profile().use_https
+
+
+def get_runtime_profile(app: Optional[Flask] = None) -> RuntimeProfile:
+    container = _resolve_flask_container(app)
+    runtime_profile = container.extensions.get("runtime_profile")
+    if runtime_profile is None:
+        runtime_profile = select_runtime_profile(container, get_runtime_app_config(container))
+        container.extensions["runtime_profile"] = runtime_profile
+    return runtime_profile
+
+
+def ensure_runtime_ssl_context(runtime_profile: RuntimeProfile, *, app: Optional[Flask] = None) -> tuple[str, str] | None:
+    """Return a usable SSL context for the runtime, generating local dev certs when needed."""
+    ssl_context = runtime_profile.ssl_context
+    if ssl_context is None:
+        return None
+
+    cert_path = Path(ssl_context[0])
+    key_path = Path(ssl_context[1])
+    if cert_path.exists() and key_path.exists():
+        return (str(cert_path), str(key_path))
+
+    if runtime_profile.host not in LOCAL_DEV_HOSTS:
+        raise FileNotFoundError(f"SSL certificate files are missing for host {runtime_profile.host}: {cert_path}, {key_path}")
+
+    from werkzeug.serving import make_ssl_devcert
+
+    container = _resolve_flask_container(app)
+    cert_base_path = cert_path.with_suffix("")
+    if cert_path.name == f"{LOCALHOST_DEV_CERT_BASENAME}.pem" and key_path.name == f"{LOCALHOST_DEV_CERT_BASENAME}-key.pem":
+        cert_base_path = cert_path.with_name(LOCALHOST_DEV_CERT_BASENAME)
+
+    cert_path.parent.mkdir(parents=True, exist_ok=True)
+    make_ssl_devcert(str(cert_base_path), host=runtime_profile.host)
+
+    if not cert_path.exists() or not key_path.exists():
+        raise FileNotFoundError(f"Unable to generate local SSL certificate files: {cert_path}, {key_path}")
+
+    container.logger.info("Generated local HTTPS development certificate | cert=%s | key=%s", cert_path, key_path)
+    return (str(cert_path), str(key_path))
+
+
+def build_runtime_startup_messages(root_app: Flask, runtime_profile: RuntimeProfile) -> list[str]:
+    messages: list[str] = []
+    if runtime_profile.use_https:
+        messages.append(f"Running HTTPS on {runtime_profile.launch_url}")
+    else:
+        messages.append(f"Running HTTP on {runtime_profile.launch_url}")
+
+    try:
+        provider = get_market_data_service(root_app).provider
+        auth_service = getattr(provider, "auth_service", None)
+        if auth_service is not None:
+            authorize_url = auth_service.build_authorization_url(state="startup-preview")
+            messages.append(f"Schwab authorize URL: {authorize_url}")
+    except Exception as exc:
+        root_app.logger.warning("Unable to build Schwab authorize URL at startup: %s", exc)
+    return messages
+
+
+def get_launch_behavior(app: Optional[Flask] = None) -> LaunchBehavior:
+    container = _resolve_flask_container(app)
+    launch_behavior = container.extensions.get("launch_behavior")
+    if launch_behavior is None:
+        launch_behavior = WebBrowserLaunchBehavior()
+        container.extensions["launch_behavior"] = launch_behavior
+    return launch_behavior
+
+
+def get_runtime_lifecycle(app: Optional[Flask] = None) -> RuntimeLifecycleCoordinator:
+    container = _resolve_flask_container(app)
+    lifecycle = container.extensions.get("runtime_lifecycle")
+    if lifecycle is None:
+        runtime_profile = get_runtime_profile(container)
+        lifecycle = LocalRuntimeLifecycleCoordinator(
+            runtime_profile,
+            launch_behavior=get_launch_behavior(container),
+            scheduler=ThreadingTimerScheduler(),
+            shutdown_registrar=__import__("atexit").register,
+        )
+        container.extensions["runtime_lifecycle"] = lifecycle
+    return lifecycle
+
+
+def _resolve_flask_container(app: Optional[Flask]) -> Flask:
+    if app is not None:
+        return app
+    if has_app_context():
+        return current_app
+    return globals()["app"]
 
 
 app = create_app()
 
 
 if __name__ == "__main__":
-    Timer(1, open_browser).start()
+    runtime_profile = get_runtime_profile(app)
+    resolved_ssl_context = ensure_runtime_ssl_context(runtime_profile, app=app)
+    for startup_message in build_runtime_startup_messages(app, runtime_profile):
+        print(startup_message)
+    get_runtime_lifecycle(app).schedule_launch()
     app.run(
-        host=APP_HOST,
-        port=APP_PORT,
+        host=runtime_profile.host,
+        port=runtime_profile.port,
         debug=False,
         use_reloader=False,
-        ssl_context=("localhost+2.pem", "localhost+2-key.pem") if should_use_https() else None,
+        ssl_context=resolved_ssl_context,
     )

@@ -8,13 +8,19 @@
 </head>
 <body>
     {% from '_delphi_header_macros.html' import render_delphi_header with context %}
+    {% set trade_links = trade_mode_links if trade_mode_links is defined and trade_mode_links else {} %}
+    {% set allow_trade_edit = hosted_edit_enabled if hosted_edit_enabled is defined else false %}
+    {% set allow_trade_delete = hosted_delete_enabled if hosted_delete_enabled is defined else false %}
+    {% set show_trade_entry_form = (not hosted_read_only) or (allow_trade_edit and editing_trade_id) or hosted_prefill_enabled %}
     <main class="page-shell">
         <section class="hero-card delphi-header-card delphi-shared-header delphi-header-card-subpage">
             {{ render_delphi_header(
                 active_page='journal',
                 page_heading=trade_mode_label,
                 page_copy=trade_mode_description,
-                page_meta='Persistent SQLite-backed log for real and simulated credit spreads.',
+                page_meta='Persistent trade log for real and simulated credit spreads.',
+                page_kicker=app_identity.page_kicker,
+                page_version=app_identity.version_label,
                 menu_status=menu_status,
             ) }}
 
@@ -30,9 +36,11 @@
         <section class="panel trade-mode-panel">
             <div class="actions trade-actions">
                 {% for mode in trade_modes %}
-                    <a class="button-link{% if mode.key != trade_mode %} button-link-secondary{% endif %}{% if mode.key == trade_mode %} button-link-active{% endif %}" href="{{ url_for('trade_dashboard', trade_mode=mode.key) }}"{% if mode.key == trade_mode %} aria-current="page"{% endif %}>{{ mode.label }}</a>
+                    <a class="button-link{% if mode.key != trade_mode %} button-link-secondary{% endif %}{% if mode.key == trade_mode %} button-link-active{% endif %}" href="{{ trade_links.get(mode.key, url_for('trade_dashboard', trade_mode=mode.key)) }}"{% if mode.key == trade_mode %} aria-current="page"{% endif %}>{{ mode.label }}</a>
                 {% endfor %}
-                <a class="button-link button-link-secondary" href="{{ url_for('trade_dashboard', trade_mode=trade_mode, _anchor='trade-entry-form') }}">Jump to Manual Entry Form</a>
+                {% if not hosted_read_only or hosted_prefill_enabled %}
+                    <a class="button-link button-link-secondary" href="{% if hosted_read_only %}{{ url_for('hosted_shell_journal', trade_mode=trade_mode, _anchor='trade-entry-form') }}{% else %}{{ url_for('trade_dashboard', trade_mode=trade_mode, _anchor='trade-entry-form') }}{% endif %}">{% if hosted_read_only %}Jump to Draft Form{% else %}Jump to Manual Entry Form{% endif %}</a>
+                {% endif %}
             </div>
         </section>
 
@@ -40,7 +48,7 @@
             <div class="result-header">
                 <div>
                     <h2>{{ trade_mode_label }}</h2>
-                    <p class="subtle">One local database stores both real and simulated trades, filtered by mode.</p>
+                    <p class="subtle">{% if hosted_read_only %}{% if allow_trade_edit %}Hosted Delphi 6.0 journal mirrors the live Supabase trade store and supports draft review, editing, and deleting directly in hosted mode.{% else %}Hosted Delphi 6.0 journal mirrors the live trade store in read-only mode so links stay working and the browser surface stays safe.{% endif %}{% else %}One local database stores both real and simulated trades, filtered by mode.{% endif %}</p>
                 </div>
             </div>
 
@@ -54,6 +62,7 @@
             </div>
         </section>
 
+        {% if not hosted_read_only %}
         <section class="panel trade-dashboard-panel">
             <div class="result-header">
                 <div>
@@ -153,12 +162,13 @@
                 </div>
             {% endif %}
         </section>
+        {% endif %}
 
         <section class="panel trade-dashboard-panel">
             <div class="result-header">
                 <div>
                     <h2>Trade Log</h2>
-                    <p class="subtle">Editable local journal for entry, exit, and P/L review.</p>
+                    <p class="subtle">{% if hosted_read_only %}{% if allow_trade_edit %}Supabase-backed hosted journal for live browser review and trade editing.{% else %}Read-only hosted journal for live browser review.{% endif %}{% else %}Editable local journal for entry, exit, and P/L review.{% endif %}</p>
                 </div>
             </div>
 
@@ -176,7 +186,7 @@
                         <legend>Profile</legend>
                         <div class="trade-filter-options">
                             {% for option in filter_groups.profile %}
-                                <label class="trade-filter-option"><input class="trade-filter-checkbox" type="checkbox" data-filter-group="profile" value="{{ option|lower|replace(' ', '-') }}" checked> <span>{{ option }}</span></label>
+                                <label class="trade-filter-option"><input class="trade-filter-checkbox" type="checkbox" data-filter-group="profile" value="{{ option|lower|replace(' ', '-') }}" checked> <span>{{ 'SubPrime' if hosted_mode and option == 'Subprime' else option }}</span></label>
                             {% endfor %}
                         </div>
                     </fieldset>
@@ -208,19 +218,20 @@
                                 <th><button type="button" class="trade-sort-button" data-sort-key="distance" data-sort-type="number">Distance<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
                                 <th><button type="button" class="trade-sort-button" data-sort-key="entry" data-sort-type="number">Entry<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
                                 <th><button type="button" class="trade-sort-button" data-sort-key="exit" data-sort-type="number">Exit<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
-                                <th><button type="button" class="trade-sort-button" data-sort-key="max-loss" data-sort-type="number">Max Loss<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
                                 <th><button type="button" class="trade-sort-button" data-sort-key="pnl" data-sort-type="number">P/L<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
                                 <th><button type="button" class="trade-sort-button" data-sort-key="roi" data-sort-type="number">ROI<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
                                 <th><button type="button" class="trade-sort-button" data-sort-key="result" data-sort-type="text">Result<span class="trade-sort-indicator" aria-hidden="true"></span></button></th>
-                                <th>Actions</th>
+                                {% if not hosted_read_only or allow_trade_edit or allow_trade_delete %}
+                                    <th>Actions</th>
+                                {% endif %}
                             </tr>
                         </thead>
                         <tbody id="trade-log-body">
                             {% for trade in trades %}
-                                <tr class="trade-log-row" data-system="{{ trade.system_name|lower }}" data-profile="{{ trade.candidate_profile|lower|replace(' ', '-') }}" data-result="{{ trade.result_filter }}" data-sort-trade-number="{{ trade.trade_number_raw }}" data-sort-status="{{ trade.status_raw }}" data-sort-profile="{{ trade.candidate_profile|lower }}" data-sort-system="{{ trade.system_name|lower }}" data-sort-trade-date="{{ trade.trade_date_raw }}" data-sort-expiration="{{ trade.expiration_date_raw }}" data-sort-symbol="{{ trade.underlying_symbol_raw|lower }}" data-sort-strikes="{{ trade.strike_pair_raw }}" data-sort-contracts="{{ trade.contracts_raw }}" data-sort-closed-contracts="{{ trade.closed_contracts_raw }}" data-sort-remaining-contracts="{{ trade.remaining_contracts_raw }}" data-sort-distance="{{ trade.distance_to_short_raw }}" data-sort-entry="{{ trade.actual_entry_credit_raw }}" data-sort-exit="{{ trade.actual_exit_value_raw }}" data-sort-max-loss="{{ trade.total_max_loss_raw }}" data-sort-pnl="{{ trade.gross_pnl_raw }}" data-sort-roi="{{ trade.roi_on_risk_raw }}" data-sort-result="{{ trade.result_sort }}">
+                                <tr class="trade-log-row" data-system="{{ trade.system_name|lower }}" data-profile="{{ trade.candidate_profile|lower|replace(' ', '-') }}" data-result="{{ trade.result_filter }}" data-sort-trade-number="{{ trade.trade_number_raw }}" data-sort-status="{{ trade.status_raw }}" data-sort-profile="{{ trade.candidate_profile|lower }}" data-sort-system="{{ trade.system_name|lower }}" data-sort-trade-date="{{ trade.trade_date_raw }}" data-sort-expiration="{{ trade.expiration_date_raw }}" data-sort-symbol="{{ trade.underlying_symbol_raw|lower }}" data-sort-strikes="{{ trade.strike_pair_raw }}" data-sort-contracts="{{ trade.contracts_raw }}" data-sort-closed-contracts="{{ trade.closed_contracts_raw }}" data-sort-remaining-contracts="{{ trade.remaining_contracts_raw }}" data-sort-distance="{{ trade.distance_to_short_raw }}" data-sort-entry="{{ trade.actual_entry_credit_raw }}" data-sort-exit="{{ trade.actual_exit_value_raw }}" data-sort-pnl="{{ trade.gross_pnl_raw }}" data-sort-roi="{{ trade.roi_on_risk_raw }}" data-sort-result="{{ trade.result_sort }}">
                                     <td>{{ trade.trade_number }}</td>
                                     <td>{{ trade.status }}</td>
-                                    <td>{{ trade.candidate_profile }}</td>
+                                    <td>{{ 'SubPrime' if hosted_mode and trade.candidate_profile == 'Subprime' else trade.candidate_profile }}</td>
                                     <td>{{ trade.system_name }}</td>
                                     <td>{{ trade.trade_date }}</td>
                                     <td>{{ trade.expiration_date }}</td>
@@ -232,33 +243,39 @@
                                     <td>{{ trade.distance_to_short }}</td>
                                     <td>{{ trade.actual_entry_credit }}</td>
                                     <td>{{ trade.actual_exit_value }}</td>
-                                    <td>{{ trade.total_max_loss }}</td>
                                     <td>{{ trade.gross_pnl }}</td>
                                     <td>{{ trade.roi_on_risk }}</td>
                                     <td class="trade-result-cell {{ trade.result_class }}">{{ trade.win_loss_result }}</td>
-                                    <td>
-                                        <div class="trade-action-stack">
-                                            <a class="button-link button-link-small" href="{{ url_for('trade_edit', trade_mode=trade.trade_mode, trade_id=trade.id) }}">Edit</a>
-                                            <form method="post" action="{{ url_for('trade_delete', trade_mode=trade.trade_mode, trade_id=trade.id) }}" onsubmit="return confirm('Delete trade #{{ trade.trade_number }}?');">
-                                                <button type="submit" class="secondary trade-delete-button">Delete</button>
-                                            </form>
-                                        </div>
-                                    </td>
+                                    {% if not hosted_read_only or allow_trade_edit or allow_trade_delete %}
+                                        <td>
+                                            <div class="trade-action-stack">
+                                                {% if not hosted_read_only or allow_trade_edit %}
+                                                    <a class="button-link button-link-small" href="{% if hosted_read_only %}{{ url_for('hosted_trade_edit', trade_mode=trade.trade_mode, trade_id=trade.id) }}{% else %}{{ url_for('trade_edit', trade_mode=trade.trade_mode, trade_id=trade.id) }}{% endif %}">Edit</a>
+                                                {% endif %}
+                                                {% if not hosted_read_only or allow_trade_delete %}
+                                                    <form method="post" action="{% if hosted_read_only %}{{ url_for('hosted_trade_delete', trade_mode=trade.trade_mode, trade_id=trade.id) }}{% else %}{{ url_for('trade_delete', trade_mode=trade.trade_mode, trade_id=trade.id) }}{% endif %}" onsubmit="return confirm('Delete trade #{{ trade.trade_number }}?');">
+                                                        <button type="submit" class="secondary trade-delete-button">Delete</button>
+                                                    </form>
+                                                {% endif %}
+                                            </div>
+                                        </td>
+                                    {% endif %}
                                 </tr>
                             {% endfor %}
                         </tbody>
                     </table>
                 </div>
-            {% else %}
-                <p class="subtle">No {{ trade_mode }} trades have been logged yet.</p>
+            {% elif not hosted_admin_error %}
+                <div class="message message-info message-inline">{% if hosted_read_only %}No {{ trade_mode }} trades are available yet in the hosted journal. The page is live; it simply has no records to display right now.{% else %}No {{ trade_mode }} trades have been logged yet.{% endif %}</div>
             {% endif %}
         </section>
 
+        {% if show_trade_entry_form %}
         <section class="panel trade-dashboard-panel" id="trade-entry-form">
             <div class="result-header">
                 <div>
                     <h2>{{ form_title }}</h2>
-                    <p class="subtle">Manual entries land in the same SQLite journal as Apollo executions. Derived fields update automatically when entry, exit, strikes, contracts, or status change.</p>
+                    <p class="subtle">{% if hosted_read_only %}Hosted saves write directly to the Supabase journal tables. Derived fields update automatically when entry, exit, strikes, contracts, or status change.{% else %}Manual entries land in the same SQLite journal as Apollo executions. Derived fields update automatically when entry, exit, strikes, contracts, or status change.{% endif %}</p>
                 </div>
             </div>
 
@@ -399,7 +416,7 @@
                         <label for="candidate_profile">Candidate profile</label>
                         <select id="candidate_profile" name="candidate_profile">
                             {% for option in candidate_profiles %}
-                                <option value="{{ option }}" {% if form_values.candidate_profile == option %}selected{% endif %}>{{ option }}</option>
+                                <option value="{{ option }}" {% if form_values.candidate_profile == option %}selected{% endif %}>{{ 'SubPrime' if hosted_mode and option == 'Subprime' else option }}</option>
                             {% endfor %}
                         </select>
                     </div>
@@ -529,11 +546,12 @@
                 <div class="actions trade-form-actions">
                     <button type="submit">Save Trade</button>
                     {% if editing_trade_id %}
-                        <a class="button-link button-link-secondary" href="{{ url_for('trade_dashboard', trade_mode=trade_mode) }}">Cancel Edit</a>
+                        <a class="button-link button-link-secondary" href="{% if hosted_read_only %}{{ url_for('hosted_shell_journal', trade_mode=trade_mode) }}{% else %}{{ url_for('trade_dashboard', trade_mode=trade_mode) }}{% endif %}">Cancel Edit</a>
                     {% endif %}
                 </div>
             </form>
         </section>
+        {% endif %}
     </main>
 
     <script>

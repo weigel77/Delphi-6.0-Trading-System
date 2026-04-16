@@ -12,10 +12,29 @@ except ImportError:  # pragma: no cover - optional dependency during bootstrap
     load_dotenv = None
 
 
+HOSTED_RUNTIME_HOST = "127.0.0.1"
+HOSTED_RUNTIME_PORT = 5015
+HOSTED_RUNTIME_BASE_URL = f"http://{HOSTED_RUNTIME_HOST}:{HOSTED_RUNTIME_PORT}"
+HOSTED_APP_VERSION = "6.0"
+HOSTED_APP_DISPLAY_NAME = f"Delphi {HOSTED_APP_VERSION}"
+HOSTED_APP_PAGE_KICKER = f"Delphi {HOSTED_APP_VERSION}"
+HOSTED_APP_VERSION_LABEL = f"Version {HOSTED_APP_VERSION}"
+HOSTED_SESSION_COOKIE_NAME = "delphi5_hosted_session"
+HOSTED_OAUTH_SESSION_NAMESPACE = "delphi5hosted"
+
+
 @dataclass(frozen=True)
 class AppConfig:
     """Runtime configuration for the Flask app and market-data providers."""
 
+    runtime_target: str = "local"
+    hosted_public_base_url: str = ""
+    supabase_url: str = ""
+    supabase_publishable_key: str = ""
+    supabase_secret_key: str = ""
+    hosted_private_allowed_emails: str = ""
+    hosted_access_token_cookie_name: str = "delphi_hosted_access_token"
+    hosted_refresh_token_cookie_name: str = "delphi_hosted_refresh_token"
     app_host: str = "127.0.0.1"
     app_port: int = 5000
     app_display_name: str = "Delphi 4.3 Dev"
@@ -60,6 +79,16 @@ class AppConfig:
     def from_env(cls) -> "AppConfig":
         """Create configuration from environment variables."""
         return cls(
+            runtime_target=os.getenv("DELPHI_RUNTIME_TARGET", "local").strip().lower() or "local",
+            hosted_public_base_url=os.getenv("HOSTED_PUBLIC_BASE_URL", "").strip(),
+            supabase_url=os.getenv("SUPABASE_URL", "").strip(),
+            supabase_publishable_key=os.getenv("SUPABASE_PUBLISHABLE_KEY", "").strip(),
+            supabase_secret_key=os.getenv("SUPABASE_SECRET_KEY", "").strip(),
+            hosted_private_allowed_emails=os.getenv("DELPHI_HOSTED_ALLOWED_EMAILS", "").strip(),
+            hosted_access_token_cookie_name=os.getenv("DELPHI_HOSTED_ACCESS_TOKEN_COOKIE_NAME", "delphi_hosted_access_token").strip()
+            or "delphi_hosted_access_token",
+            hosted_refresh_token_cookie_name=os.getenv("DELPHI_HOSTED_REFRESH_TOKEN_COOKIE_NAME", "delphi_hosted_refresh_token").strip()
+            or "delphi_hosted_refresh_token",
             app_host=os.getenv("APP_HOST", "127.0.0.1").strip() or "127.0.0.1",
             app_port=int(os.getenv("APP_PORT", "5000").strip() or "5000"),
             app_display_name=os.getenv("APP_DISPLAY_NAME", "Delphi 4.3 Dev").strip() or "Delphi 4.3 Dev",

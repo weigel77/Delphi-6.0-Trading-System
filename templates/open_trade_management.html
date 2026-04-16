@@ -8,15 +8,23 @@
 </head>
 <body>
     {% from '_delphi_header_macros.html' import render_delphi_header with context %}
+    {% set management_actions_enabled = management_actions_enabled if management_actions_enabled is defined else not hosted_read_only %}
+    {% set management_action_urls = management_action_urls if management_action_urls is defined and management_action_urls else {} %}
     <main class="page-shell">
         <section class="hero-card delphi-header-card delphi-shared-header delphi-header-card-subpage">
             {{ render_delphi_header(
                 active_page='management',
                 page_heading='Open Trade Management',
                 page_copy='Live management board for open Apollo and Kairos positions with controlled Pushover escalation.',
-                page_meta='Dev-only active trade management for open positions and urgent exit alerts.',
+                page_meta='Live open-trade management for Apollo and Kairos positions.',
+                page_kicker=app_identity.page_kicker,
+                page_version=app_identity.version_label,
                 menu_status=menu_status,
             ) }}
+
+            {% if error_message %}
+                <div class="message message-error">{{ error_message }}</div>
+            {% endif %}
 
             {% if info_message %}
                 <div class="message message-{{ info_message.level|default('info') }}">{{ info_message.text }}</div>
@@ -27,20 +35,22 @@
             <div class="result-header">
                 <div>
                     <h2>Management Engine</h2>
-                    <p class="subtle">Real open trades are evaluated for morning snapshot, status change, action, and end-of-day Pushover notifications. Simulated open trades remain visible on this board for management review, and both modes can send manual status updates in the same format as the scheduled open-positions text.</p>
+                    <p class="subtle">{% if hosted_mode %}Hosted Delphi 6.0 pulls the same live open-trade evaluation data into a Supabase-backed board with the same notification and send-to-close controls used on the local workflow.{% else %}Real open trades are evaluated for morning snapshot, status change, action, and end-of-day Pushover notifications. Simulated open trades remain visible on this board for management review, and both modes can send manual status updates in the same format as the scheduled open-positions text.{% endif %}</p>
                 </div>
-                <div class="actions trade-actions">
-                    <form method="post" action="{{ url_for('open_trade_management_toggle_notifications') }}">
-                        <input type="hidden" name="notifications_enabled" value="{{ 'false' if management_payload.notifications_enabled else 'true' }}">
-                        <button type="submit" class="secondary">Notifications: {{ 'ON' if management_payload.notifications_enabled else 'OFF' }}</button>
-                    </form>
-                    <form method="post" action="{{ url_for('open_trade_management_status_update', trade_mode='real') }}">
-                        <button type="submit">Send Real Status Update</button>
-                    </form>
-                    <form method="post" action="{{ url_for('open_trade_management_status_update', trade_mode='simulated') }}">
-                        <button type="submit" class="secondary">Send Simulated Status Update</button>
-                    </form>
-                </div>
+                {% if management_actions_enabled %}
+                    <div class="actions trade-actions">
+                        <form method="post" action="{{ management_action_urls.get('toggle_notifications', url_for('open_trade_management_toggle_notifications')) }}">
+                            <input type="hidden" name="notifications_enabled" value="{{ 'false' if management_payload.notifications_enabled else 'true' }}">
+                            <button type="submit" class="secondary">Notifications: {{ 'ON' if management_payload.notifications_enabled else 'OFF' }}</button>
+                        </form>
+                        <form method="post" action="{{ management_action_urls.get('real_status_update', url_for('open_trade_management_status_update', trade_mode='real')) }}">
+                            <button type="submit">Send Real Status Update</button>
+                        </form>
+                        <form method="post" action="{{ management_action_urls.get('simulated_status_update', url_for('open_trade_management_status_update', trade_mode='simulated')) }}">
+                            <button type="submit" class="secondary">Send Simulated Status Update</button>
+                        </form>
+                    </div>
+                {% endif %}
             </div>
 
             <div class="summary-grid trade-summary-grid">
@@ -57,14 +67,16 @@
                     <p class="summary-value">{{ 'ON' if management_payload.notifications_enabled else 'OFF' }}</p>
                 </article>
                 <article class="summary-card">
-                    <p class="summary-label">Alerts Sent This Run</p>
-                    <p class="summary-value">{{ management_payload.alerts_sent }}</p>
+                    <p class="summary-label">Live EM</p>
+                    <p class="summary-value">{{ management_payload.live_expected_move_display or '—' }}</p>
                 </article>
                 {% for item in management_payload.status_counts %}
+                    {% if item.label != 'Exit Now' %}
                     <article class="summary-card">
                         <p class="summary-label">{{ item.label }}</p>
                         <p class="summary-value management-status-count management-status-count-{{ item.key }}">{{ item.count }}</p>
                     </article>
+                    {% endif %}
                 {% endfor %}
             </div>
 
@@ -77,7 +89,9 @@
             <div class="result-header">
                 <div>
                     <h2>Open Positions</h2>
-                    <p class="subtle">Statuses and action recommendations use the current live option-chain expected move. Delphi 4.3 notifications only apply to real trades, but both real and simulated open positions are listed here.</p>
+                    {% if not suppress_open_positions_copy %}
+                        <p class="subtle">{% if hosted_mode %}Statuses and action recommendations use the current live option-chain expected move. Hosted Delphi 6.0 notifications only apply to real trades, but both real and simulated open positions are listed here.{% else %}Statuses and action recommendations use the current live option-chain expected move. Delphi 4.3 notifications only apply to real trades, but both real and simulated open positions are listed here.{% endif %}</p>
+                    {% endif %}
                 </div>
             </div>
 
@@ -88,16 +102,12 @@
                             <col class="management-col-trade-number">
                             <col class="management-col-system">
                             <col class="management-col-profile">
-                            <col class="management-col-credit">
                             <col class="management-col-contracts">
                             <col class="management-col-premium">
-                            <col class="management-col-status">
-                            <col class="management-col-distance-short">
-                            <col class="management-col-em-multiple">
-                            <col class="management-col-live-em">
-                            <col class="management-col-mark">
                             <col class="management-col-close-cost">
                             <col class="management-col-pnl">
+                            <col class="management-col-status">
+                            <col class="management-col-distance-short">
                             <col class="management-col-action">
                             <col class="management-col-trigger">
                             <col class="management-col-reason">
@@ -108,16 +118,12 @@
                                 <th>Trade #</th>
                                 <th>System</th>
                                 <th>Profile</th>
-                                <th>Net Credit</th>
                                 <th>Qty</th>
                                 <th>Premium</th>
+                                <th>Remaining Premium</th>
+                                <th>P/L</th>
                                 <th>Status</th>
                                 <th>Distance to Short</th>
-                                <th>Live EM x</th>
-                                <th>Live EM</th>
-                                <th>Mark</th>
-                                <th>Close Cost</th>
-                                <th>Unrealized</th>
                                 <th>Action</th>
                                 <th>Next Trigger</th>
                                 <th>Reason</th>
@@ -129,23 +135,21 @@
                                 <tr>
                                     <td>{{ item.trade_number }}</td>
                                     <td>{{ item.system_name }}</td>
-                                    <td>{{ item.profile_label }}</td>
-                                    <td>{{ item.net_credit_per_contract_display }}</td>
+                                    <td>{{ 'SubPrime' if hosted_mode and item.profile_label == 'Subprime' else item.profile_label }}</td>
                                     <td>{{ item.contracts_display }}</td>
                                     <td><strong>{{ item.total_premium_display }}</strong></td>
-                                    <td><span class="management-status-pill management-status-pill-{{ item.status_key }}">{{ item.status }}</span></td>
-                                    <td>{{ item.distance_to_short_display }}</td>
-                                    <td><strong>{{ item.current_em_multiple_display }}</strong></td>
-                                    <td>{{ item.current_live_expected_move_display }}</td>
-                                    <td>{{ item.current_spread_mark_display }}</td>
                                     <td>{{ item.current_total_close_cost_display }}</td>
                                     <td>{{ item.unrealized_pnl_display }}</td>
+                                    <td><span class="management-status-pill management-status-pill-{{ item.status_key }}">{{ item.status }}</span></td>
+                                    <td>{{ item.distance_to_short_display }}</td>
                                     <td>
                                         <div class="management-reason-wrap">
                                             <strong>{{ item.action_recommendation }}</strong>
-                                            <form method="post" action="{{ url_for('open_trade_management_prefill_close', trade_id=item.trade_id) }}">
-                                                <button type="submit" class="secondary" {% if not item.send_close_to_journal_enabled %}disabled{% endif %}>Send Close</button>
-                                            </form>
+                                            {% if management_actions_enabled %}
+                                                <form method="post" action="{{ url_for(management_action_urls.get('prefill_close', 'open_trade_management_prefill_close'), trade_id=item.trade_id) }}">
+                                                    <button type="submit" class="secondary" {% if not item.send_close_to_journal_enabled %}disabled{% endif %}>Send to Close</button>
+                                                </form>
+                                            {% endif %}
                                         </div>
                                     </td>
                                     <td>{{ item.next_trigger }}</td>
@@ -192,8 +196,8 @@
                         </tbody>
                     </table>
                 </div>
-            {% else %}
-                <p class="subtle">No open real or simulated trades are currently available for management.</p>
+            {% elif not hosted_admin_error %}
+                <div class="message message-info message-inline">{% if hosted_read_only %}No open trades are currently available for hosted management review. The page is live and routed correctly; there are simply no active positions to display.{% else %}No open real or simulated trades are currently available for management.{% endif %}</div>
             {% endif %}
         </section>
     </main>
