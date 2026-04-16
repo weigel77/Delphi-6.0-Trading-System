@@ -221,6 +221,7 @@ class HostedShellTest(unittest.TestCase):
             self.assertEqual(client.get("/hosted/journal").status_code, 404)
             self.assertEqual(client.get("/hosted/open-trades").status_code, 404)
             self.assertEqual(client.get("/hosted/manage-trades").status_code, 404)
+            self.assertEqual(client.get("/hosted/mobile").status_code, 404)
             self.assertEqual(client.get("/hosted/apollo").status_code, 404)
             self.assertEqual(client.get("/hosted/kairos").status_code, 404)
             self.assertEqual(client.get("/performance").status_code, 200)
@@ -245,7 +246,7 @@ class HostedShellTest(unittest.TestCase):
             response = app.test_client().get("/hosted")
 
             self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Delphi 6.2.1", response.data)
+        self.assertIn(b"Delphi 6.3", response.data)
         self.assertIn(b"/hosted/research", response.data)
         self.assertIn(b"/hosted/performance", response.data)
         self.assertIn(b"/hosted/journal?trade_mode=real", response.data)
@@ -258,11 +259,97 @@ class HostedShellTest(unittest.TestCase):
             self._allow_identity(app)
             client = app.test_client()
 
-            self.assertEqual(client.get("/", follow_redirects=False).headers["Location"], "/hosted")
+            self.assertEqual(client.get("/", follow_redirects=False).headers["Location"], "/hosted/launch")
             self.assertEqual(client.get("/research", follow_redirects=False).headers["Location"], "/hosted/research")
             self.assertEqual(client.get("/performance?system=Apollo", follow_redirects=False).headers["Location"], "/hosted/performance?system=Apollo")
             self.assertEqual(client.get("/trades/real", follow_redirects=False).headers["Location"], "/hosted/journal?trade_mode=real")
             self.assertEqual(client.get("/management/open-trades", follow_redirects=False).headers["Location"], "/hosted/manage-trades")
+
+    def test_hosted_mobile_shell_renders_phone_navigation_and_quick_actions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = self._create_hosted_app(temp_dir)
+            self._allow_identity(app)
+            app.extensions["performance_service"] = _FakePerformanceService(
+                {
+                    "filters": {"system": [], "profile": [], "result": [], "trade_mode": ["real"], "macro_grade": [], "structure_grade": [], "timeframe": ["all"]},
+                    "records_total": 3,
+                    "records_filtered": 2,
+                    "metrics": {
+                        "totals": {"total_trades": 2},
+                        "win_rate": {"value": 50.0},
+                        "expectancy": {"value": 88.5},
+                        "net_pnl": {"value": 140.0},
+                    },
+                }
+            )
+            app.extensions["open_trade_manager"] = _FakeOpenTradeManager(
+                {
+                    "evaluated_at": "2026-04-16T11:45:00-05:00",
+                    "evaluated_at_display": "2026-04-16 11:45 AM CDT",
+                    "alerts_sent": 0,
+                    "alert_failures": [],
+                    "notifications_enabled": True,
+                    "records": [
+                        {"trade_id": 11, "trade_number": 301, "trade_mode": "real", "status": "Watch", "system_name": "Apollo", "candidate_profile": "Standard", "strike_pair": "6400 / 6395", "expiration_date": "2026-04-18", "gross_pnl": "$120.00", "action_recommendation": "Review"}
+                    ],
+                }
+            )
+            app.extensions["trade_store"] = _FakeTradeStore(
+                {
+                    "real": [{"id": 11, "trade_number": 301, "status": "open", "derived_status_raw": "open", "candidate_profile": "Standard", "system_name": "Apollo", "trade_date": "2026-04-16", "expiration_date": "2026-04-18", "short_strike": 6400, "long_strike": 6395, "contracts": 1, "actual_entry_credit": 1.4, "gross_pnl": 120.0, "trade_mode": "real"}],
+                    "simulated": [],
+                },
+                {
+                    "real": {"total_trades": 1, "open_trades": 1, "closed_trades": 0, "total_pnl": 120.0, "average_pnl": 120.0, "win_count": 0, "loss_count": 0},
+                    "simulated": {"total_trades": 0, "open_trades": 0, "closed_trades": 0, "total_pnl": 0.0, "average_pnl": 0.0, "win_count": 0, "loss_count": 0},
+                },
+            )
+            app.extensions["apollo_snapshot_repository"] = _FakeApolloSnapshotRepository(
+                {
+                    "status": "Allowed",
+                    "run_timestamp": "Thu 2026-04-16 11:40 AM CDT",
+                    "structure_grade": "Bullish",
+                    "macro_grade": "Minor",
+                    "trade_candidates_valid_count": 1,
+                    "trade_candidates_items": [{"mode_label": "Standard", "available": True, "short_strike": "6400", "long_strike": "6395", "net_credit": "$1.40", "em_multiple": "1.62x", "prefill_fields": {"candidate_profile": "Standard"}}],
+                }
+            )
+            app.extensions["kairos_live_service"] = _FakeKairosService(
+                {
+                    "title": "Kairos",
+                    "mode": "Live",
+                    "session_status": "Armed",
+                    "current_state_display": "Window Open",
+                    "market_session_status": "Open",
+                    "last_scan_display": "Thu 2026-04-16 11:41 AM CDT",
+                    "total_scans_completed": 4,
+                    "latest_scan": {"structure_status": "Developing", "timing_status": "Eligible", "spx_value": "6,123.45", "vix_value": "18.76"},
+                    "live_workspace": {"summary_text": "Kairos sees a tradable live window.", "candidate_cards": [{"slot_label": "Subprime", "available": True, "tradeable": True, "strike_label": "6115 / 6110 Put Spread", "net_credit": "$1.55", "prefill_fields": {"candidate_profile": "Subprime"}}], "stamps": []},
+                }
+            )
+            app.extensions["kairos_snapshot_repository"] = _FakeApolloSnapshotRepository(None)
+
+            client = app.test_client()
+
+            home_response = client.get("/hosted/mobile")
+            self.assertEqual(home_response.status_code, 200)
+            self.assertIn(b"Delphi Mobile", home_response.data)
+            self.assertIn(b"Run Apollo", home_response.data)
+            self.assertIn(b"Run Kairos", home_response.data)
+            self.assertIn(b"Open Trades", home_response.data)
+            self.assertIn(b">Home<", home_response.data)
+            self.assertIn(b">Runs<", home_response.data)
+            self.assertIn(b">Trades<", home_response.data)
+            self.assertIn(b">Journal<", home_response.data)
+            self.assertIn(b">More<", home_response.data)
+
+            journal_response = client.get("/hosted/mobile/journal")
+            self.assertEqual(journal_response.status_code, 200)
+            self.assertIn(b"Quick Add Form", journal_response.data)
+
+            more_response = client.get("/hosted/mobile/more")
+            self.assertEqual(more_response.status_code, 200)
+            self.assertIn(b"Switch to Desktop", more_response.data)
 
     def test_hosted_performance_page_uses_delphi_template_and_hosted_data_url(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -336,7 +423,7 @@ class HostedShellTest(unittest.TestCase):
             response = app.test_client().get("/hosted/journal?trade_mode=simulated")
 
             self.assertEqual(response.status_code, 200)
-            self.assertIn(b'Hosted Delphi 6.2.1 journal mirrors the live Supabase trade store and supports draft review, editing, and deleting directly in hosted mode.', response.data)
+            self.assertIn(b'Hosted Delphi 6.3 journal mirrors the live Supabase trade store and supports draft review, editing, and deleting directly in hosted mode.', response.data)
             self.assertIn(b'/hosted/journal?trade_mode=real', response.data)
             self.assertIn(b'/hosted/journal?trade_mode=simulated', response.data)
             self.assertIn(b'/hosted/journal/simulated/7/edit', response.data)
@@ -717,7 +804,7 @@ class HostedShellTest(unittest.TestCase):
             response = app.test_client().get("/hosted/manage-trades")
 
             self.assertEqual(response.status_code, 200)
-            self.assertIn(b'Hosted Delphi 6.2.1 pulls the same live open-trade evaluation data', response.data)
+            self.assertIn(b'Hosted Delphi 6.3 pulls the same live open-trade evaluation data', response.data)
             self.assertIn(b'Watch', response.data)
             self.assertIn(b'Hold', response.data)
             self.assertIn(b'Send Real Status Update', response.data)
@@ -780,7 +867,7 @@ class HostedShellTest(unittest.TestCase):
             response = app.test_client().get("/hosted/performance")
 
             self.assertEqual(response.status_code, 503)
-            self.assertIn(b'Delphi 6.2.1 cannot load performance', response.data)
+            self.assertIn(b'Delphi 6.3 cannot load performance', response.data)
             self.assertIn(b'journal_trades', response.data)
 
     def test_hosted_journal_page_returns_admin_visible_error_when_supabase_trade_table_is_missing(self):
@@ -792,7 +879,7 @@ class HostedShellTest(unittest.TestCase):
             response = app.test_client().get("/hosted/journal?trade_mode=real")
 
             self.assertEqual(response.status_code, 503)
-            self.assertIn(b'Delphi 6.2.1 cannot load journal', response.data)
+            self.assertIn(b'Delphi 6.3 cannot load journal', response.data)
             self.assertIn(b'journal_trade_close_events', response.data)
 
     def test_hosted_manage_trades_page_returns_admin_visible_error_when_supabase_trade_table_is_missing(self):
@@ -807,7 +894,7 @@ class HostedShellTest(unittest.TestCase):
 
             self.assertEqual(response.status_code, 503)
             self.assertEqual(manager.calls, [])
-            self.assertIn(b'Delphi 6.2.1 cannot load manage-trades', response.data)
+            self.assertIn(b'Delphi 6.3 cannot load manage-trades', response.data)
             self.assertIn(b'active_trades', response.data)
 
     def test_hosted_apollo_page_renders_last_snapshot(self):

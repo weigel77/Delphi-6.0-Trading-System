@@ -488,7 +488,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     @app.route("/", methods=["GET", "POST"])
     def index() -> str:
         if app.config.get("RUNTIME_TARGET") == "hosted":
-            return redirect(url_for("hosted_shell_home"))
+            return redirect(url_for("hosted_device_launch"))
         if request.method == "POST":
             return app.view_functions["research"]()
 
@@ -696,7 +696,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
                 browser_response = current_app.make_response((response, 403))
                 get_session_invalidator(app).invalidate_response(browser_response)
                 return browser_response
-            response = redirect(next_path or url_for("hosted_shell_home"))
+            response = redirect(build_hosted_launch_url(next_path))
             get_hosted_session_authenticator(app).establish_response_session(response, session)
             remember_hosted_browser_session(identity)
             establish_hosted_browser_cache_session(identity, response, app=app)
@@ -705,7 +705,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
         try:
             require_hosted_private_access(app)
-            return redirect(next_path or url_for("hosted_shell_home"))
+            return redirect(build_hosted_launch_url(next_path))
         except PrivateAccessDeniedError as exc:
             browser_response = current_app.make_response(
                 (
@@ -732,6 +732,111 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
                 form_email="",
                 error_message="",
             )
+
+    @app.route("/hosted/launch", methods=["GET"])
+    def hosted_device_launch() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        next_path = sanitize_hosted_next_path(request.args.get("next"))
+        explicit_view = str(request.args.get("view") or "").strip().lower()
+        if explicit_view not in {"mobile", "desktop"}:
+            explicit_view = ""
+        return render_template(
+            "hosted_device_launch.html",
+            page_browser_title=f"{HOSTED_APP_DISPLAY_NAME} Launch",
+            desktop_target=next_path,
+            mobile_target=map_hosted_next_path_to_mobile_path(next_path),
+            explicit_view=explicit_view,
+            mobile_breakpoint=HOSTED_MOBILE_PHONE_MAX_WIDTH + 1,
+            desktop_home_url=url_for("hosted_shell_home"),
+            mobile_home_url=url_for("hosted_mobile_home"),
+            **build_hosted_template_context(identity, app=app),
+        )
+
+    def render_hosted_mobile_shell(active_tab: str) -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        return render_template(
+            "hosted_mobile_shell.html",
+            page_browser_title=f"{HOSTED_APP_DISPLAY_NAME} Mobile",
+            page_heading="Delphi Mobile",
+            page_copy="SPX tactical command system for phone-first review, runs, trades, and journal access.",
+            **build_hosted_mobile_shell_context(identity, active_tab=active_tab, app=app),
+            **build_hosted_template_context(identity, app=app),
+        )
+
+    @app.route("/hosted/mobile", methods=["GET"])
+    def hosted_mobile_home() -> Any:
+        return render_hosted_mobile_shell("home")
+
+    @app.route("/hosted/mobile/runs", methods=["GET"])
+    def hosted_mobile_runs() -> Any:
+        return render_hosted_mobile_shell("runs")
+
+    @app.route("/hosted/mobile/trades", methods=["GET"])
+    def hosted_mobile_trades() -> Any:
+        return render_hosted_mobile_shell("trades")
+
+    @app.route("/hosted/mobile/journal", methods=["GET"])
+    def hosted_mobile_journal() -> Any:
+        return render_hosted_mobile_shell("journal")
+
+    @app.post("/hosted/mobile/journal/create")
+    def hosted_mobile_journal_create() -> Any:
+        _, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        submitted_values = coerce_trade_form_input(request.form)
+        trade_store = get_trade_store(app)
+        try:
+            trade_id = trade_store.create_trade(submitted_values)
+            created_trade = dict(submitted_values)
+            created_trade.setdefault("id", trade_id)
+            created_trade["trade_mode"] = str(submitted_values.get("trade_mode") or "real")
+            _clear_hosted_payload_cache(app=app)
+            save_message, save_level = build_trade_save_status(created_trade, action="saved")
+            set_status_message(save_message, level=save_level)
+        except SupabaseRequestError as exc:
+            set_status_message(str(exc), level="warning")
+        except ValueError as exc:
+            set_status_message(str(exc), level="warning")
+        return redirect(url_for("hosted_mobile_journal"))
+
+    @app.route("/hosted/mobile/more", methods=["GET"])
+    def hosted_mobile_more() -> Any:
+        return render_hosted_mobile_shell("more")
+
+    @app.post("/hosted/mobile/run/<engine>")
+    def hosted_mobile_run_action(engine: str) -> Any:
+        _, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        redirect_target = sanitize_hosted_next_path(request.form.get("next") or url_for("hosted_mobile_runs"))
+        normalized_engine = str(engine or "").strip().lower()
+        try:
+            if normalized_engine == "apollo":
+                _clear_hosted_payload_cache("hosted:apollo:live", app=app)
+                _clear_hosted_payload_cache("hosted:apollo:snapshot", app=app)
+                build_hosted_apollo_live_payload(app=app, force_refresh=True)
+                set_status_message("Apollo refreshed for Delphi Mobile.", level="info")
+            elif normalized_engine == "kairos":
+                _clear_hosted_payload_cache("hosted:kairos", app=app)
+                execute_hosted_kairos_live_run(app=app)
+                set_status_message("Kairos refreshed for Delphi Mobile.", level="info")
+            else:
+                abort(404)
+        except MarketDataReauthenticationRequired as exc:
+            set_status_message(str(exc), level="warning")
+        except MarketDataAuthenticationError as exc:
+            set_status_message(str(exc), level="warning")
+        except MarketDataError as exc:
+            set_status_message(str(exc), level="warning")
+        except Exception as exc:  # pragma: no cover - defensive logging
+            app.logger.exception("Hosted mobile %s execution failed: %s", normalized_engine, exc)
+            set_status_message(f"Unable to refresh {normalized_engine.title()} right now.", level="warning")
+        return redirect(redirect_target)
 
     @app.route("/hosted/sign-out", methods=["POST"])
     def hosted_browser_sign_out() -> Any:
@@ -3249,6 +3354,153 @@ def build_delphi_route_map(*, hosted: bool = False) -> Dict[str, str]:
         "notifications": url_for("notifications_settings_page"),
         "performance_data": url_for("performance_dashboard_data"),
         "text_status": url_for("text_status_api"),
+    }
+
+
+HOSTED_MOBILE_PHONE_MAX_WIDTH = 767
+HOSTED_MOBILE_TABS = ("home", "runs", "trades", "journal", "more")
+
+
+def build_hosted_mobile_route_map() -> Dict[str, str]:
+    return {
+        "home": url_for("hosted_mobile_home"),
+        "runs": url_for("hosted_mobile_runs"),
+        "trades": url_for("hosted_mobile_trades"),
+        "journal": url_for("hosted_mobile_journal"),
+        "more": url_for("hosted_mobile_more"),
+        "launch": url_for("hosted_device_launch"),
+    }
+
+
+def resolve_hosted_mobile_tab(value: Any) -> str:
+    candidate = str(value or "").strip().lower()
+    return candidate if candidate in HOSTED_MOBILE_TABS else "home"
+
+
+def build_hosted_launch_url(next_path: Any = None) -> str:
+    sanitized_next = sanitize_hosted_next_path(next_path)
+    default_home = url_for("hosted_shell_home") if has_request_context() else "/hosted"
+    if sanitized_next == default_home:
+        return url_for("hosted_device_launch") if has_request_context() else "/hosted/launch"
+    return url_for("hosted_device_launch", next=sanitized_next) if has_request_context() else f"/hosted/launch?next={sanitized_next}"
+
+
+def map_hosted_next_path_to_mobile_path(next_path: Any) -> str:
+    candidate = sanitize_hosted_next_path(next_path)
+    normalized = candidate.split("#", 1)[0]
+    if normalized.startswith("/hosted/mobile"):
+        return candidate
+    if normalized.startswith("/hosted/apollo") or normalized.startswith("/hosted/kairos"):
+        return url_for("hosted_mobile_runs") if has_request_context() else "/hosted/mobile/runs"
+    if normalized.startswith("/hosted/journal"):
+        return url_for("hosted_mobile_journal") if has_request_context() else "/hosted/mobile/journal"
+    if normalized.startswith("/hosted/manage-trades") or normalized.startswith("/hosted/open-trades"):
+        return url_for("hosted_mobile_trades") if has_request_context() else "/hosted/mobile/trades"
+    if normalized.startswith("/hosted/notifications"):
+        return url_for("hosted_mobile_more") if has_request_context() else "/hosted/mobile/more"
+    return url_for("hosted_mobile_home") if has_request_context() else "/hosted/mobile"
+
+
+def build_hosted_mobile_recent_activity(*journal_payloads: Dict[str, Any]) -> list[Dict[str, Any]]:
+    combined: list[Dict[str, Any]] = []
+    seen: set[tuple[Any, Any]] = set()
+    for payload in journal_payloads:
+        for trade in payload.get("trades") or []:
+            if not isinstance(trade, dict):
+                continue
+            trade_key = (trade.get("trade_mode") or "real", trade.get("id") or trade.get("trade_number_raw") or trade.get("trade_number"))
+            if trade_key in seen:
+                continue
+            seen.add(trade_key)
+            combined.append(dict(trade))
+    return sorted(
+        combined,
+        key=lambda item: (
+            str(item.get("trade_date_raw") or item.get("expiration_date_raw") or ""),
+            int(item.get("trade_number_raw") or 0),
+        ),
+        reverse=True,
+    )
+
+
+def build_hosted_mobile_run_cards(*, apollo_action: Dict[str, Any], kairos_action: Dict[str, Any]) -> list[Dict[str, Any]]:
+    apollo_payload = dict(apollo_action.get("payload") or {})
+    kairos_payload = dict(kairos_action.get("payload") or {})
+    apollo_candidates = [dict(item) for item in apollo_payload.get("trade_candidates_items") or [] if isinstance(item, dict)]
+    kairos_candidates = [dict(item) for item in kairos_payload.get("candidate_cards") or [] if isinstance(item, dict)]
+    return [
+        {
+            "key": "apollo",
+            "title": "Apollo",
+            "timestamp": str(apollo_payload.get("run_timestamp") or "\u2014"),
+            "structure": str(apollo_payload.get("structure_grade") or "Awaiting run"),
+            "macro_status": str(apollo_payload.get("macro_grade") or "Awaiting run"),
+            "candidate_count": int(apollo_payload.get("trade_candidates_valid_count") or 0),
+            "best_trade_summary": str(apollo_payload.get("hosted_recommendation") or "Stand aside"),
+            "plain_english": str(apollo_payload.get("hosted_plain_english") or "No Apollo run has been captured yet."),
+            "detail_url": url_for("hosted_shell_apollo"),
+            "run_action_url": url_for("hosted_mobile_run_action", engine="apollo"),
+            "prefill_action_url": url_for("hosted_apollo_prefill_candidate"),
+            "candidates": apollo_candidates[:3],
+        },
+        {
+            "key": "kairos",
+            "title": "Kairos",
+            "timestamp": str(kairos_payload.get("run_timestamp") or kairos_payload.get("last_scan_display") or "\u2014"),
+            "structure": str(kairos_payload.get("structure_status") or "Awaiting scan"),
+            "macro_status": str(kairos_payload.get("timing_status") or kairos_payload.get("session_status") or "Awaiting scan"),
+            "candidate_count": len([item for item in kairos_candidates if item.get("available")]),
+            "best_trade_summary": str(kairos_payload.get("hosted_recommendation") or "No live window is tradeable right now"),
+            "plain_english": str(kairos_payload.get("hosted_market_note") or kairos_payload.get("summary_text") or "No Kairos scan has completed yet."),
+            "detail_url": url_for("hosted_kairos_live_page"),
+            "run_action_url": url_for("hosted_mobile_run_action", engine="kairos"),
+            "prefill_action_url": url_for("hosted_kairos_prefill_candidate"),
+            "candidates": kairos_candidates[:3],
+        },
+    ]
+
+
+def build_hosted_mobile_shell_context(
+    identity: RequestIdentity,
+    *,
+    active_tab: str,
+    app: Optional[Flask] = None,
+) -> Dict[str, Any]:
+    performance_filters = {
+        "system": [],
+        "profile": [],
+        "result": [],
+        "trade_mode": ["real"],
+        "macro_grade": [],
+        "structure_grade": [],
+        "timeframe": ["all"],
+    }
+    desktop_routes = build_delphi_route_map(hosted=True)
+    mobile_routes = build_hosted_mobile_route_map()
+    trade_store = get_trade_store(app)
+    performance_payload = build_hosted_performance_dashboard(filters=performance_filters, app=app)
+    management_payload = build_open_trade_action_payload(build_hosted_open_trade_management_payload(app=app), trade_mode="all")
+    journal_real_payload = build_hosted_journal_trades_action_response(trade_mode="real", app=app)
+    journal_simulated_payload = build_hosted_journal_trades_action_response(trade_mode="simulated", app=app)
+    apollo_action = build_hosted_apollo_action_response(app=app)
+    kairos_action = build_hosted_kairos_action_response(app=app)
+    recent_activity = build_hosted_mobile_recent_activity(journal_real_payload, journal_simulated_payload)
+    return {
+        "active_tab": resolve_hosted_mobile_tab(active_tab),
+        "mobile_routes": mobile_routes,
+        "desktop_routes": desktop_routes,
+        "mobile_breakpoint": HOSTED_MOBILE_PHONE_MAX_WIDTH + 1,
+        "mobile_run_cards": build_hosted_mobile_run_cards(apollo_action=apollo_action, kairos_action=kairos_action),
+        "mobile_home_performance": performance_payload,
+        "mobile_open_trades": management_payload,
+        "mobile_journal_real": journal_real_payload,
+        "mobile_journal_simulated": journal_simulated_payload,
+        "mobile_journal_trades": recent_activity,
+        "mobile_recent_activity": recent_activity[:4],
+        "mobile_apollo_action": apollo_action,
+        "mobile_kairos_action": kairos_action,
+        "mobile_identity": identity,
+        "mobile_next_trade_number": trade_store.next_trade_number(),
     }
 
 

@@ -127,12 +127,25 @@ class HostedLoginFlowTest(unittest.TestCase):
             response = client.post("/hosted/login", data={"email": "bill@example.com", "password": "secret123", "next": "/hosted/apollo"}, follow_redirects=False)
 
             self.assertEqual(response.status_code, 302)
-            self.assertEqual(response.headers["Location"], "/hosted/apollo")
+            self.assertEqual(response.headers["Location"], "/hosted/launch?next=/hosted/apollo")
             self.assertTrue(any("delphi_hosted_access_token=bill-token" in header for header in response.headers.getlist("Set-Cookie")))
 
-            shell_response = client.get("/hosted/apollo")
+            shell_response = client.get("/hosted/launch?next=/hosted/apollo")
             self.assertEqual(shell_response.status_code, 200)
-            self.assertIn(b"Apollo: Greek God of Prophecy and Part-Time Options Trader", shell_response.data)
+            self.assertIn(b"Routing Your Command Surface", shell_response.data)
+            self.assertIn(b'data-desktop-target="/hosted/apollo"', shell_response.data)
+
+    def test_hosted_login_page_renders_delphi_6_3_welcome_screen(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = self._create_hosted_app(temp_dir)
+
+            response = app.test_client().get("/hosted/login")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(b"SPX Tactical Command System", response.data)
+            self.assertIn(b"Structure. Risk. Execution.", response.data)
+            self.assertIn(b"Delphi 6.3", response.data)
+            self.assertIn(b"Login", response.data)
 
     def test_hosted_login_route_denies_non_allowlisted_identity(self):
         with tempfile.TemporaryDirectory() as temp_dir:

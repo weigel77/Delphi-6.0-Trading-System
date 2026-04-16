@@ -49,8 +49,8 @@ class RuntimeInfrastructureTest(unittest.TestCase):
 
             self.assertEqual(infrastructure.host_kind, "hosted")
             self.assertEqual(infrastructure.settings.runtime_target, "hosted")
-            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 6.2.1")
-            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 6.2.1")
+            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 6.3")
+            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 6.3")
             self.assertEqual(app.config["SESSION_COOKIE_NAME"], "delphi5_hosted_session")
             self.assertEqual(app.config["OAUTH_SESSION_NAMESPACE"], "delphi5hosted")
             self.assertIsNotNone(infrastructure.supabase_context)
@@ -68,7 +68,7 @@ class RuntimeInfrastructureTest(unittest.TestCase):
             response = client.get("/")
 
             self.assertEqual(response.status_code, 302)
-            self.assertEqual(response.headers["Location"], "/hosted")
+            self.assertEqual(response.headers["Location"], "/hosted/launch")
 
     def test_hosted_runtime_profile_can_target_local_http_validation_url(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -137,6 +137,6 @@ class RuntimeInfrastructureTest(unittest.TestCase):
                 }
             )
 
-            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 6.2.1")
-            self.assertEqual(app.config["APP_PAGE_KICKER"], "Delphi 6.2.1")
-            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 6.2.1")
+            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 6.3")
+            self.assertEqual(app.config["APP_PAGE_KICKER"], "Delphi 6.3")
+            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 6.3")

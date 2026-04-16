@@ -2,41 +2,75 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>{{ page_browser_title }} | {{ app_identity.display_name }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
-<body class="hosted-shell-body">
-    <main class="hosted-shell-layout">
-        <section class="hosted-shell-header-card hosted-login-card">
-            <div class="hosted-shell-panel-header">
-                <div>
-                    <p class="hosted-shell-kicker">{{ app_identity.page_kicker }}</p>
-                    <h1>{{ page_heading }}</h1>
-                    <p class="hosted-shell-copy">{{ page_copy }}</p>
-                </div>
+<body class="delphi-login-body">
+    <div class="delphi-login-background" aria-hidden="true">
+        <div class="delphi-login-grid"></div>
+        <div class="delphi-login-glow delphi-login-glow-a"></div>
+        <div class="delphi-login-glow delphi-login-glow-b"></div>
+        <div class="delphi-login-pulse"></div>
+        <div class="delphi-login-particles">
+            <span></span><span></span><span></span><span></span><span></span><span></span>
+        </div>
+    </div>
+    <main class="delphi-login-shell">
+        <section class="delphi-login-hero">
+            <p class="delphi-login-kicker">{{ app_identity.page_kicker }}</p>
+            <h1>SPX Tactical Command System</h1>
+            <p class="delphi-login-tagline">Structure. Risk. Execution.</p>
+            <p class="delphi-login-copy">Structured market intelligence for disciplined options execution.</p>
+            <div class="delphi-login-signal-list">
+                <span>Live SPX context</span>
+                <span>Apollo and Kairos workflows</span>
+                <span>Journal and performance review</span>
+            </div>
+        </section>
+
+        <section class="delphi-login-card">
+            <div class="delphi-login-card-head">
+                <p class="delphi-login-card-kicker">{{ app_identity.version_label }}</p>
+                <h2>{{ page_heading }}</h2>
+                <p>{{ page_copy }}</p>
             </div>
 
-            <form method="post" action="{{ url_for('hosted_login_entry') }}" class="hosted-login-form">
+            <form method="post" action="{{ url_for('hosted_login_entry') }}" class="delphi-login-form">
                 <input type="hidden" name="next" value="{{ next_path }}">
-                <div class="hosted-login-grid">
-                    <div class="field-group">
-                        <label for="hosted-email">Email</label>
-                        <input id="hosted-email" name="email" type="email" value="{{ form_email }}" autocomplete="email" required>
+                <label class="delphi-login-field" for="hosted-email">
+                    <span>Email</span>
+                    <input id="hosted-email" name="email" type="email" value="{{ form_email }}" autocomplete="email" placeholder="bill@example.com" required>
+                </label>
+                <label class="delphi-login-field" for="hosted-password">
+                    <span>Password</span>
+                    <div class="delphi-login-password-wrap">
+                        <input id="hosted-password" name="password" type="password" autocomplete="current-password" placeholder="Enter password" required>
+                        <button type="button" class="delphi-login-password-toggle" data-password-toggle aria-label="Show password">Show</button>
                     </div>
-                    <div class="field-group">
-                        <label for="hosted-password">Password</label>
-                        <input id="hosted-password" name="password" type="password" autocomplete="current-password" required>
-                    </div>
-                </div>
+                </label>
                 {% if error_message %}
                     <div class="message message-warning hosted-shell-error-message">{{ error_message }}</div>
                 {% endif %}
-                <div class="hosted-shell-toolbar-actions">
-                    <button type="submit">Sign In</button>
-                </div>
+                <button type="submit" class="delphi-login-submit">Login</button>
+                <p class="delphi-login-footnote">Delphi 6.3 routes desktop and phone users into separate application shells after authentication.</p>
             </form>
         </section>
     </main>
+    <script>
+        (() => {
+            const toggle = document.querySelector('[data-password-toggle]');
+            const input = document.getElementById('hosted-password');
+            if (!toggle || !input) {
+                return;
+            }
+            toggle.addEventListener('click', () => {
+                const reveal = input.type === 'password';
+                input.type = reveal ? 'text' : 'password';
+                toggle.textContent = reveal ? 'Hide' : 'Show';
+                toggle.setAttribute('aria-label', reveal ? 'Hide password' : 'Show password');
+            });
+        })();
+    </script>
 </body>
 </html>
