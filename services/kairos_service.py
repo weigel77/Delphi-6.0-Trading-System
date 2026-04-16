@@ -4423,6 +4423,8 @@ class KairosService:
                 "tradeable": False,
                 "headline": slot_label,
                 "descriptor": card_note,
+                "structure_label": "Not Recommended",
+                "status_label": "Unavailable",
                 "strike_label": "No valid trade",
                 "net_credit": "—",
                 "contract_size": "—",
@@ -4431,12 +4433,17 @@ class KairosService:
                 "premium_received": "—",
                 "routine_loss": "—",
                 "black_swan_loss": "—",
+                "routine_probability": "—",
+                "tail_probability": "—",
                 "max_loss": "—",
                 "max_loss_per_contract": "—",
                 "estimated_otm_probability": "—",
                 "rationale": fallback_message,
                 "detail_rows": [],
-                "guidance_rows": [],
+                "header_stamps": [
+                    {"label": "Confidence", "value": "—"},
+                    {"label": "Fit Score", "value": "—"},
+                ],
                 "message": fallback_message,
                 "can_open_trade": False,
                 "open_trade_profile_key": "",
@@ -4452,15 +4459,13 @@ class KairosService:
         tradeable = bool(candidate.get("available") and candidate.get("is_fully_valid"))
         can_open_trade = tradeable and self._live_active_trade is None
         detail_rows = list(candidate.get("detail_rows") or [])
-        guidance_rows = [{"label": "FIT SCORE", "value": candidate.get("fit_score_display") or "—"}]
-        guidance_rows.append({"label": "CONFIDENCE", "value": candidate.get("confidence_label") or "—"})
         prefill_fields = self._build_live_candidate_prefill_fields_locked(
             slot_label=slot_label,
             candidate=candidate,
             candidate_context=candidate_context,
             latest_scan=latest_scan,
         )
-        session_tape_label = self._derive_session_tape_structure_label(latest_scan)
+        structure_label = self._derive_live_candidate_structure_label(latest_scan)
         return {
             "slot_key": slot_key,
             "slot_label": slot_label,
@@ -4469,7 +4474,9 @@ class KairosService:
             "available": True,
             "tradeable": tradeable,
             "headline": slot_label,
-            "descriptor": f"{session_tape_label} session tape · {candidate.get('mode_descriptor') or card_note}",
+            "descriptor": candidate.get("mode_descriptor") or card_note,
+            "structure_label": structure_label,
+            "status_label": "Ready" if tradeable else "Not Recommended",
             "strike_label": f"{candidate.get('short_strike') or '—'} / {candidate.get('long_strike') or '—'} Put Spread",
             "net_credit": candidate.get("credit_estimate_display") or "—",
             "contract_size": candidate.get("contract_size_display") or "—",
@@ -4478,6 +4485,8 @@ class KairosService:
             "premium_received": candidate.get("premium_received_display") or candidate.get("credit_estimate_display") or "—",
             "routine_loss": format_currency_value(routine_loss),
             "black_swan_loss": format_currency_value(black_swan_loss),
+            "routine_probability": candidate.get("estimated_otm_probability_display") or "—",
+            "tail_probability": candidate.get("estimated_otm_probability_display") or "—",
             "routine_loss_percentage": format_percent_value(abs(float(outcome_profile.get("routine_loss_percentage") or 0.0)) * 100),
             "black_swan_loss_percentage": format_percent_value(abs(float(outcome_profile.get("black_swan_loss_percentage") or 0.0)) * 100),
             "routine_loss_count": int(outcome_profile.get("loss_count") or 0),
@@ -4488,7 +4497,10 @@ class KairosService:
             "estimated_otm_probability": candidate.get("estimated_otm_probability_display") or "—",
             "rationale": candidate.get("rationale") or fallback_message,
             "detail_rows": detail_rows,
-            "guidance_rows": guidance_rows,
+            "header_stamps": [
+                {"label": "Confidence", "value": candidate.get("confidence_label") or "—"},
+                {"label": "Fit Score", "value": candidate.get("fit_score_display") or "—"},
+            ],
             "message": candidate.get("no_trade_message") or fallback_message,
             "can_open_trade": can_open_trade,
             "open_trade_profile_key": candidate.get("mode_key") or "",
@@ -4508,6 +4520,14 @@ class KairosService:
         if raw_state in {KairosState.SETUP_FORMING.value, KairosState.WINDOW_CLOSING.value}:
             return "Subprime"
         return "Subprime"
+
+    def _derive_live_candidate_structure_label(self, latest_scan: KairosScanResult | None) -> str:
+        raw_state = latest_scan.kairos_state if latest_scan is not None else self._session.current_state
+        if raw_state == KairosState.WINDOW_OPEN.value:
+            return "Prime"
+        if raw_state in {KairosState.SETUP_FORMING.value, KairosState.WINDOW_CLOSING.value}:
+            return "Subprime"
+        return "Not Recommended"
 
     def _build_live_candidate_prefill_fields_locked(
         self,

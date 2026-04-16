@@ -178,7 +178,7 @@ def build_performance_record(trade: Dict[str, Any]) -> Dict[str, Any]:
     system = normalize_system_name(trade.get("system_name"))
     result = classify_trade_result(trade)
     gross_pnl = coerce_float(trade.get("gross_pnl") if trade.get("gross_pnl") is not None else trade.get("pnl"))
-    trade_date = pick_trade_date(trade)
+    trade_date = pick_performance_date(trade)
     derived_status = str(trade.get("derived_status_label") or trade.get("status") or "").strip().title() or "Open"
     expected_move_metadata = resolve_trade_expected_move(trade)
     expected_move = coerce_float(expected_move_metadata.get("value"))
@@ -1224,15 +1224,18 @@ def normalize_structure_grade(value: Any) -> str:
 
 def normalize_filter_value(group: str, value: Any) -> str:
     text = str(value or "").strip().lower()
-    if group in {"result", "trade_mode", "macro_grade", "structure_grade", "profile", "system"}:
+    if group in {"result", "trade_mode", "macro_grade", "structure_grade", "profile", "system", "timeframe"}:
         return text.replace(" ", "-")
     return text
 
 
-def pick_trade_date(trade: Dict[str, Any]) -> str:
+def pick_performance_date(trade: Dict[str, Any]) -> str:
+    expiration_date = str(trade.get("expiration_date") or "").strip()
+    if expiration_date:
+        return expiration_date.split("T", 1)[0]
     trade_date = str(trade.get("trade_date") or "").strip()
     if trade_date:
-        return trade_date
+        return trade_date.split("T", 1)[0]
     entry_datetime = str(trade.get("entry_datetime") or "").strip()
     if entry_datetime:
         return entry_datetime.split("T", 1)[0]

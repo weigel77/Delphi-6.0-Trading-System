@@ -241,8 +241,10 @@ class KairosRoutesTest(unittest.TestCase):
         self.assertIn(b"Countdown", response.data)
         self.assertIn(b"Total Scans Today", response.data)
         self.assertIn(b"Scan Interval", response.data)
-        self.assertIn(b"Last Scan", response.data)
+        self.assertNotIn(b"kairos-last-scan-inline", response.data)
         self.assertIn(b"Intraday Scan Log", response.data)
+        self.assertIn(b"Confidence", response.data)
+        self.assertIn(b"Fit Score", response.data)
         self.assertIn(b"Distance to Short", response.data)
         self.assertIn(b"EM Multiple", response.data)
         self.assertIn(b"kairos-live-trade-lock-panel", response.data)
@@ -1017,6 +1019,9 @@ class KairosRoutesTest(unittest.TestCase):
         self.assertIn("CHAIN SOURCE", summary_labels)
         self.assertIn("PRICE BASIS", summary_labels)
         self.assertIn("WIDTH SCAN", summary_labels)
+        candidate_card = payload["live_workspace"]["candidate_cards"][0]
+        self.assertEqual(len(candidate_card["header_stamps"]), 2)
+        self.assertIn(candidate_card["structure_label"], {"Prime", "Subprime", "Not Recommended"})
 
     def test_live_best_trade_endpoint_marks_schwab_unavailable_without_fallback(self):
         self.kairos_live_service.options_chain_service.get_spx_option_chain_summary = lambda expiration_date: {

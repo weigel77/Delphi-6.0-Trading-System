@@ -2,6 +2,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
+from datetime import date, timedelta
 from pathlib import Path
 
 from app import create_app
@@ -75,6 +76,7 @@ class PerformanceDashboardTest(unittest.TestCase):
             system_name="Apollo",
             candidate_profile="Standard",
             trade_date="2026-04-01",
+            expiration_date="2026-04-01",
             spx_at_entry="6500",
             vix_at_entry="17.5",
             macro_grade="None",
@@ -88,6 +90,7 @@ class PerformanceDashboardTest(unittest.TestCase):
             system_name="Kairos",
             candidate_profile="",
             trade_date="2026-04-02",
+            expiration_date="2026-04-02",
             spx_at_entry="6500",
             vix_at_entry="22.5",
             macro_grade="Major",
@@ -103,6 +106,7 @@ class PerformanceDashboardTest(unittest.TestCase):
             system_name="Apollo",
             candidate_profile="Fortress",
             trade_date="2026-04-03",
+            expiration_date="2026-04-03",
             spx_at_entry="6500",
             vix_at_entry="20",
             macro_grade="Minor",
@@ -117,12 +121,69 @@ class PerformanceDashboardTest(unittest.TestCase):
             candidate_profile="Aggressive",
             status="open",
             trade_date="2026-04-04",
+            expiration_date="2026-04-04",
             macro_grade="None",
             structure_grade="Good",
             actual_entry_credit="1.25",
             actual_exit_value="",
             close_reason="",
         )
+
+    def test_timeframe_filters_use_expiration_date_instead_of_trade_date(self):
+        today = date.today()
+        older_than_year = today - timedelta(days=500)
+        within_year = today - timedelta(days=30)
+
+        payload = build_dashboard_payload(
+            [
+                build_performance_record(
+                    {
+                        "id": 101,
+                        "trade_number": 101,
+                        "trade_mode": "real",
+                        "system_name": "Apollo",
+                        "candidate_profile": "Standard",
+                        "status": "closed",
+                        "trade_date": today.isoformat(),
+                        "expiration_date": older_than_year.isoformat(),
+                        "gross_pnl": 150.0,
+                        "actual_entry_credit": 1.5,
+                        "spread_width": 5.0,
+                        "contracts": 1,
+                    }
+                ),
+                build_performance_record(
+                    {
+                        "id": 102,
+                        "trade_number": 102,
+                        "trade_mode": "real",
+                        "system_name": "Apollo",
+                        "candidate_profile": "Standard",
+                        "status": "closed",
+                        "trade_date": older_than_year.isoformat(),
+                        "expiration_date": within_year.isoformat(),
+                        "gross_pnl": 90.0,
+                        "actual_entry_credit": 1.25,
+                        "spread_width": 5.0,
+                        "contracts": 1,
+                    }
+                ),
+            ],
+            filters={
+                "system": ["apollo", "kairos", "aegis"],
+                "profile": ["legacy", "aggressive", "fortress", "standard", "prime", "subprime"],
+                "result": ["win", "loss", "black-swan", "scratched"],
+                "trade_mode": ["real"],
+                "macro_grade": ["none", "minor", "major"],
+                "structure_grade": ["good", "neutral", "poor"],
+                "timeframe": ["1-yr"],
+            },
+        )
+
+        self.assertEqual(payload["records_total"], 2)
+        self.assertEqual(payload["records_filtered"], 1)
+        self.assertEqual(len(payload["charts"]["equity_curve"]["points"]), 1)
+        self.assertEqual(payload["charts"]["equity_curve"]["points"][0]["label"], within_year.isoformat())
 
     def test_performance_page_route_loads_and_renders_chart_containers(self):
         response = self.client.get("/performance")

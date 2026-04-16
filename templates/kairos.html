@@ -108,10 +108,6 @@
                         <span id="kairos-readiness-pill" class="kairos-state-pill kairos-state-pill-{{ live_workspace.readiness_pill_key if live_workspace.readiness_pill_key is defined else latest_scan.kairos_state_display_key if latest_scan.kairos_state_display_key is defined else latest_scan.kairos_state_key }}">{{ live_workspace.readiness_pill_label if live_workspace.readiness_pill_label is defined else latest_scan.readiness_state_display if latest_scan.readiness_state_display is defined else latest_scan.readiness_state }}</span>
                         {% endif %}
                     </div>
-                    <div>
-                        <p class="kairos-run-timestamp-label">Last Scan</p>
-                        <p id="kairos-last-scan-inline" class="kairos-run-timestamp">{{ kairos_payload.last_scan_display }}</p>
-                    </div>
                 </div>
             </div>
 
@@ -247,17 +243,27 @@
                             <div class="apollo-candidate-mode">
                                 <div>
                                     <p class="apollo-candidate-rank">{{ item.slot_label }}</p>
-                                    <h4>{{ item.headline }}</h4>
                                     <p class="subtle">{{ item.descriptor }}</p>
                                 </div>
                             </div>
                             <div class="apollo-candidate-header-meta">
-                                <span class="kairos-runner-candidate-status kairos-runner-candidate-status-{{ 'qualified' if item.tradeable else 'did-not-qualify' }}">{{ 'Ready' if item.tradeable else 'Advisory' if item.available else 'Unavailable' }}</span>
-                                <p class="subtle">{{ item.strike_label }}</p>
+                                <div class="apollo-candidate-score">{{ item.strike_label }}</div>
+                                <div class="apollo-candidate-stamp-row">
+                                    {% for stamp in item.header_stamps or [] %}
+                                    <div class="apollo-candidate-stamp">
+                                        <span>{{ stamp.label }}</span>
+                                        <strong>{{ stamp.value }}</strong>
+                                    </div>
+                                    {% endfor %}
+                                </div>
                             </div>
                         </div>
 
                         <div class="apollo-candidate-stamp-row">
+                            <div class="apollo-candidate-stamp">
+                                <span>Structure</span>
+                                <strong>{{ item.structure_label }}</strong>
+                            </div>
                             <div class="apollo-candidate-stamp apollo-candidate-stamp-credit">
                                 <span>Net Credit</span>
                                 <strong>{{ item.net_credit }}</strong>
@@ -276,38 +282,34 @@
                             </div>
                         </div>
 
+                        <div class="apollo-candidate-stamp-row">
+                            <div class="apollo-candidate-stamp">
+                                <span>Status</span>
+                                <strong>{{ item.status_label }}</strong>
+                            </div>
+                        </div>
+
                         <div class="apollo-payoff-grid">
                             <article class="apollo-mini-card apollo-mini-card-highlight apollo-mini-card-highlight-premium">
                                 <p class="summary-label">Premium Received</p>
                                 <strong>{{ item.premium_received }}</strong>
-                                <p class="apollo-probability-text">{{ item.message }}</p>
+                                <p class="apollo-probability-text">Prob. Premium: {{ item.estimated_otm_probability }}</p>
                             </article>
                             <article class="apollo-mini-card apollo-mini-card-highlight apollo-mini-card-highlight-routine">
                                 <p class="summary-label">Routine Loss</p>
                                 <strong>{{ item.routine_loss }}</strong>
-                                <p class="apollo-diagnostics-note">{{ item.loss_model_source }} · avg ROI {{ item.routine_loss_percentage }} · n={{ item.routine_loss_count }}</p>
+                                <p class="apollo-probability-text">Prob. Routine: {{ item.routine_probability }}</p>
                             </article>
                             <article class="apollo-mini-card apollo-mini-card-highlight apollo-mini-card-highlight-tail apollo-mini-card-wide">
                                 <p class="summary-label">Black Swan Loss</p>
                                 <strong>{{ item.black_swan_loss }}</strong>
-                                <p class="apollo-diagnostics-note">{{ item.loss_model_source }} · avg ROI {{ item.black_swan_loss_percentage }} · n={{ item.black_swan_loss_count }}</p>
+                                <p class="apollo-probability-text">Prob. Tail: {{ item.tail_probability }}</p>
                             </article>
                         </div>
-
-                        <p class="kairos-runner-candidate-rationale">{{ item.rationale }}</p>
 
                         <div class="kairos-runner-candidate-detail-grid">
                             {% for row in item.detail_rows or [] %}
                                 <div class="kairos-runner-candidate-detail-row">
-                                    <span>{{ row.label }}</span>
-                                    <strong>{{ row.value }}</strong>
-                                </div>
-                            {% endfor %}
-                        </div>
-
-                        <div class="kairos-runner-candidate-chip-row">
-                            {% for row in item.guidance_rows or [] %}
-                                <div class="kairos-runner-candidate-chip">
                                     <span>{{ row.label }}</span>
                                     <strong>{{ row.value }}</strong>
                                 </div>
@@ -335,7 +337,6 @@
                                 <button type="button" class="kairos-live-candidate-open-button" data-kairos-live-open-profile="{{ item.open_trade_profile_key }}">Open Live Trade</button>
                             {% endif %}
                         </div>
-                        <p class="subtle">{{ item.message }}</p>
                     </article>
                 {% endfor %}
             </div>
@@ -1032,16 +1033,26 @@
                         <div class="apollo-candidate-mode">
                             <div>
                                 <p class="apollo-candidate-rank">${escapeHtml(item.slot_label || 'Candidate Slot')}</p>
-                                <h4>${escapeHtml(item.headline || item.slot_label || 'Candidate')}</h4>
                                 <p class="subtle">${escapeHtml(item.descriptor || item.card_note || '')}</p>
                             </div>
                         </div>
                         <div class="apollo-candidate-header-meta">
-                            <span class="kairos-runner-candidate-status kairos-runner-candidate-status-${item.tradeable ? 'qualified' : 'did-not-qualify'}">${item.tradeable ? 'Ready' : (item.available ? 'Advisory' : 'Unavailable')}</span>
-                            <p class="subtle">${escapeHtml(item.strike_label || 'No valid trade')}</p>
+                            <div class="apollo-candidate-score">${escapeHtml(item.strike_label || 'No valid trade')}</div>
+                            <div class="apollo-candidate-stamp-row">
+                                ${(Array.isArray(item.header_stamps) ? item.header_stamps : []).map((stamp) => `
+                                    <div class="apollo-candidate-stamp">
+                                        <span>${escapeHtml(stamp.label || '—')}</span>
+                                        <strong>${escapeHtml(stamp.value || '—')}</strong>
+                                    </div>
+                                `).join('')}
+                            </div>
                         </div>
                     </div>
                     <div class="apollo-candidate-stamp-row">
+                        <div class="apollo-candidate-stamp">
+                            <span>Structure</span>
+                            <strong>${escapeHtml(item.structure_label || 'Not Recommended')}</strong>
+                        </div>
                         <div class="apollo-candidate-stamp apollo-candidate-stamp-credit">
                             <span>Net Credit</span>
                             <strong>${escapeHtml(item.net_credit || '—')}</strong>
@@ -1059,35 +1070,32 @@
                             <strong>${escapeHtml(item.em_multiple || '—')}</strong>
                         </div>
                     </div>
+                    <div class="apollo-candidate-stamp-row">
+                        <div class="apollo-candidate-stamp">
+                            <span>Status</span>
+                            <strong>${escapeHtml(item.status_label || 'Unavailable')}</strong>
+                        </div>
+                    </div>
                     <div class="apollo-payoff-grid">
                         <article class="apollo-mini-card apollo-mini-card-highlight apollo-mini-card-highlight-premium">
                             <p class="summary-label">Premium Received</p>
                             <strong>${escapeHtml(item.premium_received || '—')}</strong>
-                            <p class="apollo-probability-text">${escapeHtml(item.message || 'No live trade is currently ready.')}</p>
+                            <p class="apollo-probability-text">Prob. Premium: ${escapeHtml(item.estimated_otm_probability || '—')}</p>
                         </article>
                         <article class="apollo-mini-card apollo-mini-card-highlight apollo-mini-card-highlight-routine">
                             <p class="summary-label">Routine Loss</p>
                             <strong>${escapeHtml(item.routine_loss || '—')}</strong>
-                            <p class="apollo-diagnostics-note">${escapeHtml(item.loss_model_source || 'Historical real-trade ROI averages')} · avg ROI ${escapeHtml(item.routine_loss_percentage || '—')} · n=${escapeHtml(item.routine_loss_count ?? 0)}</p>
+                            <p class="apollo-probability-text">Prob. Routine: ${escapeHtml(item.routine_probability || '—')}</p>
                         </article>
                         <article class="apollo-mini-card apollo-mini-card-highlight apollo-mini-card-highlight-tail apollo-mini-card-wide">
                             <p class="summary-label">Black Swan Loss</p>
                             <strong>${escapeHtml(item.black_swan_loss || '—')}</strong>
-                            <p class="apollo-diagnostics-note">${escapeHtml(item.loss_model_source || 'Historical real-trade ROI averages')} · avg ROI ${escapeHtml(item.black_swan_loss_percentage || '—')} · n=${escapeHtml(item.black_swan_loss_count ?? 0)}</p>
+                            <p class="apollo-probability-text">Prob. Tail: ${escapeHtml(item.tail_probability || '—')}</p>
                         </article>
                     </div>
-                    <p class="kairos-runner-candidate-rationale">${escapeHtml(item.rationale || item.message || 'No trade is currently available.')}</p>
                     <div class="kairos-runner-candidate-detail-grid">
                         ${(Array.isArray(item.detail_rows) ? item.detail_rows : []).map((row) => `
                             <div class="kairos-runner-candidate-detail-row">
-                                <span>${escapeHtml(row.label || '—')}</span>
-                                <strong>${escapeHtml(row.value || '—')}</strong>
-                            </div>
-                        `).join('')}
-                    </div>
-                    <div class="kairos-runner-candidate-chip-row">
-                        ${(Array.isArray(item.guidance_rows) ? item.guidance_rows : []).map((row) => `
-                            <div class="kairos-runner-candidate-chip">
                                 <span>${escapeHtml(row.label || '—')}</span>
                                 <strong>${escapeHtml(row.value || '—')}</strong>
                             </div>
@@ -1108,7 +1116,6 @@
                         ` : ''}
                         ${item.can_open_trade ? `<button type="button" class="kairos-live-candidate-open-button" data-kairos-live-open-profile="${escapeHtml(item.open_trade_profile_key || '')}">Open Live Trade</button>` : ''}
                     </div>
-                    <p class="subtle">${escapeHtml(item.message || 'No live trade is currently ready.')}</p>
                 </article>
             `).join('');
         }
@@ -1939,7 +1946,6 @@
             const barMap = kairosPayload.bar_map || {};
             const liveWorkspace = kairosPayload.live_workspace || {};
             setText('kairos-session-status', kairosPayload.session_status || 'Inactive');
-            setText('kairos-last-scan-inline', kairosPayload.last_scan_display || '—');
             setPill('kairos-mode-badge', kairosPayload.mode_badge_text || 'LIVE MODE', kairosPayload.mode_key || kairosPayload.mode);
             setPill('kairos-control-status-pill-top', kairosPayload.session_status || 'Inactive', kairosPayload.session_status_key || kairosPayload.session_status);
             setPill('kairos-control-status-pill', kairosPayload.session_status || 'Inactive', kairosPayload.session_status_key || kairosPayload.session_status);

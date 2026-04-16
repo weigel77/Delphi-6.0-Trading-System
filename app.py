@@ -1686,7 +1686,8 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     @app.post("/api/text-status")
     def text_status_api() -> Any:
         display_name = str(app.config.get("APP_DISPLAY_NAME") or APP_CONFIG.app_display_name or "Delphi").strip() or "Delphi"
-        title = f"{display_name} Test Alert"
+        title_display_name = display_name[:-4] if display_name.endswith(" Dev") else display_name
+        title = f"{title_display_name} Test Alert"
         if not open_trade_manager.notifications_enabled():
             return jsonify({"ok": False, "error": "Notifications are currently OFF.", "title": title}), 409
         status_timestamp = datetime.now(CHICAGO_TZ)
@@ -3141,8 +3142,8 @@ def build_hosted_performance_summary_action_response(
 
 def build_hosted_journal_trades_action_response(*, trade_mode: str, app: Optional[Flask] = None) -> Dict[str, Any]:
     trade_store = get_trade_store(app)
+    summary = dict(trade_store.summarize(trade_mode) or {})
     loaded_trades = trade_store.list_trades(trade_mode)
-    summary = summarize_loaded_trade_rows(loaded_trades)
     trades = [build_trade_row_payload(item) for item in loaded_trades]
     return {
         "ok": True,
