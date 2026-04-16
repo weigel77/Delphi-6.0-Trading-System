@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 import math
 from typing import Any, Dict, Iterable, Optional
 
@@ -32,10 +33,12 @@ PERFORMANCE_FILTER_GROUPS = {
     "trade_mode": ["Real", "Simulated"],
     "macro_grade": ["None", "Minor", "Major"],
     "structure_grade": ["Good", "Neutral", "Poor"],
+    "timeframe": ["All", "YTD", "Last Month", "Last Qtr", "Current Month", "1 Yr"],
 }
 
 PERFORMANCE_DEFAULT_FILTERS = {
     "trade_mode": ("real",),
+    "timeframe": ("all",),
 }
 
 VIX_BUCKETS = ["<18", "18-22", "22-26", "26+"]
@@ -66,6 +69,7 @@ class PerformanceFilters:
     trade_mode: tuple[str, ...]
     macro_grade: tuple[str, ...]
     structure_grade: tuple[str, ...]
+    timeframe: tuple[str, ...]
 
     def as_dict(self) -> Dict[str, list[str]]:
         return {
@@ -75,6 +79,7 @@ class PerformanceFilters:
             "trade_mode": list(self.trade_mode),
             "macro_grade": list(self.macro_grade),
             "structure_grade": list(self.structure_grade),
+            "timeframe": list(self.timeframe),
         }
 
 
@@ -265,6 +270,8 @@ def build_performance_record(trade: Dict[str, Any]) -> Dict[str, Any]:
 
 def apply_performance_filters(records: list[Dict[str, Any]], filters: PerformanceFilters) -> list[Dict[str, Any]]:
     active = filters.as_dict()
+    timeframe_values = tuple(active.get("timeframe") or ["all"])
+    reference_date = date.today()
     filtered: list[Dict[str, Any]] = []
     for record in records:
         if normalize_filter_value("system", record.get("system")) not in active["system"]:
@@ -280,8 +287,62 @@ def apply_performance_filters(records: list[Dict[str, Any]], filters: Performanc
             continue
         if normalize_filter_value("structure_grade", record.get("structure_grade")) not in active["structure_grade"]:
             continue
+        if not record_matches_timeframe(record, timeframe_values, reference_date=reference_date):
+            continue
         filtered.append(record)
     return filtered
+
+
+def record_matches_timeframe(record: Dict[str, Any], timeframe_values: Iterable[str], *, reference_date: date) -> bool:
+    selected = [str(value or "").strip().lower() for value in timeframe_values if str(value or "").strip()]
+    if not selected or "all" in selected:
+        return True
+    trade_date = parse_trade_date(record.get("trade_date"))
+    if trade_date is None:
+        return False
+    return any(_date_in_timeframe(trade_date, timeframe_key=value, reference_date=reference_date) for value in selected)
+
+
+def parse_trade_date(value: Any) -> date | None:
+    if not value:
+        return None
+    if isinstance(value, date):
+        return value
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw[:10])
+    except ValueError:
+        return None
+
+
+def _date_in_timeframe(trade_date: date, *, timeframe_key: str, reference_date: date) -> bool:
+    normalized = str(timeframe_key or "all").strip().lower()
+    if normalized == "all":
+        return True
+    if normalized == "ytd":
+        return date(reference_date.year, 1, 1) <= trade_date <= reference_date
+    if normalized == "current-month":
+        return trade_date.year == reference_date.year and trade_date.month == reference_date.month
+    if normalized == "1-yr":
+        return (reference_date - timedelta(days=365)) <= trade_date <= reference_date
+    if normalized == "last-month":
+        first_day_current_month = date(reference_date.year, reference_date.month, 1)
+        last_day_previous_month = first_day_current_month - timedelta(days=1)
+        return trade_date.year == last_day_previous_month.year and trade_date.month == last_day_previous_month.month
+    if normalized == "last-qtr":
+        current_quarter = ((reference_date.month - 1) // 3) + 1
+        if current_quarter == 1:
+            year = reference_date.year - 1
+            quarter = 4
+        else:
+            year = reference_date.year
+            quarter = current_quarter - 1
+        start_month = ((quarter - 1) * 3) + 1
+        end_month = start_month + 2
+        return trade_date.year == year and start_month <= trade_date.month <= end_month
+    return True
 
 
 def summarize_outcomes(records: list[Dict[str, Any]]) -> OutcomeSummary:
@@ -805,6 +866,7 @@ def build_profile_em_safety_distance_payload(records: list[Dict[str, Any]], *, f
         trade_mode=tuple(normalize_filter_value("trade_mode", option) for option in PERFORMANCE_FILTER_GROUPS["trade_mode"]),
         macro_grade=filters.macro_grade,
         structure_grade=filters.structure_grade,
+        timeframe=filters.timeframe,
     )
     scoped_records = apply_performance_filters(records, independent_mode_filters)
     return {

@@ -22,11 +22,19 @@ from .repositories.management_state_repository import (
     SQLiteOpenTradeManagementStateRepository,
     build_management_state_payload,
 )
+from .repositories.global_notification_settings_repository import GlobalNotificationSettingsRepository
 from .repositories.trade_notification_repository import TradeNotificationRepository
 from .repositories.trade_repository import TradeRepository
 from .runtime.notifications import NotificationDelivery
 from .runtime.scheduler import RuntimeJobHandle, RuntimeScheduler, ThreadingTimerScheduler
-from .trade_notifications import evaluate_trade_notifications, normalize_trade_notifications
+from .trade_notifications import (
+    GLOBAL_NOTIFICATION_DAILY_END,
+    GLOBAL_NOTIFICATION_DAILY_START,
+    GLOBAL_NOTIFICATION_OPEN_TRADES,
+    default_global_notification_settings,
+    evaluate_trade_notifications,
+    normalize_trade_notifications,
+)
 from .trade_store import (
     current_timestamp,
     normalize_system_name,
@@ -85,6 +93,7 @@ class OpenTradeManager:
         now_provider: Callable[[], datetime] | None = None,
         state_repository: OpenTradeManagementStateRepository | None = None,
         trade_notification_repository: TradeNotificationRepository | None = None,
+        global_notification_settings_repository: GlobalNotificationSettingsRepository | None = None,
         scheduler: RuntimeScheduler | None = None,
     ) -> None:
         self.config = config or get_app_config()
@@ -102,6 +111,7 @@ class OpenTradeManager:
         self.database_path = Path(self.trade_store.database_path)
         self.state_repository = state_repository or SQLiteOpenTradeManagementStateRepository(self.database_path)
         self.trade_notification_repository = trade_notification_repository
+        self.global_notification_settings_repository = global_notification_settings_repository
         self.scheduler = scheduler or ThreadingTimerScheduler()
         self.display_timezone = ZoneInfo(self.config.app_timezone)
         self.now_provider = now_provider or (lambda: datetime.now(self.display_timezone))
@@ -113,6 +123,8 @@ class OpenTradeManager:
         self.state_repository.initialize()
         if self.trade_notification_repository is not None:
             self.trade_notification_repository.initialize()
+        if self.global_notification_settings_repository is not None:
+            self.global_notification_settings_repository.initialize()
 
     def start_background_monitoring(self) -> None:
         with self._monitor_lock:
@@ -130,9 +142,34 @@ class OpenTradeManager:
 
     def set_notifications_enabled(self, enabled: bool) -> None:
         self.state_repository.set_notifications_enabled(enabled)
+        settings = self.load_global_notification_settings()
+        target_keys = {GLOBAL_NOTIFICATION_OPEN_TRADES}
+        if self.global_notification_settings_repository is None:
+            target_keys = {
+                GLOBAL_NOTIFICATION_OPEN_TRADES,
+                GLOBAL_NOTIFICATION_DAILY_START,
+                GLOBAL_NOTIFICATION_DAILY_END,
+            }
+        updated = [
+            {**item, "enabled": bool(enabled)} if item.get("key") in target_keys else dict(item)
+            for item in settings
+        ]
+        self.save_global_notification_settings(updated)
 
     def notifications_enabled(self) -> bool:
-        return bool(self.state_repository.load_runtime_settings().get("notifications_enabled", True))
+        settings = {item["key"]: item for item in self.load_global_notification_settings() if item.get("key")}
+        return bool((settings.get(GLOBAL_NOTIFICATION_OPEN_TRADES) or {}).get("enabled", True))
+
+    def load_global_notification_settings(self) -> List[Dict[str, Any]]:
+        if self.global_notification_settings_repository is None:
+            fallback_enabled = bool(self.state_repository.load_runtime_settings().get("notifications_enabled", True))
+            return [{**item, "enabled": fallback_enabled} for item in default_global_notification_settings()]
+        return self.global_notification_settings_repository.load_settings()
+
+    def save_global_notification_settings(self, settings: List[Dict[str, Any]]) -> None:
+        if self.global_notification_settings_repository is None:
+            return
+        self.global_notification_settings_repository.save_settings(settings)
 
     def _schedule_background_monitor(self) -> None:
         if not self._monitor_running:
@@ -165,6 +202,10 @@ class OpenTradeManager:
         now = self._now()
         open_trades = self._load_open_trades()
         notifications_by_trade_id = self._load_trade_notifications(open_trades)
+        global_notification_settings = self.load_global_notification_settings()
+        global_notification_map = {
+            item["key"]: item for item in global_notification_settings if item.get("key")
+        }
         alert_eligible_trades = [trade for trade in open_trades if str(trade.get("trade_mode") or "").strip().lower() == "real"]
         states_by_trade = self._load_management_states()
         runtime_settings = self._load_runtime_settings()
@@ -202,33 +243,34 @@ class OpenTradeManager:
             record["alert_state"] = self._build_alert_state_payload(persisted_state, trade)
             records.append(record)
 
-        if send_alerts and runtime_settings.get("notifications_enabled", True):
+        if send_alerts:
             real_records = [
                 item for item in records if str(item.get("trade_mode") or "").strip().lower() == "real"
             ]
-            daily_outcomes = self._process_daily_notifications(real_records, now, runtime_settings)
+            daily_outcomes = self._process_daily_notifications(real_records, now, runtime_settings, global_notification_map)
             for outcome in daily_outcomes:
                 if outcome.get("sent"):
                     alerts_sent += 1
                 elif outcome.get("error"):
                     alert_failures.append(str(outcome["error"]))
-            for trade in alert_eligible_trades:
-                record = next((item for item in records if int(item.get("trade_id") or 0) == int(trade.get("id") or 0)), None)
-                if record is None:
-                    continue
-                previous_state = states_by_trade.get(int(trade.get("id") or 0), {})
-                alert_outcome = self._process_trade_notifications(trade, record, previous_state, now)
-                if alert_outcome.get("sent"):
-                    alerts_sent += int(alert_outcome.get("sent_count") or 1)
-                elif alert_outcome.get("error"):
-                    alert_failures.append(f"Trade #{record['trade_number']}: {alert_outcome['error']}")
-                self._upsert_management_state(record, previous_state, alert_outcome, now)
-                persisted_state = build_management_state_payload(record, previous_state, alert_outcome, now)
-                updated_trade = dict(trade)
-                updated_trade["last_status"] = str(record.get("status") or "")
-                updated_trade["last_action_sent"] = str(record.get("action_type") or "")
-                updated_trade["last_alert_timestamp"] = alert_outcome.get("sent_at") or trade.get("last_alert_timestamp")
-                record["alert_state"] = self._build_alert_state_payload(persisted_state, updated_trade)
+            if bool((global_notification_map.get(GLOBAL_NOTIFICATION_OPEN_TRADES) or {}).get("enabled", True)):
+                for trade in alert_eligible_trades:
+                    record = next((item for item in records if int(item.get("trade_id") or 0) == int(trade.get("id") or 0)), None)
+                    if record is None:
+                        continue
+                    previous_state = states_by_trade.get(int(trade.get("id") or 0), {})
+                    alert_outcome = self._process_trade_notifications(trade, record, previous_state, now)
+                    if alert_outcome.get("sent"):
+                        alerts_sent += int(alert_outcome.get("sent_count") or 1)
+                    elif alert_outcome.get("error"):
+                        alert_failures.append(f"Trade #{record['trade_number']}: {alert_outcome['error']}")
+                    self._upsert_management_state(record, previous_state, alert_outcome, now)
+                    persisted_state = build_management_state_payload(record, previous_state, alert_outcome, now)
+                    updated_trade = dict(trade)
+                    updated_trade["last_status"] = str(record.get("status") or "")
+                    updated_trade["last_action_sent"] = str(record.get("action_type") or "")
+                    updated_trade["last_alert_timestamp"] = alert_outcome.get("sent_at") or trade.get("last_alert_timestamp")
+                    record["alert_state"] = self._build_alert_state_payload(persisted_state, updated_trade)
 
         records.sort(key=lambda item: (-int(item.get("status_severity") or 0), str(item.get("system_name") or ""), -int(item.get("trade_number") or 0)))
         return {
@@ -237,7 +279,8 @@ class OpenTradeManager:
             "open_trade_count": len(records),
             "alerts_sent": alerts_sent,
             "alert_failures": alert_failures,
-            "notifications_enabled": bool(runtime_settings.get("notifications_enabled", True)),
+            "notifications_enabled": bool((global_notification_map.get(GLOBAL_NOTIFICATION_OPEN_TRADES) or {}).get("enabled", True)),
+            "global_notification_settings": global_notification_settings,
             "last_morning_snapshot_date": runtime_settings.get("last_morning_snapshot_date") or "",
             "last_eod_summary_date": runtime_settings.get("last_eod_summary_date") or "",
             "live_expected_move_display": next((record.get("current_live_expected_move_display") for record in records if record.get("current_live_expected_move_display")), "—"),
@@ -703,14 +746,22 @@ class OpenTradeManager:
             **action_plan,
         }
 
-    def _process_daily_notifications(self, records: List[Dict[str, Any]], now: datetime, runtime_settings: Dict[str, Any]) -> list[Dict[str, Any]]:
+    def _process_daily_notifications(
+        self,
+        records: List[Dict[str, Any]],
+        now: datetime,
+        runtime_settings: Dict[str, Any],
+        global_notification_map: Dict[str, Dict[str, Any]],
+    ) -> list[Dict[str, Any]]:
         outcomes: list[Dict[str, Any]] = []
-        morning_outcome = self._send_morning_snapshot_if_due(records, now, runtime_settings)
-        if morning_outcome is not None:
-            outcomes.append(morning_outcome)
-        eod_outcome = self._send_eod_summary_if_due(records, now, runtime_settings)
-        if eod_outcome is not None:
-            outcomes.append(eod_outcome)
+        if bool((global_notification_map.get(GLOBAL_NOTIFICATION_DAILY_START) or {}).get("enabled", True)):
+            morning_outcome = self._send_morning_snapshot_if_due(records, now, runtime_settings)
+            if morning_outcome is not None:
+                outcomes.append(morning_outcome)
+        if bool((global_notification_map.get(GLOBAL_NOTIFICATION_DAILY_END) or {}).get("enabled", True)):
+            eod_outcome = self._send_eod_summary_if_due(records, now, runtime_settings)
+            if eod_outcome is not None:
+                outcomes.append(eod_outcome)
         return outcomes
 
     def _process_trade_notifications(self, trade: Dict[str, Any], record: Dict[str, Any], previous_state: Dict[str, Any], now: datetime) -> Dict[str, Any]:

@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from config import AppConfig, get_app_config
+from config import AppConfig, HOSTED_APP_VERSION, get_app_config
 
 from .kairos_simulation_runner import KAIROS_RUNNER_SCENARIOS, SESSION_BAR_COUNT, KairosTapeBar, KairosTapeScenario, validate_tape_scenario
 from .kairos_scenario_repository import KairosScenarioRepository
@@ -510,7 +510,7 @@ class KairosService:
     DEFAULT_ROUTINE_LOSS_PERCENTAGE = 0.28
     DEFAULT_BLACK_SWAN_LOSS_PERCENTAGE = 0.60
     KAIROS_SLOT_LABELS = {
-        "best-available": "Subprime",
+        "best-available": "Best Candidate",
         "kairos-window": "Prime",
     }
     KAIROS_CANDIDATE_PROFILES = (
@@ -537,9 +537,9 @@ class KairosService:
         },
     )
     RUNNER_PAUSE_EVENT_OPTIONS = (
-        {"value": "setup-forming", "label": "Pause on Setup Forming", "state": KairosState.SETUP_FORMING.value},
-        {"value": "window-open", "label": "Pause on Window Open", "state": KairosState.WINDOW_OPEN.value},
-        {"value": "window-closing", "label": "Pause on Window Closing", "state": KairosState.WINDOW_CLOSING.value},
+        {"value": "setup-forming", "label": "Pause on Subprime Improving", "state": KairosState.SETUP_FORMING.value},
+        {"value": "window-open", "label": "Pause on Prime", "state": KairosState.WINDOW_OPEN.value},
+        {"value": "window-closing", "label": "Pause on Subprime Weakening", "state": KairosState.WINDOW_CLOSING.value},
         {"value": "non-go", "label": "Pause on Expired / Not Eligible", "state": "non-go"},
     )
     SIMULATION_INTERVAL_OPTIONS = (10, 15, 30, 120)
@@ -596,8 +596,8 @@ class KairosService:
             structure_status="Developing",
             momentum_status="Steady",
         ),
-        "Favorable Setup Forming": KairosSimulationPreset(
-            name="Favorable Setup Forming",
+        "Favorable Subprime Improving": KairosSimulationPreset(
+            name="Favorable Subprime Improving",
             market_session_status="Open",
             spx_value=6127.0,
             vix_value=19.6,
@@ -605,8 +605,8 @@ class KairosService:
             structure_status="Developing",
             momentum_status="Improving",
         ),
-        "Window Open": KairosSimulationPreset(
-            name="Window Open",
+        "Prime": KairosSimulationPreset(
+            name="Prime",
             market_session_status="Open",
             spx_value=6132.0,
             vix_value=20.1,
@@ -614,8 +614,8 @@ class KairosService:
             structure_status="Bullish Confirmation",
             momentum_status="Improving",
         ),
-        "Window Closing": KairosSimulationPreset(
-            name="Window Closing",
+        "Subprime Weakening": KairosSimulationPreset(
+            name="Subprime Weakening",
             market_session_status="Open",
             spx_value=6120.0,
             vix_value=18.6,
@@ -650,6 +650,11 @@ class KairosService:
             structure_status="Weakening",
             momentum_status="Expired",
         ),
+    }
+    SIMULATION_PRESET_ALIASES = {
+        "Favorable Setup Forming": "Favorable Subprime Improving",
+        "Window Open": "Prime",
+        "Window Closing": "Subprime Weakening",
     }
 
     def __init__(
@@ -1103,7 +1108,7 @@ class KairosService:
 
             if self._session.session_date is None:
                 self._session.session_date = now.date()
-            self._session.status_note = "Subprime live trade refreshed from the current Schwab chain snapshot."
+            self._session.status_note = "Best candidate refreshed from the current Schwab chain snapshot."
             return self._build_payload_locked(now)
 
     def open_live_trade(self, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -1414,7 +1419,7 @@ class KairosService:
                 status_note=(
                     "Kairos armed in Simulation Mode. Off-hours testing and accelerated scans are enabled."
                     if self._runtime.mode == KairosMode.SIMULATION
-                    else "Kairos armed in Live Mode. Subprime live trade is refreshing now."
+                    else "Kairos armed in Live Mode. Best candidate is refreshing now."
                 ),
             )
 
@@ -2167,14 +2172,14 @@ class KairosService:
                 self._session.stopped_manually = False
                 self._session.auto_ended = False
                 self._session.next_scan_at = None
-                self._session.status_note = "Live Kairos initialized from the workspace. Subprime live trade is refreshing now."
+                self._session.status_note = "Live Kairos initialized from the workspace. Best candidate is refreshing now."
             else:
                 self._session = KairosSessionRecord(
                     session_date=now.date(),
                     activated_at=now,
                     current_state=KairosState.ACTIVATED.value,
                     armed_for_day=True,
-                    status_note="Live Kairos initialized from the workspace. Subprime live trade is refreshing now.",
+                    status_note="Live Kairos initialized from the workspace. Best candidate is refreshing now.",
                 )
 
         return self.run_scan_cycle(trigger_reason="live-workspace-open", force_refresh=force_refresh)
@@ -2585,7 +2590,7 @@ class KairosService:
                         "Decision pause",
                         decision_pause["detail"],
                     )
-                    self._session.status_note = "Kairos paused automatically at Window Open for trade review."
+                    self._session.status_note = "Kairos paused automatically at Prime for trade review."
                     return self._build_payload_locked(self._now())
 
                 event_pause = self._resolve_runner_event_pause_locked(latest_scan)
@@ -3245,19 +3250,19 @@ class KairosService:
                 "reason_key": "awaiting_user_continue",
                 "event_kind": "awaiting-user-continue",
                 "event_label": "Awaiting User Continue",
-                "detail": "Window Open reached, but no qualified candidates are available. Continue the replay to let the session develop further.",
+                "detail": "Prime was reached, but no qualified candidates are available. Continue the replay to let the session develop further.",
             }
 
         detail = (
             f"Qualified Kairos trade candidates are available ({ready_count} ready). Review the candidate card to take or skip the setup."
             if ready_count
-            else "Window Open reached, but no qualified candidates are available. Continue the replay to let the session develop further."
+            else "Prime was reached, but no qualified candidates are available. Continue the replay to let the session develop further."
         )
 
         return {
             "reason_key": "pause_on_window-open",
             "event_kind": "window-open",
-            "event_label": "Window Open",
+            "event_label": "Prime",
             "detail": detail,
         }
 
@@ -3896,11 +3901,11 @@ class KairosService:
         if overall_state == KairosState.WATCHING.value:
             return "Watching: the setup is incomplete but still worth monitoring."
         if overall_state == KairosState.SETUP_FORMING.value:
-            return "Setup forming: timing and volatility are usable, but structure is still developing."
+            return "Subprime improving: timing and volatility are usable while structure continues to build."
         if overall_state == KairosState.WINDOW_OPEN.value:
-            return "Window open: timing, volatility, and structure align under the current Kairos classifier."
+            return "Prime: timing, volatility, and structure align under the current Kairos classifier."
         if overall_state == KairosState.WINDOW_CLOSING.value:
-            return "Window closing: the setup is fading and should be treated as unstable."
+            return "Subprime weakening: the setup is fading and should be treated as unstable."
         return "Expired: the current Kairos opportunity window is no longer valid."
 
     def _build_reasons(
@@ -4034,12 +4039,12 @@ class KairosService:
                 "status_key": bool_to_status_key(self._session.armed_for_day and not self._session.session_complete and not self._session.stopped_manually),
             },
             {
-                "label": "Setup Forming",
+                "label": "Subprime Improving",
                 "value": "Reached" if self._has_seen_scan_state({KairosState.SETUP_FORMING.value, KairosState.WINDOW_OPEN.value, KairosState.WINDOW_CLOSING.value, KairosState.EXPIRED.value, KairosState.SESSION_COMPLETE.value}) else "Pending",
                 "status_key": bool_to_status_key(self._has_seen_scan_state({KairosState.SETUP_FORMING.value, KairosState.WINDOW_OPEN.value, KairosState.WINDOW_CLOSING.value, KairosState.EXPIRED.value, KairosState.SESSION_COMPLETE.value})),
             },
             {
-                "label": "Window Found",
+                "label": "Prime",
                 "value": "Reached" if self._session.window_found else "Pending",
                 "status_key": bool_to_status_key(self._session.window_found),
             },
@@ -4289,7 +4294,7 @@ class KairosService:
                 **hidden_payload,
                 "visible": True,
                 "status": "unavailable",
-                "message": "Subprime live trade is unavailable because current SPX or VIX data could not be resolved.",
+                "message": "The current best Kairos candidate is unavailable because SPX or VIX data could not be resolved.",
                 "caution_text": "Live market data is incomplete, so no sane override candidate can be produced right now.",
             }
         if not candidate_context.get("chain_success", True):
@@ -4297,7 +4302,7 @@ class KairosService:
                 **hidden_payload,
                 "visible": True,
                 "status": "unavailable",
-                "message": candidate_context.get("chain_message") or "Subprime live trade is unavailable because the same-day Schwab option chain could not be resolved.",
+                "message": candidate_context.get("chain_message") or "The current best Kairos candidate is unavailable because the same-day Schwab option chain could not be resolved.",
                 "caution_text": "Live Kairos will not fall back to estimated chains when Schwab same-day contracts are unavailable.",
                 "summary_chips": self._build_trade_candidate_summary_chips(candidate_context),
                 "chain_source_label": candidate_context.get("chain_source_label") or "Schwab (Unavailable)",
@@ -4326,9 +4331,9 @@ class KairosService:
             "visible": True,
             "status": "ready" if is_fully_valid else "stand-aside",
             "message": (
-                "Subprime reflects the strongest currently modeled Kairos spread from the live Schwab chain."
+                "Best Candidate reflects the strongest currently modeled Kairos spread from the live Schwab chain."
                 if is_fully_valid
-                else "Subprime ranked the strongest currently available live Schwab chain candidate, but it still falls short of Kairos minimum standards."
+                else "Best Candidate ranked the strongest currently available live Schwab chain candidate, but it still falls short of Kairos minimum standards."
             ),
             "caution_text": caution_text,
             "summary_chips": self._build_trade_candidate_summary_chips(candidate_context),
@@ -4373,31 +4378,15 @@ class KairosService:
             {"label": "Scan Interval", "value": f"{self._active_scan_interval_seconds()} sec"},
         ]
         best_candidate = live_best_trade.get("candidate") if isinstance(live_best_trade, dict) else None
-        window_candidate = None
-        if candidate_context and latest_scan is not None and latest_scan.kairos_state == KairosState.WINDOW_OPEN.value:
-            window_candidate = self._build_best_override_candidate(candidate_context, latest_scan=latest_scan, relax_final_gating=False)
 
         best_card = self._build_live_candidate_card_payload_locked(
             slot_key="best-available",
             slot_label=self.KAIROS_SLOT_LABELS["best-available"],
-            card_note="Strongest currently modeled same-day live-chain candidate.",
+            card_note="Strongest currently modeled same-day live-chain candidate under the current session tape grade.",
             candidate=best_candidate,
             candidate_context=candidate_context,
             latest_scan=latest_scan,
-            fallback_message=(live_best_trade.get("message") if isinstance(live_best_trade, dict) else "No Subprime Kairos trade is ready right now."),
-        )
-        window_card = self._build_live_candidate_card_payload_locked(
-            slot_key="kairos-window",
-            slot_label=self.KAIROS_SLOT_LABELS["kairos-window"],
-            card_note="Candidate that fully aligns with the current Kairos window state.",
-            candidate=window_candidate,
-            candidate_context=candidate_context,
-            latest_scan=latest_scan,
-            fallback_message=(
-                "Current state is not Window Open, so no valid Prime trade is active."
-                if latest_scan is None or latest_scan.kairos_state != KairosState.WINDOW_OPEN.value
-                else "Current live-chain candidates do not fully qualify for the Prime slot."
-            ),
+            fallback_message=(live_best_trade.get("message") if isinstance(live_best_trade, dict) else "No Kairos candidate is ready right now."),
         )
         return {
             "visible": self._runtime.mode == KairosMode.LIVE,
@@ -4408,8 +4397,8 @@ class KairosService:
             "stamps": stamps,
             "summary_text": latest_scan.summary_text if latest_scan is not None else self._session.status_note,
             "classification_note": latest_scan.classification_note if latest_scan is not None else self._build_runtime_note_locked(),
-            "credit_map": self._build_live_credit_map_locked(candidate_context=candidate_context, cards=[best_card, window_card]),
-            "candidate_cards": [best_card, window_card],
+            "credit_map": self._build_live_credit_map_locked(candidate_context=candidate_context, cards=[best_card]),
+            "candidate_cards": [best_card],
         }
 
     def _build_live_candidate_card_payload_locked(
@@ -4423,7 +4412,7 @@ class KairosService:
         latest_scan: KairosScanResult | None,
         fallback_message: str,
     ) -> Dict[str, Any]:
-        default_mode_key = "standard" if slot_key == "best-available" else "fortress"
+        default_mode_key = "standard"
         if not candidate:
             return {
                 "slot_key": slot_key,
@@ -4447,7 +4436,7 @@ class KairosService:
                 "estimated_otm_probability": "—",
                 "rationale": fallback_message,
                 "detail_rows": [],
-                "guidance_rows": [{"label": "Status", "value": fallback_message}],
+                "guidance_rows": [],
                 "message": fallback_message,
                 "can_open_trade": False,
                 "open_trade_profile_key": "",
@@ -4465,15 +4454,13 @@ class KairosService:
         detail_rows = list(candidate.get("detail_rows") or [])
         guidance_rows = [{"label": "FIT SCORE", "value": candidate.get("fit_score_display") or "—"}]
         guidance_rows.append({"label": "CONFIDENCE", "value": candidate.get("confidence_label") or "—"})
-        guidance_rows.append({"label": "Est. OTM", "value": candidate.get("estimated_otm_probability_display") or "—"})
-        for entry in candidate.get("closest_valid_guidance") or []:
-            guidance_rows.append({"label": "Closest Valid Guidance", "value": entry})
         prefill_fields = self._build_live_candidate_prefill_fields_locked(
             slot_label=slot_label,
             candidate=candidate,
             candidate_context=candidate_context,
             latest_scan=latest_scan,
         )
+        session_tape_label = self._derive_session_tape_structure_label(latest_scan)
         return {
             "slot_key": slot_key,
             "slot_label": slot_label,
@@ -4482,7 +4469,7 @@ class KairosService:
             "available": True,
             "tradeable": tradeable,
             "headline": slot_label,
-            "descriptor": f"{candidate.get('mode_label') or 'Kairos'} · {candidate.get('mode_descriptor') or card_note}",
+            "descriptor": f"{session_tape_label} session tape · {candidate.get('mode_descriptor') or card_note}",
             "strike_label": f"{candidate.get('short_strike') or '—'} / {candidate.get('long_strike') or '—'} Put Spread",
             "net_credit": candidate.get("credit_estimate_display") or "—",
             "contract_size": candidate.get("contract_size_display") or "—",
@@ -4511,8 +4498,16 @@ class KairosService:
             "long_strike_value": candidate.get("long_strike"),
             "premium_received_value": float(candidate.get("premium_received_dollars") or 0.0),
             "plot_marker": True,
-            "marker_label": "BA" if slot_key == "best-available" else "KW",
+            "marker_label": "BC",
         }
+
+    def _derive_session_tape_structure_label(self, latest_scan: KairosScanResult | None) -> str:
+        raw_state = latest_scan.kairos_state if latest_scan is not None else self._session.current_state
+        if raw_state == KairosState.WINDOW_OPEN.value:
+            return "Prime"
+        if raw_state in {KairosState.SETUP_FORMING.value, KairosState.WINDOW_CLOSING.value}:
+            return "Subprime"
+        return "Subprime"
 
     def _build_live_candidate_prefill_fields_locked(
         self,
@@ -4532,16 +4527,17 @@ class KairosService:
         total_premium = round(float(candidate.get("premium_received_dollars") or 0.0), 2)
         net_credit_per_contract = round((credit_estimate / 100.0), 4) if credit_estimate else 0.0
 
+        session_tape_structure = self._derive_session_tape_structure_label(latest_scan)
         return {
             "system_name": "Kairos",
             "journal_name": "Horme",
-            "system_version": "4.0",
-            "candidate_profile": str(slot_label or candidate.get("mode_label") or "Kairos").strip() or "Kairos",
+            "system_version": HOSTED_APP_VERSION,
+            "candidate_profile": session_tape_structure,
             "expiration_date": session_date,
             "underlying_symbol": "SPX",
             "spx_at_entry": round(spot_value, 2) if spot_value > 0 else "",
             "vix_at_entry": round(vix_value, 2) if vix_value > 0 else "",
-            "structure_grade": latest_scan.structure_status if latest_scan is not None else "",
+            "structure_grade": session_tape_structure,
             "macro_grade": latest_scan.momentum_status if latest_scan is not None else "",
             "expected_move": candidate.get("expected_move_used") or "",
             "expected_move_used": candidate.get("expected_move_used") or "",
@@ -4565,7 +4561,7 @@ class KairosService:
             "fallback_used": candidate.get("fallback_used") or "no",
             "fallback_rule_name": candidate.get("fallback_rule_name") or "",
             "short_delta": candidate.get("estimated_short_delta") or "",
-            "notes_entry": f"Prefilled from Kairos {slot_label} candidate card.",
+            "notes_entry": "Prefilled from Kairos best candidate card.",
             "prefill_source": "kairos-candidate",
         }
 
@@ -4775,7 +4771,7 @@ class KairosService:
 
         if markers:
             positioning_note = (
-                "Subprime and Prime are plotted against the current spot, the same-day ATM expected-move barrier, "
+                "Current live candidates are plotted against the current spot, the same-day ATM expected-move barrier, "
                 f"and the hybrid boundary ({standard_boundary['boundary_binding_source']})."
             )
         else:
@@ -4840,7 +4836,7 @@ class KairosService:
             "status": "idle",
             "title": "Trade Candidate Card",
             "eyebrow": "Synthetic / model-based",
-            "message": "This card appears when the runner pauses on Window Open.",
+            "message": "This card appears when the runner pauses on Prime.",
             "profiles": [],
             "summary_chips": [],
             "selected_profile_key": None,
@@ -5260,7 +5256,7 @@ class KairosService:
         if delta_gap > 0:
             gaps.append(f"Delta too high: exceeds target by {delta_gap:.2f}.")
         if not timing_ok:
-            gaps.append("Timing not ideal: Kairos is not yet in a confirmed Window Found state.")
+            gaps.append("Timing not ideal: Kairos is not yet in a confirmed Prime state.")
         if not structure_ok:
             gaps.append(f"Structure not confirmed: current structure is {structure_status}.")
         if not vix_ok:
@@ -5624,7 +5620,7 @@ class KairosService:
                 f"Distance is inside the hybrid boundary ({hybrid_boundary['boundary_rule_used']})."
             )
         if credit_dollars < self.KAIROS_CANDIDATE_MIN_CREDIT_DOLLARS:
-            rejection_reasons.append("Live same-day credit is below the $60 minimum.")
+            rejection_reasons.append("Current live candidate is below the minimum credit threshold.")
         if contract_budget < 1:
             rejection_reasons.append("Risk budget is too small for one contract.")
 
@@ -5934,9 +5930,9 @@ class KairosService:
         if raw_state in {KairosState.SCANNING.value, KairosState.NOT_ELIGIBLE.value, KairosState.WATCHING.value}:
             return "Scanning"
         if raw_state == KairosState.SETUP_FORMING.value:
-            return "Setup Forming"
+            return "Subprime Improving"
         if raw_state == KairosState.WINDOW_OPEN.value:
-            return "Window Found"
+            return "Prime"
         if raw_state in {KairosState.WINDOW_CLOSING.value, KairosState.EXPIRED.value, KairosState.SESSION_COMPLETE.value, KairosState.STOPPED.value}:
             return "Completed"
         return raw_state
@@ -5969,9 +5965,9 @@ class KairosService:
             KairosState.SCANNING.value: "Scanning",
             KairosState.NOT_ELIGIBLE.value: "Scanning",
             KairosState.WATCHING.value: "Scanning",
-            KairosState.SETUP_FORMING.value: "Setup Forming",
-            KairosState.WINDOW_OPEN.value: "Window Found",
-            KairosState.WINDOW_CLOSING.value: "Completed",
+            KairosState.SETUP_FORMING.value: "Subprime Improving",
+            KairosState.WINDOW_OPEN.value: "Prime",
+            KairosState.WINDOW_CLOSING.value: "Subprime Weakening",
             KairosState.EXPIRED.value: "Completed",
             KairosState.SESSION_COMPLETE.value: "Completed",
             KairosState.STOPPED.value: "Completed",
@@ -6025,7 +6021,7 @@ class KairosService:
 
         cautions: List[str] = []
         if latest_scan.kairos_state != KairosState.WINDOW_OPEN.value:
-            cautions.append(f"Current Kairos state is {latest_scan.kairos_state}.")
+            cautions.append(f"Current Kairos state is {self._map_scan_state_label(latest_scan.kairos_state)}.")
         if latest_scan.timing_status != "Eligible":
             cautions.append(f"Timing is {latest_scan.timing_status}.")
         if latest_scan.structure_status not in {"Bullish Confirmation", "Developing"}:
@@ -6052,7 +6048,7 @@ class KairosService:
         if not self._runner.scenario_key:
             return "Load a replay scenario before requesting a Best Trade Override."
         if self._runner.pause_reason == "pause_on_window-open":
-            return "Best Trade Override is disabled at Window Open because the standard Kairos candidate flow is already active there."
+            return "Best Trade Override is disabled at Prime because the standard Kairos candidate flow is already active there."
         if self._runner.active_trade_lock_in is not None:
             return "A simulated trade is already active for this replay run."
         return "Best Trade Override is available."
@@ -6122,7 +6118,7 @@ class KairosService:
                 f"Distance is inside the hybrid boundary ({hybrid_boundary['boundary_rule_used']})."
             )
         if credit_dollars < self.KAIROS_CANDIDATE_MIN_CREDIT_DOLLARS:
-            rejection_reasons.append("Modeled credit is below the $60 minimum.")
+            rejection_reasons.append("Current modeled candidate is below the minimum credit threshold.")
         if contract_budget < 1:
             rejection_reasons.append("Risk budget is too small for one contract.")
 
@@ -6573,11 +6569,11 @@ class KairosService:
     def _resolve_bar_map_marker_type(self, scan: KairosScanResult) -> Dict[str, str] | None:
         state = scan.kairos_state
         if state == KairosState.SETUP_FORMING.value:
-            return {"label": "Setup Forming", "kind": "setup-forming"}
+            return {"label": "Subprime Improving", "kind": "setup-forming"}
         if state == KairosState.WINDOW_OPEN.value:
-            return {"label": "Window Open", "kind": "window-open"}
+            return {"label": "Prime", "kind": "window-open"}
         if state == KairosState.WINDOW_CLOSING.value:
-            return {"label": "Window Closing", "kind": "window-closing"}
+            return {"label": "Subprime Weakening", "kind": "window-closing"}
         if state in {KairosState.NOT_ELIGIBLE.value, KairosState.EXPIRED.value}:
             return {"label": state, "kind": "non-go"}
         return None
@@ -6605,7 +6601,8 @@ class KairosService:
         return self.live_scan_interval_seconds
 
     def _apply_simulation_preset_locked(self, preset_name: str) -> None:
-        preset = self.SIMULATION_PRESETS.get(preset_name)
+        resolved_name = self.SIMULATION_PRESET_ALIASES.get(preset_name, preset_name)
+        preset = self.SIMULATION_PRESETS.get(resolved_name)
         if preset is None:
             return
         self._runtime.mode = KairosMode.SIMULATION

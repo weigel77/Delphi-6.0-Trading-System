@@ -245,7 +245,7 @@ class HostedShellTest(unittest.TestCase):
             response = app.test_client().get("/hosted")
 
             self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Delphi 6.1.1", response.data)
+        self.assertIn(b"Delphi 6.2", response.data)
         self.assertIn(b"/hosted/research", response.data)
         self.assertIn(b"/hosted/performance", response.data)
         self.assertIn(b"/hosted/journal?trade_mode=real", response.data)
@@ -336,7 +336,7 @@ class HostedShellTest(unittest.TestCase):
             response = app.test_client().get("/hosted/journal?trade_mode=simulated")
 
             self.assertEqual(response.status_code, 200)
-            self.assertIn(b'Hosted Delphi 6.1.1 journal mirrors the live Supabase trade store and supports draft review, editing, and deleting directly in hosted mode.', response.data)
+            self.assertIn(b'Hosted Delphi 6.2 journal mirrors the live Supabase trade store and supports draft review, editing, and deleting directly in hosted mode.', response.data)
             self.assertIn(b'/hosted/journal?trade_mode=real', response.data)
             self.assertIn(b'/hosted/journal?trade_mode=simulated', response.data)
             self.assertIn(b'/hosted/journal/simulated/7/edit', response.data)
@@ -360,7 +360,7 @@ class HostedShellTest(unittest.TestCase):
                     "target_mode": "real",
                     "candidate_profile": "Standard",
                     "system_name": "Apollo",
-                    "system_version": "6.1.1",
+                    "system_version": "6.2",
                     "trade_date": "2026-04-12",
                     "entry_datetime": "2026-04-12T09:35",
                     "expiration_date": "2026-04-13",
@@ -398,7 +398,7 @@ class HostedShellTest(unittest.TestCase):
             self.assertEqual(draft_response.status_code, 200)
             self.assertIn(b'Jump to Draft Form', draft_response.data)
             self.assertIn(b'Apollo candidate data is loaded into this draft.', draft_response.data)
-            self.assertIn(b'value="6.1.1"', draft_response.data)
+            self.assertIn(b'value="6.2"', draft_response.data)
             self.assertIn(b'value="standard_strict"', draft_response.data)
             self.assertIn(b'value="140"', draft_response.data)
             self.assertIn(b'value="360"', draft_response.data)
@@ -416,12 +416,12 @@ class HostedShellTest(unittest.TestCase):
                     "target_mode": "real",
                     "candidate_profile": "Subprime",
                     "journal_name": "Horme",
-                    "system_version": "6.1.1",
+                    "system_version": "6.2",
                     "expiration_date": "2026-04-13",
                     "underlying_symbol": "SPX",
                     "spx_at_entry": "6129.20",
                     "vix_at_entry": "17.89",
-                    "structure_grade": "Bullish Confirmation",
+                    "structure_grade": "Prime",
                     "macro_grade": "Improving",
                     "expected_move": "38.0",
                     "expected_move_used": "38.0",
@@ -442,7 +442,7 @@ class HostedShellTest(unittest.TestCase):
                     "risk_efficiency": "0.3889",
                     "target_em": "1.55",
                     "short_delta": "0.14",
-                    "notes_entry": "Prefilled from Kairos candidate card.",
+                    "notes_entry": "Prefilled from Kairos best candidate card.",
                 },
                 follow_redirects=False,
             )
@@ -455,7 +455,7 @@ class HostedShellTest(unittest.TestCase):
             self.assertEqual(draft_response.status_code, 200)
             self.assertIn(b'Jump to Draft Form', draft_response.data)
             self.assertIn(b'Kairos candidate data is loaded into this draft.', draft_response.data)
-            self.assertIn(b'value="6.1.1"', draft_response.data)
+            self.assertIn(b'value="6.2"', draft_response.data)
             self.assertIn(b'value="kairos_candidate"', draft_response.data)
             self.assertIn(b'value="140"', draft_response.data)
             self.assertIn(b'value="360"', draft_response.data)
@@ -586,7 +586,7 @@ class HostedShellTest(unittest.TestCase):
                     "trade_mode": "real",
                     "system_name": "Kairos",
                     "journal_name": "Hosted Real",
-                    "system_version": "6.1.1",
+                    "system_version": "6.2",
                     "candidate_profile": "Subprime",
                     "status": "open",
                     "trade_date": "2026-04-11",
@@ -635,7 +635,7 @@ class HostedShellTest(unittest.TestCase):
                     "trade_mode": "real",
                     "system_name": "Apollo",
                     "journal_name": "Hosted Real",
-                    "system_version": "6.1.1",
+                    "system_version": "6.2",
                     "candidate_profile": "Standard",
                     "status": "open",
                     "trade_date": "2026-04-11",
@@ -717,19 +717,19 @@ class HostedShellTest(unittest.TestCase):
             response = app.test_client().get("/hosted/manage-trades")
 
             self.assertEqual(response.status_code, 200)
-            self.assertIn(b'Hosted Delphi 6.1.1 pulls the same live open-trade evaluation data', response.data)
+            self.assertIn(b'Hosted Delphi 6.2 pulls the same live open-trade evaluation data', response.data)
             self.assertIn(b'Watch', response.data)
             self.assertIn(b'Hold', response.data)
             self.assertIn(b'Send Real Status Update', response.data)
             self.assertIn(b'Send Simulated Status Update', response.data)
             self.assertIn(b'Send to Close', response.data)
-            self.assertIn(b'Notifications: ON', response.data)
-            self.assertIn(b'Save Notifications', response.data)
+            self.assertIn(b'/hosted/notifications', response.data)
             self.assertIn(b'Remaining Premium', response.data)
             self.assertNotIn(b'Net Credit', response.data)
             self.assertNotIn(b'Live EM x', response.data)
             self.assertNotIn(b'Mark', response.data)
             self.assertNotIn(b'Exit Now', response.data)
+            self.assertNotIn(b'Save Notifications', response.data)
 
     def test_hosted_manage_trades_can_save_trade_notifications(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -780,7 +780,7 @@ class HostedShellTest(unittest.TestCase):
             response = app.test_client().get("/hosted/performance")
 
             self.assertEqual(response.status_code, 503)
-            self.assertIn(b'Delphi 6.1.1 cannot load performance', response.data)
+            self.assertIn(b'Delphi 6.2 cannot load performance', response.data)
             self.assertIn(b'journal_trades', response.data)
 
     def test_hosted_journal_page_returns_admin_visible_error_when_supabase_trade_table_is_missing(self):
@@ -792,7 +792,7 @@ class HostedShellTest(unittest.TestCase):
             response = app.test_client().get("/hosted/journal?trade_mode=real")
 
             self.assertEqual(response.status_code, 503)
-            self.assertIn(b'Delphi 6.1.1 cannot load journal', response.data)
+            self.assertIn(b'Delphi 6.2 cannot load journal', response.data)
             self.assertIn(b'journal_trade_close_events', response.data)
 
     def test_hosted_manage_trades_page_returns_admin_visible_error_when_supabase_trade_table_is_missing(self):
@@ -807,7 +807,7 @@ class HostedShellTest(unittest.TestCase):
 
             self.assertEqual(response.status_code, 503)
             self.assertEqual(manager.calls, [])
-            self.assertIn(b'Delphi 6.1.1 cannot load manage-trades', response.data)
+            self.assertIn(b'Delphi 6.2 cannot load manage-trades', response.data)
             self.assertIn(b'active_trades', response.data)
 
     def test_hosted_apollo_page_renders_last_snapshot(self):

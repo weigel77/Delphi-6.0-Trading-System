@@ -48,7 +48,7 @@
                 <article class="summary-card"><p class="summary-label">Recommendation</p><p id="hosted-kairos-recommendation" class="summary-value">{{ kairos_payload.hosted_recommendation }}</p></article>
                 <article class="summary-card"><p class="summary-label">SPX</p><p id="hosted-kairos-spx-value" class="summary-value">{{ kairos_payload.spx_value }}</p></article>
                 <article class="summary-card"><p class="summary-label">VIX</p><p id="hosted-kairos-vix-value" class="summary-value">{{ kairos_payload.vix_value }}</p></article>
-                <article class="summary-card"><p class="summary-label">Window Found</p><p id="hosted-kairos-window-found" class="summary-value">{{ 'Yes' if kairos_payload.window_found else 'No' }}</p></article>
+                <article class="summary-card"><p class="summary-label">Prime Reached</p><p id="hosted-kairos-window-found" class="summary-value">{{ 'Yes' if kairos_payload.window_found else 'No' }}</p></article>
                 <article class="summary-card"><p class="summary-label">Next Scan</p><p id="hosted-kairos-next-scan" class="summary-value">{{ kairos_payload.next_scan_display }}</p></article>
                 <article class="summary-card"><p class="summary-label">Total Scans</p><p id="hosted-kairos-total-scans" class="summary-value">{{ kairos_payload.total_scans_completed }}</p></article>
             </div>
@@ -90,7 +90,7 @@
             <div class="result-header">
                 <div>
                     <h2>Kairos Candidates</h2>
-                    <p class="subtle">Hosted Delphi uses the same candidate card hierarchy so Bill can see immediately whether Kairos found a tradeable live window.</p>
+                    <p class="subtle">Hosted Delphi uses the same candidate card hierarchy so Bill can see immediately whether Kairos found a tradeable live candidate.</p>
                 </div>
             </div>
             <div id="hosted-kairos-candidate-cards" class="kairos-live-candidate-grid">

@@ -57,6 +57,9 @@
             <div class="delphi-header-meta{% if hosted_mode %} delphi-header-meta-hosted{% endif %}">
                 <span class="hero-version">{{ app_identity.version_label if hosted_mode or page_version in ['Version 2.0', 'Version 4.3 Dev'] else page_version }}</span>
                 {% if hosted_mode %}
+                    <div class="delphi-header-actions">
+                        <a class="button-link button-link-secondary button-link-small" href="{{ routes.get('notifications') }}">Notifications</a>
+                    </div>
                     <div class="delphi-header-hosted-auth-block">
                         <p class="delphi-header-status-label">Hosted Session</p>
                         <p class="delphi-header-status-value">Authenticated</p>
@@ -70,6 +73,7 @@
                 {% else %}
                     <p class="subtle">{{ page_meta }}</p>
                     <div class="delphi-header-actions">
+                        <a class="button-link button-link-secondary button-link-small" href="{{ routes.get('notifications') }}">Notifications</a>
                         <button
                             type="button"
                             class="button-link button-link-secondary button-link-small"

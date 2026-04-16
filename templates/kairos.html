@@ -152,14 +152,10 @@
                 <span class="kairos-bar-map-legend-item"><span class="kairos-bar-map-legend-swatch kairos-bar-map-legend-down"></span>Down candle</span>
                 <span class="kairos-bar-map-legend-item"><span class="kairos-bar-map-legend-swatch kairos-bar-map-legend-active"></span>Latest candle</span>
                 <span class="kairos-bar-map-legend-item"><span class="kairos-bar-map-legend-line"></span>VWAP</span>
-                <span class="kairos-bar-map-legend-item"><span class="kairos-bar-map-legend-dot kairos-bar-map-legend-setup"></span>Setup Forming</span>
-                <span class="kairos-bar-map-legend-item"><span class="kairos-bar-map-legend-dot kairos-bar-map-legend-window-open"></span>Window Found</span>
-                <span class="kairos-bar-map-legend-item"><span class="kairos-bar-map-legend-dot kairos-bar-map-legend-window-closing"></span>Window Closing</span>
+                <span class="kairos-bar-map-legend-item"><span class="kairos-bar-map-legend-dot kairos-bar-map-legend-setup"></span>Subprime Improving</span>
+                <span class="kairos-bar-map-legend-item"><span class="kairos-bar-map-legend-dot kairos-bar-map-legend-window-open"></span>Prime</span>
+                <span class="kairos-bar-map-legend-item"><span class="kairos-bar-map-legend-dot kairos-bar-map-legend-window-closing"></span>Subprime Weakening</span>
                 <span class="kairos-bar-map-legend-item"><span class="kairos-bar-map-legend-dot kairos-bar-map-legend-non-go"></span>Not Eligible / Expired</span>
-                <span class="kairos-bar-map-legend-item"><span class="kairos-bar-map-legend-dot kairos-bar-map-legend-trade-open"></span>Trade Open</span>
-                <span class="kairos-bar-map-legend-item"><span class="kairos-bar-map-legend-dot kairos-bar-map-legend-trade-partial-close"></span>Partial Close</span>
-                <span class="kairos-bar-map-legend-item"><span class="kairos-bar-map-legend-dot kairos-bar-map-legend-trade-full-close"></span>Full Close</span>
-                <span class="kairos-bar-map-legend-item"><span class="kairos-bar-map-legend-dot kairos-bar-map-legend-trade-expired"></span>Expired / Max Loss</span>
             </div>
 
             <p id="kairos-bar-map-note" class="subtle kairos-bar-map-note">{{ bar_map.note }}</p>
@@ -177,16 +173,9 @@
             <div class="result-header">
                 <div>
                     <h2>Kairos Credit Map</h2>
-                    <p class="subtle">{{ 'Apollo-style spread positioning map for the current Best Available and Window Open live-chain candidates.' if hosted_mode else 'Apollo-style spread positioning map for the current Subprime and Prime live-chain candidates.' }}</p>
+                    <p class="subtle">Live spread positioning map for the current Kairos candidate.</p>
                 </div>
             </div>
-
-            <div id="kairos-live-credit-map-statuses" class="apollo-diagnostic-chip-list kairos-credit-map-statuses">
-                {% for item in live_workspace.credit_map.slot_statuses or [] %}
-                    <span class="apollo-diagnostic-chip kairos-credit-map-status-chip kairos-credit-map-status-chip-{{ item.status_key }}">{{ item.label }}: {{ item.value }}</span>
-                {% endfor %}
-            </div>
-            <p class="subtle apollo-risk-note">{{ live_workspace.credit_map.positioning_note if live_workspace.credit_map is defined else '' }}</p>
 
             <div id="kairos-live-credit-map-shell">
                 {% if live_workspace.credit_map and live_workspace.credit_map.available %}
@@ -247,7 +236,7 @@
             <div class="result-header">
                 <div>
                     <h2>Kairos Candidates</h2>
-                    <p class="subtle">{{ 'Exactly two Apollo-style live cards: Best Available for the strongest advisory setup and Window Open for the fully qualified active window trade.' if hosted_mode else 'Exactly two Apollo-style live cards: Subprime for the strongest advisory setup and Prime for the fully qualified active window trade.' }}</p>
+                    <p class="subtle">One best-candidate card stays available throughout the live session and carries the current Prime or Subprime structure context into prefill.</p>
                 </div>
             </div>
 
@@ -291,7 +280,7 @@
                             <article class="apollo-mini-card apollo-mini-card-highlight apollo-mini-card-highlight-premium">
                                 <p class="summary-label">Premium Received</p>
                                 <strong>{{ item.premium_received }}</strong>
-                                <p class="apollo-probability-text">Est. OTM {{ item.estimated_otm_probability }}</p>
+                                <p class="apollo-probability-text">{{ item.message }}</p>
                             </article>
                             <article class="apollo-mini-card apollo-mini-card-highlight apollo-mini-card-highlight-routine">
                                 <p class="summary-label">Routine Loss</p>
@@ -302,10 +291,6 @@
                                 <p class="summary-label">Black Swan Loss</p>
                                 <strong>{{ item.black_swan_loss }}</strong>
                                 <p class="apollo-diagnostics-note">{{ item.loss_model_source }} · avg ROI {{ item.black_swan_loss_percentage }} · n={{ item.black_swan_loss_count }}</p>
-                                <div class="apollo-tail-nested-metric">
-                                    <p class="apollo-tail-nested-row"><span>Theoretical max loss</span><strong>{{ item.max_loss }}</strong></p>
-                                    <p class="apollo-tail-nested-row"><span>Max loss / contract</span><strong>{{ item.max_loss_per_contract }}</strong></p>
-                                </div>
                             </article>
                         </div>
 
@@ -773,7 +758,7 @@
         </section>
         {% endif %}
 
-        <details class="apollo-collapsible apollo-compact-panel kairos-log-disclosure"{% if not is_sim_workspace %} open{% endif %}>
+        <details class="apollo-collapsible apollo-compact-panel kairos-log-disclosure">
             <summary class="apollo-collapsible-summary">
                 <span>{{ 'Simulation Scan Log' if is_sim_workspace else 'Intraday Scan Log' }}</span>
                 <span class="apollo-collapsible-meta">{{ kairos_payload.scan_log_count }} records</span>
@@ -1078,7 +1063,7 @@
                         <article class="apollo-mini-card apollo-mini-card-highlight apollo-mini-card-highlight-premium">
                             <p class="summary-label">Premium Received</p>
                             <strong>${escapeHtml(item.premium_received || '—')}</strong>
-                            <p class="apollo-probability-text">Est. OTM ${escapeHtml(item.estimated_otm_probability || '—')}</p>
+                            <p class="apollo-probability-text">${escapeHtml(item.message || 'No live trade is currently ready.')}</p>
                         </article>
                         <article class="apollo-mini-card apollo-mini-card-highlight apollo-mini-card-highlight-routine">
                             <p class="summary-label">Routine Loss</p>
@@ -1089,10 +1074,6 @@
                             <p class="summary-label">Black Swan Loss</p>
                             <strong>${escapeHtml(item.black_swan_loss || '—')}</strong>
                             <p class="apollo-diagnostics-note">${escapeHtml(item.loss_model_source || 'Historical real-trade ROI averages')} · avg ROI ${escapeHtml(item.black_swan_loss_percentage || '—')} · n=${escapeHtml(item.black_swan_loss_count ?? 0)}</p>
-                            <div class="apollo-tail-nested-metric">
-                                <p class="apollo-tail-nested-row"><span>Theoretical max loss</span><strong>${escapeHtml(item.max_loss || '—')}</strong></p>
-                                <p class="apollo-tail-nested-row"><span>Max loss / contract</span><strong>${escapeHtml(item.max_loss_per_contract || '—')}</strong></p>
-                            </div>
                         </article>
                     </div>
                     <p class="kairos-runner-candidate-rationale">${escapeHtml(item.rationale || item.message || 'No trade is currently available.')}</p>
@@ -1278,7 +1259,7 @@
             kairosRunnerCandidateCard.classList.toggle('kairos-runner-candidate-card-empty', card?.status === 'no-candidates');
             setText('kairos-runner-candidate-eyebrow', card?.eyebrow || 'Synthetic / model-based');
             setText('kairos-runner-candidate-title', card?.title || 'Trade Candidate Card');
-            setText('kairos-runner-candidate-message', card?.message || 'This card appears when the runner pauses on Window Open.');
+            setText('kairos-runner-candidate-message', card?.message || 'This card appears when the runner pauses on Prime.');
             setText('kairos-runner-candidate-selection-note', card?.selected_profile_label ? `Selected profile: ${card.selected_profile_label}` : 'Select a qualified profile to enable Take Trade.');
             setText('kairos-runner-candidate-action-note', card?.action_note || '');
             setText('kairos-runner-candidate-disclaimer', card?.disclaimer || 'Simulation only. Estimated values only.');

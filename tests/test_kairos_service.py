@@ -154,7 +154,7 @@ class KairosServiceTest(unittest.TestCase):
         self.assertTrue(payload["best_trade_override"]["visible"])
         self.assertIn(payload["best_trade_override"]["status"], {"ready", "stand-aside", "no-candidates", "unavailable"})
         self.assertEqual(len(payload["scan_log"]), payload["total_scans_completed"])
-        self.assertEqual(len(payload["live_workspace"]["candidate_cards"]), 2)
+        self.assertEqual(len(payload["live_workspace"]["candidate_cards"]), 1)
         self.assertTrue(payload["live_workspace"]["credit_map"]["available"])
         self.assertEqual(len(FakeTimer.instances), 1)
         self.assertTrue(FakeTimer.instances[0].started)
@@ -171,7 +171,7 @@ class KairosServiceTest(unittest.TestCase):
         self.assertEqual(payload["session_status"], "Armed")
         self.assertTrue(payload["best_trade_override"]["visible"])
         self.assertIn(payload["best_trade_override"]["status"], {"ready", "stand-aside", "no-candidates", "unavailable"})
-        self.assertEqual(len(payload["live_workspace"]["candidate_cards"]), 2)
+        self.assertEqual(len(payload["live_workspace"]["candidate_cards"]), 1)
         self.assertEqual(payload["live_workspace"]["stamps"][0]["label"], "Last Scan")
         self.assertEqual(len(FakeTimer.instances), 1)
 
@@ -651,8 +651,8 @@ class KairosServiceTest(unittest.TestCase):
         payload = self.service.activate_for_today()
 
         self.assertEqual(payload["current_state"], "Window Open")
-        self.assertEqual(payload["current_state_display"], "Window Found")
-        self.assertEqual(payload["latest_scan"]["kairos_state_display"], "Window Found")
+        self.assertEqual(payload["current_state_display"], "Prime")
+        self.assertEqual(payload["latest_scan"]["kairos_state_display"], "Prime")
 
     def test_session_auto_completes_after_market_close(self):
         self.service.activate_for_today()
@@ -736,7 +736,7 @@ class KairosServiceTest(unittest.TestCase):
 
         self.assertEqual(payload["simulation_runner"]["status"], "Paused")
         self.assertEqual(payload["simulation_runner"]["pause_reason"], "pause_on_setup-forming")
-        self.assertEqual(payload["simulation_runner"]["pause_status"]["event_label"], "Setup Forming")
+        self.assertEqual(payload["simulation_runner"]["pause_status"]["event_label"], "Subprime Improving")
         self.assertEqual(payload["latest_scan"]["kairos_state"], "Setup Forming")
         self.assertEqual(payload["simulation_runner"]["pause_status"]["bar_number"], payload["simulation_runner"]["current_bar_number"])
         self.assertTrue(payload["simulation_runner"]["pause_status"]["simulated_time"])
@@ -752,7 +752,7 @@ class KairosServiceTest(unittest.TestCase):
 
         self.assertEqual(payload["simulation_runner"]["status"], "Paused")
         self.assertEqual(payload["simulation_runner"]["pause_reason"], "pause_on_window-open")
-        self.assertEqual(payload["simulation_runner"]["pause_status"]["event_label"], "Window Open")
+        self.assertEqual(payload["simulation_runner"]["pause_status"]["event_label"], "Prime")
         self.assertEqual(payload["latest_scan"]["kairos_state"], "Window Open")
         self.assertIn("candidate", payload["simulation_runner"]["pause_detail"].lower())
 
@@ -945,10 +945,11 @@ class KairosServiceTest(unittest.TestCase):
         )
 
         self.assertTrue(candidate_card["visible"])
-        self.assertEqual(candidate_card["status"], "no-candidates")
+        self.assertEqual(candidate_card["status"], "ready")
         self.assertEqual(len(candidate_card["profiles"]), 3)
-        self.assertTrue(all(not item["available"] for item in candidate_card["profiles"]))
-        self.assertEqual(candidate_card["message"], "No qualifying Kairos candidates found.")
+        self.assertTrue(any(item["available"] for item in candidate_card["profiles"]))
+        self.assertEqual(candidate_card["selected_profile_key"], "aggressive")
+        self.assertEqual(candidate_card["message"], "Synthetic Kairos candidate set generated from simulated SPX, VIX, time, and modeled spread distance.")
 
     def test_runner_pause_on_window_closing_uses_existing_kairos_state(self):
         self.current_time = datetime(2026, 4, 4, 10, 0, tzinfo=ZoneInfo("America/Chicago"))
@@ -961,7 +962,7 @@ class KairosServiceTest(unittest.TestCase):
 
         self.assertEqual(payload["simulation_runner"]["status"], "Paused")
         self.assertEqual(payload["simulation_runner"]["pause_reason"], "pause_on_window-closing")
-        self.assertEqual(payload["simulation_runner"]["pause_status"]["event_label"], "Window Closing")
+        self.assertEqual(payload["simulation_runner"]["pause_status"]["event_label"], "Subprime Weakening")
         self.assertEqual(payload["latest_scan"]["kairos_state"], "Window Closing")
         self.assertGreaterEqual(payload["simulation_runner"]["pause_status"]["bar_number"], 1)
 
@@ -978,7 +979,7 @@ class KairosServiceTest(unittest.TestCase):
 
         resumed = self.service.resume_simulation_runner({"ignore_successive_condition": True})
         self.assertTrue(resumed["simulation_runner"]["pause_status"]["suppression_active"])
-        self.assertEqual(resumed["simulation_runner"]["pause_status"]["suppressed_event_label"], "Setup Forming")
+        self.assertEqual(resumed["simulation_runner"]["pause_status"]["suppressed_event_label"], "Subprime Improving")
 
         saw_setup_forming_after_resume = False
         while resumed["simulation_runner"]["status"] == "Running":

@@ -63,7 +63,7 @@ class TradeNotificationTests(unittest.TestCase):
         self.assertTrue(time_rule["enabled"])
         self.assertAlmostEqual(time_rule["threshold"], 0.75)
         self.assertEqual(time_rule["description"], "Expiration window")
-        self.assertFalse(disabled_rule["enabled"])
+        self.assertTrue(disabled_rule["enabled"])
 
     def test_normalize_trade_notifications_restores_default_rows(self):
         notifications = normalize_trade_notifications([{"type": "VWAP_BREAK", "enabled": True, "description": "VWAP alert"}])
@@ -74,7 +74,7 @@ class TradeNotificationTests(unittest.TestCase):
 
         self.assertTrue(vwap_rule["enabled"])
         self.assertEqual(vwap_rule["description"], "VWAP alert")
-        self.assertFalse(short_rule["enabled"])
+        self.assertTrue(short_rule["enabled"])
         self.assertAlmostEqual(short_rule["threshold"], 10.0)
 
 

@@ -389,7 +389,11 @@ class OpenTradeManagerTest(unittest.TestCase):
         self.now = datetime(2026, 4, 10, 15, 10, tzinfo=ZoneInfo("America/Chicago"))
         first_payload = self.manager.evaluate_open_trades(send_alerts=False)
         closed_trade = max(
-            (trade for trade in self.trade_store.list_trades("real") if str(trade.get("status") or "").strip().lower() == "closed"),
+            (
+                trade
+                for trade in self.trade_store.list_trades("real")
+                if str(trade.get("status") or "").strip().lower() in {"closed", "expired"}
+            ),
             key=lambda trade: int(trade.get("id") or 0),
         )
         expected_lines = [

@@ -904,7 +904,7 @@ class TradeRoutesTest(unittest.TestCase):
 
     def test_apollo_prefill_transfer_does_not_save_until_trade_is_submitted(self):
         candidate_payload = {
-            "system_version": "6.1.1",
+            "system_version": "6.2",
             "candidate_profile": "Aggressive",
             "expiration_date": "2026-04-06",
             "underlying_symbol": "SPX",
@@ -966,7 +966,7 @@ class TradeRoutesTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["system_name"], "Apollo")
         self.assertEqual(rows[0]["journal_name"], "Apollo Main")
-        self.assertEqual(rows[0]["system_version"], "6.1.1")
+        self.assertEqual(rows[0]["system_version"], "6.2")
         self.assertEqual(rows[0]["trade_mode"], "simulated")
         self.assertEqual(rows[0]["status"], "open")
         self.assertEqual(rows[0]["candidate_profile"], "Aggressive")

@@ -70,10 +70,17 @@
                         <legend>{{ group.replace('_', ' ')|title }}</legend>
                         <div class="performance-filter-options">
                             {% for option in options %}
+                                {% if group == 'timeframe' %}
+                                <label class="performance-filter-pill performance-filter-pill-timeframe">
+                                    <input type="radio" class="performance-filter-input performance-timeframe-input" name="performance_timeframe" data-filter-group="{{ group }}" value="{{ option|lower|replace(' ', '-') }}" {% if option|lower|replace(' ', '-') in active_filters.get(group, []) %}checked{% endif %}>
+                                    <span>{{ option }}</span>
+                                </label>
+                                {% else %}
                                 <label class="performance-filter-pill">
-                                    <input type="checkbox" class="performance-filter-checkbox" data-filter-group="{{ group }}" value="{{ option|lower|replace(' ', '-') }}" {% if option|lower|replace(' ', '-') in active_filters.get(group, []) %}checked{% endif %}>
+                                    <input type="checkbox" class="performance-filter-input performance-filter-checkbox" data-filter-group="{{ group }}" value="{{ option|lower|replace(' ', '-') }}" {% if option|lower|replace(' ', '-') in active_filters.get(group, []) %}checked{% endif %}>
                                     <span>{{ 'SubPrime' if hosted_mode and option == 'Subprime' else option }}</span>
                                 </label>
+                                {% endif %}
                             {% endfor %}
                         </div>
                     </fieldset>
@@ -208,7 +215,7 @@
         const performanceRoot = document.querySelector('.performance-shell');
         const performanceUrl = performanceRoot?.dataset.performanceUrl;
         const payloadElement = document.getElementById('performance-dashboard-payload');
-        const filterInputs = Array.from(document.querySelectorAll('.performance-filter-checkbox'));
+        const filterInputs = Array.from(document.querySelectorAll('.performance-filter-input'));
         const palette = {
             blue: '#1f6feb',
             blueSoft: '#d8e8ff',

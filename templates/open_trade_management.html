@@ -35,14 +35,10 @@
             <div class="result-header">
                 <div>
                     <h2>Management Engine</h2>
-                    <p class="subtle">{% if hosted_mode %}Hosted Delphi 6.1.1 pulls the same live open-trade evaluation data into a Supabase-backed board with the same notification and send-to-close controls used on the local workflow.{% else %}Real open trades are evaluated for morning snapshot, status change, action, and end-of-day Pushover notifications. Simulated open trades remain visible on this board for management review, and both modes can send manual status updates in the same format as the scheduled open-positions text.{% endif %}</p>
+                    <p class="subtle">{% if hosted_mode %}Hosted Delphi 6.2 pulls the same live open-trade evaluation data into a Supabase-backed board with the same send-to-close controls used on the local workflow. Global alert preferences now live in the header Notifications panel.{% else %}Real open trades are evaluated for morning snapshot, status change, action, and end-of-day Pushover notifications. Simulated open trades remain visible on this board for management review, and both modes can send manual status updates in the same format as the scheduled open-positions text. Global alert preferences now live in the header Notifications panel.{% endif %}</p>
                 </div>
                 {% if management_actions_enabled %}
                     <div class="actions trade-actions">
-                        <form method="post" action="{{ management_action_urls.get('toggle_notifications', url_for('open_trade_management_toggle_notifications')) }}">
-                            <input type="hidden" name="notifications_enabled" value="{{ 'false' if management_payload.notifications_enabled else 'true' }}">
-                            <button type="submit" class="secondary">Notifications: {{ 'ON' if management_payload.notifications_enabled else 'OFF' }}</button>
-                        </form>
                         <form method="post" action="{{ management_action_urls.get('real_status_update', url_for('open_trade_management_status_update', trade_mode='real')) }}">
                             <button type="submit">Send Real Status Update</button>
                         </form>
@@ -90,7 +86,7 @@
                 <div>
                     <h2>Open Positions</h2>
                     {% if not suppress_open_positions_copy %}
-                        <p class="subtle">{% if hosted_mode %}Statuses and action recommendations use the current live option-chain expected move. Hosted Delphi 6.1.1 notifications only apply to real trades, but both real and simulated open positions are listed here.{% else %}Statuses and action recommendations use the current live option-chain expected move. Delphi 4.3 notifications only apply to real trades, but both real and simulated open positions are listed here.{% endif %}</p>
+                        <p class="subtle">{% if hosted_mode %}Statuses and action recommendations use the current live option-chain expected move. Hosted Delphi 6.2 alert delivery only applies to real trades, but both real and simulated open positions are listed here.{% else %}Statuses and action recommendations use the current live option-chain expected move. Delphi 4.3 alert delivery only applies to real trades, but both real and simulated open positions are listed here.{% endif %}</p>
                     {% endif %}
                 </div>
             </div>
@@ -111,8 +107,6 @@
                             <col class="management-col-action">
                             <col class="management-col-trigger">
                             <col class="management-col-reason">
-                            <col class="management-col-notifications">
-                            <col class="management-col-alert">
                         </colgroup>
                         <thead>
                             <tr>
@@ -128,8 +122,6 @@
                                 <th>Action</th>
                                 <th>Next Trigger</th>
                                 <th>Reason</th>
-                                <th>Notifications</th>
-                                <th>Alert Log</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -182,57 +174,6 @@
                                                     {% endif %}
                                                 </div>
                                             </details>
-                                        </div>
-                                    </td>
-                                    <td>
-                                        <div class="management-alert-cell management-notification-cell">
-                                            {% if item.active_notifications %}
-                                                <strong>{{ item.active_notifications|length }} active</strong>
-                                            {% else %}
-                                                <strong>No active rules</strong>
-                                            {% endif %}
-                                            {% if item.triggered_notifications %}
-                                                <span class="subtle">{{ item.triggered_notifications|length }} triggered</span>
-                                                {% for notification in item.triggered_notifications %}
-                                                    <span class="subtle">{{ notification.type|replace('_', ' ')|title }}: {{ notification.reason }}</span>
-                                                {% endfor %}
-                                            {% else %}
-                                                <span class="subtle">No triggers active</span>
-                                            {% endif %}
-                                            {% if management_actions_enabled %}
-                                                <details class="management-debug-details">
-                                                    <summary>Notifications</summary>
-                                                    <form method="post" action="{{ url_for(management_action_urls.get('save_trade_notifications', 'open_trade_management_save_trade_notifications'), trade_id=item.trade_id) }}" class="trade-form">
-                                                        {% for notification in item.notifications %}
-                                                            <div class="field-group">
-                                                                <label>
-                                                                    <input type="checkbox" name="notification_enabled_{{ notification.type }}" value="1" {% if notification.enabled %}checked{% endif %}>
-                                                                    {{ notification.type|replace('_', ' ')|title }}
-                                                                </label>
-                                                                {% if notification.threshold is not none %}
-                                                                    <input name="notification_threshold_{{ notification.type }}" type="number" step="0.01" min="0" value="{{ notification.threshold }}">
-                                                                {% endif %}
-                                                                <input name="notification_description_{{ notification.type }}" type="text" value="{{ notification.description }}">
-                                                                {% if notification.triggered %}
-                                                                    <span class="subtle">Triggered: {{ notification.trigger_reason }}</span>
-                                                                {% endif %}
-                                                            </div>
-                                                        {% endfor %}
-                                                        <div class="actions trade-form-actions">
-                                                            <button type="submit" class="secondary">Save Notifications</button>
-                                                        </div>
-                                                    </form>
-                                                </details>
-                                            {% endif %}
-                                        </div>
-                                    </td>
-                                    <td>
-                                        {% set alert_state = item.alert_state if item.alert_state is defined else {} %}
-                                        <div class="management-alert-cell">
-                                            <strong>{{ alert_state.last_alert_type or 'Not sent' }}</strong>
-                                            <span class="subtle">{{ alert_state.last_alert_priority or 'n/a' }}</span>
-                                            <span class="subtle">{{ alert_state.last_alert_sent_at or 'Never' }}</span>
-                                            <span class="subtle">Count {{ alert_state.alert_count or 0 }}</span>
                                         </div>
                                     </td>
                                 </tr>

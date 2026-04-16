@@ -38,6 +38,11 @@ from services.repositories.apollo_snapshot_repository import ApolloSnapshotRepos
 from services.repositories.hosted_runtime_state_repository import SupabaseHostedRuntimeStateRepository, SupabaseImportPreviewRepository
 from services.repositories.import_preview_repository import FileSystemImportPreviewRepository, ImportPreviewRepository
 from services.repositories.kairos_snapshot_repository import KairosSnapshotRepository
+from services.repositories.global_notification_settings_repository import (
+    GlobalNotificationSettingsRepository,
+    SQLiteGlobalNotificationSettingsRepository,
+    SupabaseGlobalNotificationSettingsRepository,
+)
 from services.repositories.scenario_repository import SupabaseKairosScenarioRepository
 from services.repositories.trade_notification_repository import (
     SQLiteTradeNotificationRepository,
@@ -88,7 +93,9 @@ from services.trade_store import (
 )
 from services.trade_notifications import (
     SUPPORTED_NOTIFICATION_TYPES,
+    default_global_notification_settings,
     default_trade_notifications,
+    normalize_global_notification_settings,
     normalize_trade_notifications,
 )
 
@@ -411,7 +418,10 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     open_trade_manager = service_bundle.open_trade_manager
     trade_notification_repository = build_trade_notification_repository(app, trade_store)
     trade_notification_repository.initialize()
+    global_notification_settings_repository = build_global_notification_settings_repository(app, trade_store)
+    global_notification_settings_repository.initialize()
     open_trade_manager.trade_notification_repository = trade_notification_repository
+    open_trade_manager.global_notification_settings_repository = global_notification_settings_repository
     app.extensions["auth_composer"] = auth_composer
     app.extensions["host_infrastructure_assembler"] = host_infrastructure_assembler
     app.extensions["host_infrastructure"] = host_infrastructure
@@ -428,6 +438,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     app.extensions["apollo_snapshot_repository"] = apollo_snapshot_repository
     app.extensions["kairos_service"] = kairos_live_service
     app.extensions["kairos_live_service"] = kairos_live_service
+    app.extensions["global_notification_settings_repository"] = global_notification_settings_repository
     app.extensions["kairos_snapshot_repository"] = kairos_snapshot_repository
     app.extensions["kairos_sim_service"] = kairos_sim_service
     app.extensions["kairos_scenario_repository"] = kairos_scenario_repository
@@ -1235,11 +1246,9 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             info_message=pop_status_message(),
             management_actions_enabled=True,
             management_action_urls={
-                "toggle_notifications": url_for("hosted_open_trade_management_toggle_notifications"),
                 "real_status_update": url_for("hosted_open_trade_management_status_update", trade_mode="real"),
                 "simulated_status_update": url_for("hosted_open_trade_management_status_update", trade_mode="simulated"),
                 "prefill_close": "hosted_open_trade_management_prefill_close",
-                "save_trade_notifications": "hosted_open_trade_management_save_trade_notifications",
             },
             suppress_open_positions_copy=True,
             hosted_admin_error=admin_error,
@@ -1247,19 +1256,33 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         )
         return (response, 503) if admin_error else response
 
-    @app.post("/hosted/manage-trades/notifications-toggle")
-    def hosted_open_trade_management_toggle_notifications() -> Any:
+    @app.get("/hosted/notifications")
+    def hosted_notifications_settings_page() -> Any:
         identity, error_response = authorize_hosted_private_browser_request(app)
         if error_response is not None:
             return error_response
-        enabled = str(request.form.get("notifications_enabled") or "").strip().lower() == "true"
-        get_open_trade_manager(app).set_notifications_enabled(enabled)
-        _clear_hosted_payload_cache("hosted:open-trades", app=app)
-        set_status_message(
-            f"Notifications turned {'ON' if enabled else 'OFF'} for real-time trade alerts.",
-            level="info",
+        settings = get_global_notification_settings_repository(app).load_settings()
+        return render_template(
+            "notifications_settings.html",
+            notification_settings=settings,
+            notification_settings_map={item["key"]: item for item in settings if item.get("key")},
+            save_action_url=url_for("hosted_notifications_settings_save"),
+            back_url=url_for("hosted_shell_manage_trades"),
+            active_page="management",
+            info_message=pop_status_message(),
+            **build_hosted_template_context(identity, app=app),
         )
-        return redirect(url_for("hosted_shell_manage_trades"))
+
+    @app.post("/hosted/notifications")
+    def hosted_notifications_settings_save() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        settings = coerce_global_notification_settings_input(request.form)
+        get_global_notification_settings_repository(app).save_settings(settings)
+        _clear_hosted_payload_cache("hosted:open-trades", app=app)
+        set_status_message("Notification settings saved.", level="info")
+        return redirect(url_for("hosted_notifications_settings_page"))
 
     @app.post("/hosted/manage-trades/status-update/<trade_mode>")
     def hosted_open_trade_management_status_update(trade_mode: str) -> Any:
@@ -2457,23 +2480,31 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             info_message=pop_status_message(),
             management_actions_enabled=True,
             management_action_urls={
-                "toggle_notifications": url_for("open_trade_management_toggle_notifications"),
                 "real_status_update": url_for("open_trade_management_status_update", trade_mode="real"),
                 "simulated_status_update": url_for("open_trade_management_status_update", trade_mode="simulated"),
                 "prefill_close": "open_trade_management_prefill_close",
-                "save_trade_notifications": "open_trade_management_save_trade_notifications",
             },
         )
 
-    @app.post("/management/open-trades/notifications-toggle")
-    def open_trade_management_toggle_notifications() -> Any:
-        enabled = str(request.form.get("notifications_enabled") or "").strip().lower() == "true"
-        open_trade_manager.set_notifications_enabled(enabled)
-        set_status_message(
-            f"Notifications turned {'ON' if enabled else 'OFF'} for real-time trade alerts.",
-            level="info",
+    @app.get("/notifications")
+    def notifications_settings_page() -> str:
+        settings = get_global_notification_settings_repository(app).load_settings()
+        return render_template(
+            "notifications_settings.html",
+            notification_settings=settings,
+            notification_settings_map={item["key"]: item for item in settings if item.get("key")},
+            save_action_url=url_for("notifications_settings_save"),
+            back_url=url_for("open_trade_management_page"),
+            active_page="management",
+            info_message=pop_status_message(),
         )
-        return redirect(url_for("open_trade_management_page"))
+
+    @app.post("/notifications")
+    def notifications_settings_save() -> Any:
+        settings = coerce_global_notification_settings_input(request.form)
+        get_global_notification_settings_repository(app).save_settings(settings)
+        set_status_message("Notification settings saved.", level="info")
+        return redirect(url_for("notifications_settings_page"))
 
     @app.post("/management/open-trades/status-update/<trade_mode>")
     def open_trade_management_status_update(trade_mode: str) -> Any:
@@ -3197,6 +3228,7 @@ def build_delphi_route_map(*, hosted: bool = False) -> Dict[str, str]:
             "journal_real": url_for("hosted_shell_journal", trade_mode="real"),
             "journal_simulated": url_for("hosted_shell_journal", trade_mode="simulated"),
             "open_trades": url_for("hosted_shell_open_trades"),
+            "notifications": url_for("hosted_notifications_settings_page"),
             "performance_data": url_for("hosted_performance_data"),
             "text_status": url_for("text_status_api"),
             "logout": url_for("hosted_browser_sign_out"),
@@ -3213,6 +3245,7 @@ def build_delphi_route_map(*, hosted: bool = False) -> Dict[str, str]:
         "journal_real": url_for("trade_dashboard", trade_mode="real"),
         "journal_simulated": url_for("trade_dashboard", trade_mode="simulated"),
         "open_trades": url_for("open_trade_management_page"),
+        "notifications": url_for("notifications_settings_page"),
         "performance_data": url_for("performance_dashboard_data"),
         "text_status": url_for("text_status_api"),
     }
@@ -3421,6 +3454,29 @@ def build_trade_notification_repository(app: Flask, trade_store: TradeRepository
     return SQLiteTradeNotificationRepository(trade_store.database_path)
 
 
+def build_global_notification_settings_repository(app: Flask, trade_store: TradeRepository) -> GlobalNotificationSettingsRepository:
+    if app.config.get("RUNTIME_TARGET") == "hosted":
+        context = app.extensions.get("supabase_context")
+        integration = app.extensions.get("supabase_integration")
+        if context is not None and getattr(context, "configured", False) and integration is not None:
+            return SupabaseGlobalNotificationSettingsRepository(context=context, gateway=integration.create_table_gateway())
+        return SQLiteGlobalNotificationSettingsRepository(Path(app.instance_path) / "global_notification_settings.db")
+    return SQLiteGlobalNotificationSettingsRepository(trade_store.database_path)
+
+
+def get_global_notification_settings_repository(app: Optional[Flask] = None) -> GlobalNotificationSettingsRepository:
+    container = _resolve_flask_container(app)
+    repository = container.extensions.get("global_notification_settings_repository")
+    if repository is None:
+        repository = build_global_notification_settings_repository(container, get_trade_store(container))
+        repository.initialize()
+        container.extensions["global_notification_settings_repository"] = repository
+    manager = container.extensions.get("open_trade_manager")
+    if manager is not None and getattr(manager, "global_notification_settings_repository", None) is not repository:
+        manager.global_notification_settings_repository = repository
+    return repository
+
+
 def get_trade_notification_repository(app: Optional[Flask] = None) -> TradeNotificationRepository:
     container = _resolve_flask_container(app)
     repository = container.extensions.get("trade_notification_repository")
@@ -3446,6 +3502,9 @@ def get_open_trade_manager(app: Optional[Flask] = None) -> OpenTradeManager:
     repository = get_trade_notification_repository(container)
     if getattr(manager, "trade_notification_repository", None) is not repository:
         manager.trade_notification_repository = repository
+    global_settings_repository = get_global_notification_settings_repository(container)
+    if getattr(manager, "global_notification_settings_repository", None) is not global_settings_repository:
+        manager.global_notification_settings_repository = global_settings_repository
     return manager
 
 
@@ -4058,6 +4117,19 @@ def coerce_trade_notification_input(source: Any) -> list[Dict[str, Any]]:
             }
         )
     return normalize_trade_notifications(notifications)
+
+
+def coerce_global_notification_settings_input(source: Any) -> list[Dict[str, Any]]:
+    settings = []
+    for item in default_global_notification_settings():
+        key = item["key"]
+        settings.append(
+            {
+                **item,
+                "enabled": str(source.get(f"notification_setting_{key}") or "").strip() == "1",
+            }
+        )
+    return normalize_global_notification_settings(settings)
 
 
 def merge_trade_form_values(base_values: Dict[str, Any], override_values: Dict[str, Any]) -> Dict[str, Any]:

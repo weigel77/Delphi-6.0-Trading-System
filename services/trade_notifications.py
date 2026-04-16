@@ -12,6 +12,10 @@ NOTIFICATION_TYPE_VWAP_BREAK = "VWAP_BREAK"
 NOTIFICATION_TYPE_STRUCTURE_BREAK = "STRUCTURE_BREAK"
 NOTIFICATION_TYPE_TIME_WINDOW = "TIME_WINDOW"
 
+GLOBAL_NOTIFICATION_OPEN_TRADES = "open_trade_notifications"
+GLOBAL_NOTIFICATION_DAILY_START = "daily_start_of_day"
+GLOBAL_NOTIFICATION_DAILY_END = "daily_end_of_day"
+
 SUPPORTED_NOTIFICATION_TYPES = (
     NOTIFICATION_TYPE_SHORT_STRIKE_PROXIMITY,
     NOTIFICATION_TYPE_LONG_STRIKE_TOUCH,
@@ -48,18 +52,81 @@ DEFAULT_NOTIFICATION_DEFINITIONS = {
     },
 }
 
+DEFAULT_GLOBAL_NOTIFICATION_SETTINGS = {
+    GLOBAL_NOTIFICATION_OPEN_TRADES: {
+        "enabled": True,
+        "label": "Open Trade Notifications",
+        "description": "Send live status-change and action alerts for real open trades.",
+        "category": "Open Trade Notifications",
+    },
+    GLOBAL_NOTIFICATION_DAILY_START: {
+        "enabled": True,
+        "label": "Daily Start of Day",
+        "description": "Send the morning open-positions snapshot shortly after the market opens.",
+        "category": "Daily Notifications",
+    },
+    GLOBAL_NOTIFICATION_DAILY_END: {
+        "enabled": True,
+        "label": "Daily End of Day",
+        "description": "Send the closing summary with closed trades and next-day open risk.",
+        "category": "Daily Notifications",
+    },
+}
+
 
 def default_trade_notifications() -> List[Dict[str, Any]]:
     return [
         {
             "type": notification_type,
-            "enabled": False,
+            "enabled": True,
             "threshold": definition["threshold"],
             "description": definition["description"],
             "threshold_label": definition["threshold_label"],
         }
         for notification_type, definition in DEFAULT_NOTIFICATION_DEFINITIONS.items()
     ]
+
+
+def default_global_notification_settings() -> List[Dict[str, Any]]:
+    return [
+        {
+            "key": key,
+            "enabled": bool(definition["enabled"]),
+            "label": definition["label"],
+            "description": definition["description"],
+            "category": definition["category"],
+        }
+        for key, definition in DEFAULT_GLOBAL_NOTIFICATION_SETTINGS.items()
+    ]
+
+
+def normalize_global_notification_settings(payload: Any) -> List[Dict[str, Any]]:
+    loaded = payload
+    if isinstance(payload, str):
+        try:
+            loaded = json.loads(payload)
+        except json.JSONDecodeError:
+            loaded = []
+    rows = loaded if isinstance(loaded, list) else []
+    configured: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("key") or "").strip().lower()
+        if key not in DEFAULT_GLOBAL_NOTIFICATION_SETTINGS:
+            continue
+        definition = DEFAULT_GLOBAL_NOTIFICATION_SETTINGS[key]
+        configured[key] = {
+            "key": key,
+            "enabled": bool(row.get("enabled", definition["enabled"])),
+            "label": definition["label"],
+            "description": str(row.get("description") or definition["description"]).strip() or definition["description"],
+            "category": definition["category"],
+        }
+    normalized = []
+    for default_row in default_global_notification_settings():
+        normalized.append(configured.get(default_row["key"], dict(default_row)))
+    return normalized
 
 
 def normalize_trade_notifications(payload: Any) -> List[Dict[str, Any]]:
