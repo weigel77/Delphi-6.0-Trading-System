@@ -207,6 +207,7 @@ class TradeRoutesTest(unittest.TestCase):
         self.assertAlmostEqual(row["gross_pnl"], 160.0)
         self.assertAlmostEqual(row["max_risk"], 760.0)
         self.assertAlmostEqual(row["total_max_loss"], 760.0)
+        self.assertEqual(row["status"], "closed")
         self.assertEqual(row["win_loss_result"], "Win")
 
         edit_response = self.client.post(
@@ -246,9 +247,69 @@ class TradeRoutesTest(unittest.TestCase):
             updated_row = connection.execute("SELECT * FROM trades WHERE id = ?", (trade_id,)).fetchone()
 
         self.assertAlmostEqual(updated_row["gross_pnl"], -40.0)
+        self.assertEqual(updated_row["status"], "closed")
         self.assertEqual(updated_row["win_loss_result"], "Loss")
         self.assertEqual(updated_row["candidate_profile"], "Aggressive")
         self.assertAlmostEqual(updated_row["total_max_loss"], 760.0)
+
+    def test_trade_edit_derives_closed_status_from_full_close_and_hides_status_input(self):
+        create_payload = {
+            "trade_mode": "real",
+            "system_name": "Apollo",
+            "journal_name": "Apollo Main",
+            "candidate_profile": "Standard",
+            "status": "open",
+            "trade_date": "2026-04-03",
+            "entry_datetime": "2026-04-03T09:35",
+            "expiration_date": "2026-04-06",
+            "underlying_symbol": "SPX",
+            "short_strike": "6450",
+            "long_strike": "6445",
+            "spread_width": "5",
+            "contracts": "2",
+            "actual_entry_credit": "1.20",
+            "distance_to_short": "50",
+        }
+        self.client.post("/trades/real/new", data=create_payload, follow_redirects=True)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            trade_id = connection.execute("SELECT id FROM trades WHERE trade_number = 1").fetchone()["id"]
+
+        response = self.client.post(
+            f"/trades/real/{trade_id}/edit",
+            data={
+                **create_payload,
+                "status": "open",
+                "close_events_present": "1",
+                "prefill_source": "",
+                "system_version": "",
+                "close_reason": "Target",
+                "notes_entry": "",
+                "notes_exit": "",
+                "close_event_id": [""],
+                "close_event_contracts_closed": ["2"],
+                "close_event_actual_exit_value": ["0.40"],
+                "close_event_method": ["Close"],
+            },
+            follow_redirects=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute("SELECT * FROM trades WHERE id = ?", (trade_id,)).fetchone()
+
+        self.assertEqual(row["status"], "closed")
+        self.assertEqual(row["win_loss_result"], "Win")
+
+        detail_response = self.client.get(f"/trades/real/{trade_id}/edit")
+
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertIn(b'id="status_display"', detail_response.data)
+        self.assertIn(b'value="Closed"', detail_response.data)
+        self.assertNotIn(b'name="status"', detail_response.data)
 
         simulated_response = self.client.post(
             "/trades/simulated/new",
@@ -562,8 +623,70 @@ class TradeRoutesTest(unittest.TestCase):
         self.assertIn(b"Closed Contracts", detail_response.data)
         self.assertIn(b"Remaining Contracts", detail_response.data)
         self.assertIn(b"Realized P/L", detail_response.data)
+        self.assertIn(b'id="status_display"', detail_response.data)
+        self.assertIn(b'value="Open"', detail_response.data)
+        self.assertNotIn(b'name="status"', detail_response.data)
         self.assertIn(b'value="2"', detail_response.data)
         self.assertIn(b'value="4.70"', detail_response.data)
+
+    def test_manage_trades_notification_settings_persist_per_trade(self):
+        create_payload = {
+            "trade_mode": "real",
+            "system_name": "Apollo",
+            "journal_name": "Apollo Main",
+            "candidate_profile": "Standard",
+            "status": "open",
+            "trade_date": "2026-04-10",
+            "entry_datetime": "2026-04-10T09:35",
+            "expiration_date": "2026-04-10",
+            "underlying_symbol": "SPX",
+            "spx_at_entry": "6800",
+            "vix_at_entry": "18",
+            "structure_grade": "Good",
+            "macro_grade": "None",
+            "expected_move": "40",
+            "expected_move_used": "40",
+            "option_type": "Put Credit Spread",
+            "short_strike": "6750",
+            "long_strike": "6740",
+            "spread_width": "10",
+            "contracts": "2",
+            "actual_entry_credit": "1.80",
+            "distance_to_short": "50",
+        }
+        self.client.post("/trades/real/new", data=create_payload, follow_redirects=True)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            trade_id = connection.execute("SELECT id FROM trades WHERE trade_number = 1").fetchone()["id"]
+
+        response = self.client.post(
+            f"/management/open-trades/{trade_id}/notifications",
+            data={
+                "notification_enabled_SHORT_STRIKE_PROXIMITY": "1",
+                "notification_threshold_SHORT_STRIKE_PROXIMITY": "7.5",
+                "notification_description_SHORT_STRIKE_PROXIMITY": "Watch the short strike",
+                "notification_enabled_TIME_WINDOW": "1",
+                "notification_threshold_TIME_WINDOW": "1.25",
+                "notification_description_TIME_WINDOW": "Final hour check",
+            },
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Location"], "/management/open-trades")
+
+        repository = self.app.extensions["trade_notification_repository"]
+        notifications = repository.load_trade_notifications(trade_id)
+        short_rule = next(item for item in notifications if item["type"] == "SHORT_STRIKE_PROXIMITY")
+        time_rule = next(item for item in notifications if item["type"] == "TIME_WINDOW")
+
+        self.assertTrue(short_rule["enabled"])
+        self.assertAlmostEqual(short_rule["threshold"], 7.5)
+        self.assertEqual(short_rule["description"], "Watch the short strike")
+        self.assertTrue(time_rule["enabled"])
+        self.assertAlmostEqual(time_rule["threshold"], 1.25)
+        self.assertEqual(time_rule["description"], "Final hour check")
 
     def test_manage_trades_send_close_to_journal_prefills_edit_trade_close_event(self):
         create_payload = {
@@ -781,7 +904,7 @@ class TradeRoutesTest(unittest.TestCase):
 
     def test_apollo_prefill_transfer_does_not_save_until_trade_is_submitted(self):
         candidate_payload = {
-            "system_version": "6.1",
+            "system_version": "6.1.1",
             "candidate_profile": "Aggressive",
             "expiration_date": "2026-04-06",
             "underlying_symbol": "SPX",
@@ -843,7 +966,7 @@ class TradeRoutesTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["system_name"], "Apollo")
         self.assertEqual(rows[0]["journal_name"], "Apollo Main")
-        self.assertEqual(rows[0]["system_version"], "6.1")
+        self.assertEqual(rows[0]["system_version"], "6.1.1")
         self.assertEqual(rows[0]["trade_mode"], "simulated")
         self.assertEqual(rows[0]["status"], "open")
         self.assertEqual(rows[0]["candidate_profile"], "Aggressive")

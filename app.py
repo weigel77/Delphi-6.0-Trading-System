@@ -39,6 +39,11 @@ from services.repositories.hosted_runtime_state_repository import SupabaseHosted
 from services.repositories.import_preview_repository import FileSystemImportPreviewRepository, ImportPreviewRepository
 from services.repositories.kairos_snapshot_repository import KairosSnapshotRepository
 from services.repositories.scenario_repository import SupabaseKairosScenarioRepository
+from services.repositories.trade_notification_repository import (
+    SQLiteTradeNotificationRepository,
+    SupabaseTradeNotificationRepository,
+    TradeNotificationRepository,
+)
 from services.repositories.trade_repository import TradeRepository
 from services.delphi4_sync_service import (
     SYNC_STATUS_OBJECT_TYPE,
@@ -79,6 +84,12 @@ from services.trade_store import (
     summarize_trade_close_events,
     normalize_trade_mode,
     normalize_system_name,
+    to_int,
+)
+from services.trade_notifications import (
+    SUPPORTED_NOTIFICATION_TYPES,
+    default_trade_notifications,
+    normalize_trade_notifications,
 )
 
 APP_CONFIG = get_app_config()
@@ -398,6 +409,9 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     performance_service = service_bundle.performance_service
     performance_engine = service_bundle.performance_engine
     open_trade_manager = service_bundle.open_trade_manager
+    trade_notification_repository = build_trade_notification_repository(app, trade_store)
+    trade_notification_repository.initialize()
+    open_trade_manager.trade_notification_repository = trade_notification_repository
     app.extensions["auth_composer"] = auth_composer
     app.extensions["host_infrastructure_assembler"] = host_infrastructure_assembler
     app.extensions["host_infrastructure"] = host_infrastructure
@@ -433,6 +447,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     app.extensions["performance_service"] = performance_service
     app.extensions["performance_engine"] = performance_engine
     app.extensions["open_trade_manager"] = open_trade_manager
+    app.extensions["trade_notification_repository"] = trade_notification_repository
     app.extensions["pushover_service"] = pushover_service
     app.extensions["oauth_session_keys"] = build_oauth_session_keys(app.config["OAUTH_SESSION_NAMESPACE"])
     runtime_components = service_bundle.runtime_components
@@ -1224,6 +1239,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
                 "real_status_update": url_for("hosted_open_trade_management_status_update", trade_mode="real"),
                 "simulated_status_update": url_for("hosted_open_trade_management_status_update", trade_mode="simulated"),
                 "prefill_close": "hosted_open_trade_management_prefill_close",
+                "save_trade_notifications": "hosted_open_trade_management_save_trade_notifications",
             },
             suppress_open_positions_copy=True,
             hosted_admin_error=admin_error,
@@ -1304,6 +1320,24 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             level="info",
         )
         return redirect(url_for("hosted_trade_edit", trade_mode=str(trade.get("trade_mode") or "real"), trade_id=trade_id, _anchor="position-management"))
+
+    @app.post("/hosted/manage-trades/<int:trade_id>/notifications")
+    def hosted_open_trade_management_save_trade_notifications(trade_id: int) -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        trade = get_trade_store(app).get_trade(trade_id)
+        if not trade:
+            set_status_message("Trade not found.", level="error")
+            return redirect(url_for("hosted_shell_manage_trades"))
+        notifications = coerce_trade_notification_input(request.form)
+        get_trade_notification_repository(app).save_trade_notifications(trade_id, notifications)
+        _clear_hosted_payload_cache("hosted:open-trades", app=app)
+        set_status_message(
+            f"Saved {sum(1 for item in notifications if item.get('enabled'))} trade notification rule(s) for trade #{trade.get('trade_number') or trade_id}.",
+            level="info",
+        )
+        return redirect(url_for("hosted_shell_manage_trades"))
 
     @app.post("/hosted/apollo/prefill-candidate")
     def hosted_apollo_prefill_candidate() -> Any:
@@ -2421,6 +2455,14 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             "open_trade_management.html",
             management_payload=management_payload,
             info_message=pop_status_message(),
+            management_actions_enabled=True,
+            management_action_urls={
+                "toggle_notifications": url_for("open_trade_management_toggle_notifications"),
+                "real_status_update": url_for("open_trade_management_status_update", trade_mode="real"),
+                "simulated_status_update": url_for("open_trade_management_status_update", trade_mode="simulated"),
+                "prefill_close": "open_trade_management_prefill_close",
+                "save_trade_notifications": "open_trade_management_save_trade_notifications",
+            },
         )
 
     @app.post("/management/open-trades/notifications-toggle")
@@ -2483,6 +2525,20 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             level="info",
         )
         return redirect(url_for("trade_edit", trade_mode=str(trade.get("trade_mode") or "real"), trade_id=trade_id, _anchor="position-management"))
+
+    @app.post("/management/open-trades/<int:trade_id>/notifications")
+    def open_trade_management_save_trade_notifications(trade_id: int) -> Any:
+        trade = trade_store.get_trade(trade_id)
+        if not trade:
+            set_status_message("Trade not found.", level="error")
+            return redirect(url_for("open_trade_management_page"))
+        notifications = coerce_trade_notification_input(request.form)
+        get_trade_notification_repository(app).save_trade_notifications(trade_id, notifications)
+        set_status_message(
+            f"Saved {sum(1 for item in notifications if item.get('enabled'))} trade notification rule(s) for trade #{trade.get('trade_number') or trade_id}.",
+            level="info",
+        )
+        return redirect(url_for("open_trade_management_page"))
 
     @app.get("/performance/data")
     def performance_dashboard_data():
@@ -3355,6 +3411,29 @@ def get_performance_service(app: Optional[Flask] = None) -> PerformanceDashboard
     return service
 
 
+def build_trade_notification_repository(app: Flask, trade_store: TradeRepository) -> TradeNotificationRepository:
+    if app.config.get("RUNTIME_TARGET") == "hosted":
+        context = app.extensions.get("supabase_context")
+        integration = app.extensions.get("supabase_integration")
+        if context is not None and getattr(context, "configured", False) and integration is not None:
+            return SupabaseTradeNotificationRepository(context=context, gateway=integration.create_table_gateway())
+        return SQLiteTradeNotificationRepository(Path(app.instance_path) / "trade_notifications.db")
+    return SQLiteTradeNotificationRepository(trade_store.database_path)
+
+
+def get_trade_notification_repository(app: Optional[Flask] = None) -> TradeNotificationRepository:
+    container = _resolve_flask_container(app)
+    repository = container.extensions.get("trade_notification_repository")
+    if repository is None:
+        repository = build_trade_notification_repository(container, get_trade_store(container))
+        repository.initialize()
+        container.extensions["trade_notification_repository"] = repository
+    manager = container.extensions.get("open_trade_manager")
+    if manager is not None and getattr(manager, "trade_notification_repository", None) is not repository:
+        manager.trade_notification_repository = repository
+    return repository
+
+
 def get_open_trade_manager(app: Optional[Flask] = None) -> OpenTradeManager:
     container = _resolve_flask_container(app)
     manager = container.extensions.get("open_trade_manager")
@@ -3364,6 +3443,9 @@ def get_open_trade_manager(app: Optional[Flask] = None) -> OpenTradeManager:
         container.extensions["open_trade_manager"] = manager
     if getattr(manager, "trade_store", None) is not trade_store:
         manager.trade_store = trade_store
+    repository = get_trade_notification_repository(container)
+    if getattr(manager, "trade_notification_repository", None) is not repository:
+        manager.trade_notification_repository = repository
     return manager
 
 
@@ -3962,6 +4044,22 @@ def coerce_trade_close_event_input(source: Any) -> Optional[list[Dict[str, Any]]
     return rows
 
 
+def coerce_trade_notification_input(source: Any) -> list[Dict[str, Any]]:
+    notifications = []
+    defaults_by_type = {item["type"]: item for item in default_trade_notifications()}
+    for notification_type in SUPPORTED_NOTIFICATION_TYPES:
+        default_row = defaults_by_type[notification_type]
+        notifications.append(
+            {
+                "type": notification_type,
+                "enabled": str(source.get(f"notification_enabled_{notification_type}") or "").strip().lower() in {"1", "true", "on", "yes"},
+                "threshold": source.get(f"notification_threshold_{notification_type}") or default_row.get("threshold"),
+                "description": source.get(f"notification_description_{notification_type}") or default_row.get("description"),
+            }
+        )
+    return normalize_trade_notifications(notifications)
+
+
 def merge_trade_form_values(base_values: Dict[str, Any], override_values: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(base_values)
     for key in TRADE_FORM_FIELDS:
@@ -4521,7 +4619,9 @@ def build_strike_pair_sort_value(trade: Dict[str, Any]) -> str:
 
 def derive_trade_result(trade: Dict[str, Any]) -> str:
     current_status = str(trade.get("derived_status_raw") or trade.get("status") or "").strip().lower()
-    if current_status == "reduced":
+    closed_contracts = to_int(trade.get("contracts_closed") if trade.get("contracts_closed") is not None else trade.get("closed_contracts")) or 0
+    remaining_contracts = to_int(trade.get("contracts_remaining") if trade.get("contracts_remaining") is not None else trade.get("remaining_contracts"))
+    if closed_contracts > 0 and remaining_contracts not in {None, 0}:
         return "Reduced"
     if current_status == "open":
         return "Open"
@@ -4539,9 +4639,11 @@ def derive_trade_result(trade: Dict[str, Any]) -> str:
 
 
 def build_trade_exit_display(trade: Dict[str, Any]) -> str:
+    closed_contracts = to_int(trade.get("contracts_closed") if trade.get("contracts_closed") is not None else trade.get("closed_contracts")) or 0
+    remaining_contracts = to_int(trade.get("contracts_remaining") if trade.get("contracts_remaining") is not None else trade.get("remaining_contracts"))
     status = str(trade.get("derived_status_raw") or trade.get("status") or "").strip().lower()
     weighted_exit = trade.get("weighted_exit_value") if trade.get("weighted_exit_value") is not None else trade.get("actual_exit_value")
-    if status == "reduced":
+    if closed_contracts > 0 and remaining_contracts not in {None, 0}:
         if weighted_exit is None:
             return "Partial"
         return f"Partial @ {format_value(weighted_exit)}"

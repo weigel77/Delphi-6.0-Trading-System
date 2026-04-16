@@ -22,9 +22,11 @@ from .repositories.management_state_repository import (
     SQLiteOpenTradeManagementStateRepository,
     build_management_state_payload,
 )
+from .repositories.trade_notification_repository import TradeNotificationRepository
 from .repositories.trade_repository import TradeRepository
 from .runtime.notifications import NotificationDelivery
 from .runtime.scheduler import RuntimeJobHandle, RuntimeScheduler, ThreadingTimerScheduler
+from .trade_notifications import evaluate_trade_notifications, normalize_trade_notifications
 from .trade_store import (
     current_timestamp,
     normalize_system_name,
@@ -82,6 +84,7 @@ class OpenTradeManager:
         config: AppConfig | None = None,
         now_provider: Callable[[], datetime] | None = None,
         state_repository: OpenTradeManagementStateRepository | None = None,
+        trade_notification_repository: TradeNotificationRepository | None = None,
         scheduler: RuntimeScheduler | None = None,
     ) -> None:
         self.config = config or get_app_config()
@@ -98,6 +101,7 @@ class OpenTradeManager:
         self.market_calendar_service = market_calendar_service or MarketCalendarService(self.config)
         self.database_path = Path(self.trade_store.database_path)
         self.state_repository = state_repository or SQLiteOpenTradeManagementStateRepository(self.database_path)
+        self.trade_notification_repository = trade_notification_repository
         self.scheduler = scheduler or ThreadingTimerScheduler()
         self.display_timezone = ZoneInfo(self.config.app_timezone)
         self.now_provider = now_provider or (lambda: datetime.now(self.display_timezone))
@@ -107,6 +111,8 @@ class OpenTradeManager:
 
     def initialize(self) -> None:
         self.state_repository.initialize()
+        if self.trade_notification_repository is not None:
+            self.trade_notification_repository.initialize()
 
     def start_background_monitoring(self) -> None:
         with self._monitor_lock:
@@ -158,6 +164,7 @@ class OpenTradeManager:
     def evaluate_open_trades(self, *, send_alerts: bool = False) -> Dict[str, Any]:
         now = self._now()
         open_trades = self._load_open_trades()
+        notifications_by_trade_id = self._load_trade_notifications(open_trades)
         alert_eligible_trades = [trade for trade in open_trades if str(trade.get("trade_mode") or "").strip().lower() == "real"]
         states_by_trade = self._load_management_states()
         runtime_settings = self._load_runtime_settings()
@@ -170,6 +177,20 @@ class OpenTradeManager:
         for trade in open_trades:
             previous_state = states_by_trade.get(int(trade.get("id") or 0), {})
             record = self._evaluate_trade(trade, shared_context, now)
+            notifications = list(notifications_by_trade_id.get(int(trade.get("id") or 0), normalize_trade_notifications([])))
+            triggered_notifications = evaluate_trade_notifications({**trade, "notifications": notifications}, record)
+            triggered_by_type = {item["type"]: item for item in triggered_notifications}
+            record["notifications"] = [
+                {
+                    **notification,
+                    "triggered": notification["type"] in triggered_by_type,
+                    "trigger_reason": (triggered_by_type.get(notification["type"]) or {}).get("reason", ""),
+                }
+                for notification in notifications
+            ]
+            record["active_notifications"] = [item for item in record["notifications"] if item.get("enabled")]
+            record["triggered_notifications"] = triggered_notifications
+            record["triggered_notification_count"] = len(triggered_notifications)
             alert_outcome = {"sent": False, "error": "", "priority": None, "alert_type": None, "sent_at": None}
             record["trade_notification_state"] = {
                 "last_status": self._coerce_text(trade.get("last_status"), fallback="—"),
@@ -747,6 +768,12 @@ class OpenTradeManager:
                 if str(trade.get("derived_status_raw") or trade.get("status") or "").strip().lower() in {"open", "reduced"}
             )
         return rows
+
+    def _load_trade_notifications(self, trades: List[Dict[str, Any]]) -> Dict[int, List[Dict[str, Any]]]:
+        if self.trade_notification_repository is None:
+            return {int(trade.get("id") or 0): normalize_trade_notifications([]) for trade in trades if int(trade.get("id") or 0) > 0}
+        trade_ids = [int(trade.get("id") or 0) for trade in trades if int(trade.get("id") or 0) > 0]
+        return self.trade_notification_repository.load_notifications_for_trade_ids(trade_ids)
 
     def _load_runtime_settings(self) -> Dict[str, Any]:
         return self.state_repository.load_runtime_settings()

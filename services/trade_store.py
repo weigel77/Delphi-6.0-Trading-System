@@ -1451,7 +1451,7 @@ def normalize_close_method(value: Any) -> str:
     text = str(value or "").strip().lower()
     if text == "reduce":
         return "Reduce"
-    if text == "close":
+    if text in {"close", "buy to close", "btc"}:
         return "Close"
     if text == "expire":
         return "Expire"
@@ -1509,9 +1509,7 @@ def normalize_trade_payload(
     if not normalized["journal_name"]:
         raise ValueError("Journal name is required.")
 
-    normalized["status"] = str(normalized.get("status") or "").strip().lower()
-    if normalized["status"] not in VALID_STATUSES:
-        raise ValueError("Status must be open, closed, expired, or cancelled.")
+    normalized["status"] = derive_trade_status(normalized, existing=existing)
 
     provided_expected_move_source = normalize_expected_move_source(combined.get("expected_move_source"))
     expected_move_metadata = resolve_trade_expected_move(
@@ -1601,12 +1599,15 @@ def calculate_trade_metrics(values: Dict[str, Any], distance_metadata: Optional[
                 entry_datetime = entry_datetime.replace(tzinfo=None)
         hours_held = (exit_datetime - entry_datetime).total_seconds() / 3600
 
-    win_loss_result = classify_closed_trade_outcome(
-        gross_pnl=gross_pnl,
-        max_theoretical_risk=max_risk,
-        explicit_result=values.get("win_loss_result") or values.get("result"),
-        close_reason=values.get("close_reason"),
-    )
+    derived_status = derive_trade_status(values)
+    win_loss_result = None
+    if derived_status in {"closed", "expired"}:
+        win_loss_result = classify_closed_trade_outcome(
+            gross_pnl=gross_pnl,
+            max_theoretical_risk=max_risk,
+            explicit_result=values.get("win_loss_result") or values.get("result"),
+            close_reason=values.get("close_reason"),
+        )
 
     return {
         "candidate_credit_estimate": credit_model.get("candidate_credit_estimate"),
@@ -1742,7 +1743,6 @@ def _normalize_credit_field_value(*, original_value: Optional[float], net_credit
 
 def summarize_trade_close_events(trade: Dict[str, Any], events: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     normalized_events = list(events or [])
-    stored_status = str(trade.get("status") or "open").strip().lower() or "open"
     original_contracts = to_int(trade.get("contracts")) or 0
     credit_model = resolve_trade_credit_model(trade)
     distance_metadata = resolve_trade_distance(trade)
@@ -1750,21 +1750,21 @@ def summarize_trade_close_events(trade: Dict[str, Any], events: Iterable[Dict[st
 
     if not normalized_events:
         base_metrics = calculate_trade_metrics(trade)
-        inferred_closed_contracts = original_contracts if stored_status in {"closed", "expired"} and original_contracts > 0 else 0
+        derived_status_raw = derive_trade_status(trade)
+        inferred_closed_contracts = original_contracts if derived_status_raw in {"closed", "expired"} and original_contracts > 0 else 0
         inferred_remaining_contracts = max(original_contracts - inferred_closed_contracts, 0) if original_contracts > 0 else None
-        if stored_status == "cancelled":
-            derived_status_raw = "cancelled"
+        if derived_status_raw == "cancelled":
             derived_status_label = "Cancelled"
+        elif derived_status_raw == "expired":
+            derived_status_label = "Expired"
         elif inferred_closed_contracts == 0:
-            derived_status_raw = "open"
             derived_status_label = "Open"
         else:
-            derived_status_raw = "closed"
             derived_status_label = "Closed"
-        win_loss_result = base_metrics.get("win_loss_result") if derived_status_raw == "closed" else None
+        win_loss_result = base_metrics.get("win_loss_result") if derived_status_raw in {"closed", "expired"} else None
         return {
             **base_metrics,
-            "status": derived_status_raw if derived_status_raw != "cancelled" else stored_status,
+            "status": derived_status_raw,
             "derived_status_raw": derived_status_raw,
             "derived_status_label": derived_status_label,
             "original_contracts": original_contracts,
@@ -1778,7 +1778,7 @@ def summarize_trade_close_events(trade: Dict[str, Any], events: Iterable[Dict[st
             "distance_display": distance_to_short,
             "distance_source": distance_metadata.get("source"),
             "distance_is_estimated": distance_metadata.get("estimated"),
-            "has_expire_event": stored_status == "expired",
+            "has_expire_event": derived_status_raw == "expired",
         }
 
     total_closed_contracts = 0
@@ -1796,8 +1796,8 @@ def summarize_trade_close_events(trade: Dict[str, Any], events: Iterable[Dict[st
     has_expire_event = any(str(event.get("event_type") or "").strip().lower() == "expire" for event in normalized_events)
     is_reduced = total_closed_contracts > 0 and remaining_contracts > 0
     is_closed = total_closed_contracts >= original_contracts > 0
-    derived_status_raw = "reduced" if is_reduced else "closed" if is_closed else "open"
-    stored_status = "closed" if is_closed else "open"
+    stored_status = "expired" if is_closed and has_expire_event else "closed" if is_closed else "open"
+    derived_status_raw = stored_status if is_closed else "open"
     weighted_exit_value = (total_close_cost / total_closed_contracts / 100) if total_closed_contracts > 0 else to_float(trade.get("actual_exit_value"))
 
     gross_pnl = None
@@ -1834,7 +1834,7 @@ def summarize_trade_close_events(trade: Dict[str, Any], events: Iterable[Dict[st
     return {
         "status": stored_status,
         "derived_status_raw": derived_status_raw,
-        "derived_status_label": "Reduced" if derived_status_raw == "reduced" else derived_status_raw.title(),
+        "derived_status_label": stored_status.title() if not is_reduced else "Open",
         "original_contracts": original_contracts,
         "closed_contracts": total_closed_contracts,
         "contracts_closed": total_closed_contracts,
@@ -1864,7 +1864,38 @@ def summarize_trade_close_events(trade: Dict[str, Any], events: Iterable[Dict[st
         "distance_source": distance_metadata.get("source"),
         "distance_is_estimated": distance_metadata.get("estimated"),
         "has_expire_event": has_expire_event,
+        "has_partial_close": is_reduced,
     }
+
+
+def derive_trade_status(values: Dict[str, Any], existing: Optional[Dict[str, Any]] = None) -> str:
+    close_method_value = values.get("close_method")
+    close_method = normalize_close_method(close_method_value) if close_method_value not in {None, ""} else None
+    contracts = to_int(values.get("contracts")) or 0
+    has_exit_evidence = _trade_has_exit_evidence(values, close_method=close_method)
+    existing_status = str((existing or {}).get("status") or values.get("status") or "").strip().lower()
+    if close_method == "Expire":
+        return "expired"
+    if existing_status == "cancelled" and not has_exit_evidence:
+        return "cancelled"
+    if contracts > 0 and has_exit_evidence:
+        return "closed"
+    return "open"
+
+
+def _trade_has_exit_evidence(values: Dict[str, Any], *, close_method: Optional[str] = None) -> bool:
+    normalized_close_method = close_method
+    if normalized_close_method is None:
+        close_method_value = values.get("close_method")
+        if close_method_value not in {None, ""}:
+            normalized_close_method = normalize_close_method(close_method_value)
+    return any(
+        (
+            parse_datetime_value(values.get("exit_datetime")) is not None,
+            to_float(values.get("actual_exit_value")) is not None,
+            normalized_close_method is not None,
+        )
+    )
 
 
 def calculate_trade_distance(values: Dict[str, Any]) -> Optional[float]:
