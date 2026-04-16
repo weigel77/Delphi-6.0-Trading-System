@@ -1,10 +1,10 @@
 # Hosted Changelog
 
-## Delphi 6.3 - 2026-04-16
+## Delphi 6.3.1 - 2026-04-16
 
-- Added a premium shared hosted login and welcome experience for Delphi 6.3.
-- Introduced post-login device launch routing so phone users enter the new mobile shell while desktop users stay on the preserved desktop shell.
-- Added a phone-only hosted mobile surface with Home, Runs, Trades, Journal, and More tabs backed by the existing hosted action contracts.
+- Moved hosted device routing to the pre-login entry flow so desktop and phone users reach dedicated login portals before authentication.
+- Added separate premium desktop and mobile Delphi portals while preserving the existing desktop post-login shell.
+- Kept the mobile hosted shell on the same auth, session, and persistent data truth as the desktop hosted branch.
 
 ## Delphi 6.0 - 2026-04-15
 

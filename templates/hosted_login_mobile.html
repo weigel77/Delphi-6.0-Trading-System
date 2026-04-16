@@ -6,7 +6,7 @@
     <title>{{ page_browser_title }} | {{ app_identity.display_name }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
-<body class="delphi-portal-body delphi-portal-body-desktop">
+<body class="delphi-portal-body delphi-portal-body-mobile">
     <div class="delphi-portal-atmosphere" aria-hidden="true">
         <div class="delphi-portal-grid"></div>
         <div class="delphi-portal-orbit delphi-portal-orbit-a"></div>
@@ -18,9 +18,9 @@
             <span></span><span></span><span></span><span></span><span></span><span></span>
         </div>
     </div>
-    <main class="delphi-portal-shell delphi-portal-shell-desktop">
-        <section class="delphi-portal-brand">
-            <div class="delphi-portal-emblem" aria-hidden="true">
+    <main class="delphi-portal-shell delphi-portal-shell-mobile">
+        <section class="delphi-portal-brand delphi-portal-brand-mobile">
+            <div class="delphi-portal-emblem delphi-portal-emblem-mobile" aria-hidden="true">
                 <span class="delphi-portal-emblem-ring"></span>
                 <span class="delphi-portal-emblem-outer"></span>
                 <span class="delphi-portal-emblem-triangle delphi-portal-emblem-triangle-top"></span>
@@ -32,29 +32,29 @@
             <h1 class="delphi-portal-wordmark">DELPHI</h1>
             <h2 class="delphi-portal-title">SPX Tactical Command System</h2>
             <p class="delphi-portal-copy">Structured market intelligence for disciplined options execution.</p>
-            <div class="delphi-portal-statusline">
-                <span>Desktop Delphi Portal</span>
+            <div class="delphi-portal-statusline delphi-portal-statusline-mobile">
+                <span>Mobile Delphi Portal</span>
                 <span>{{ app_identity.page_kicker }} | System Online</span>
             </div>
         </section>
 
-        <section class="delphi-portal-card delphi-portal-card-desktop">
+        <section class="delphi-portal-card delphi-portal-card-mobile">
             <div class="delphi-portal-card-header">
                 <p class="delphi-portal-card-kicker">{{ app_identity.version_label }}</p>
-                <h2>Desktop Access</h2>
-                <p>Enter the full Delphi command surface from the premium desktop portal.</p>
+                <h2>Mobile Access</h2>
+                <p>Sign in to the phone-first Delphi shell with the same hosted credentials and data truth.</p>
             </div>
 
-            <form method="post" action="{{ login_action_url }}" class="delphi-portal-form">
+            <form method="post" action="{{ login_action_url }}" class="delphi-portal-form delphi-portal-form-mobile">
                 <input type="hidden" name="next" value="{{ next_path }}">
-                <label class="delphi-portal-field" for="hosted-email">
+                <label class="delphi-portal-field" for="hosted-mobile-email">
                     <span>Email</span>
-                    <input id="hosted-email" name="email" type="email" value="{{ form_email }}" autocomplete="email" placeholder="jsiegel1@gmail.com" required>
+                    <input id="hosted-mobile-email" name="email" type="email" value="{{ form_email }}" autocomplete="email" placeholder="jsiegel1@gmail.com" required>
                 </label>
-                <label class="delphi-portal-field" for="hosted-password">
+                <label class="delphi-portal-field" for="hosted-mobile-password">
                     <span>Password</span>
                     <div class="delphi-portal-password-wrap">
-                        <input id="hosted-password" name="password" type="password" autocomplete="current-password" placeholder="Enter password" required>
+                        <input id="hosted-mobile-password" name="password" type="password" autocomplete="current-password" placeholder="Enter password" required>
                         <button type="button" class="delphi-portal-password-toggle" data-password-toggle aria-label="Show password">
                             <span class="delphi-portal-eye" aria-hidden="true"></span>
                         </button>
@@ -64,7 +64,7 @@
                     <div class="message message-warning hosted-shell-error-message">{{ error_message }}</div>
                 {% endif %}
                 <button type="submit" class="delphi-portal-submit">SIGN IN</button>
-                <div class="delphi-portal-footer">
+                <div class="delphi-portal-footer delphi-portal-footer-mobile">
                     <span>{{ app_identity.page_kicker }}</span>
                     <span>System Online</span>
                 </div>
@@ -75,7 +75,7 @@
     <script>
         (() => {
             const toggle = document.querySelector('[data-password-toggle]');
-            const input = document.getElementById('hosted-password');
+            const input = document.getElementById('hosted-mobile-password');
             if (!toggle || !input) {
                 return;
             }

@@ -9,6 +9,7 @@ import re
 import secrets
 import time
 import os
+import urllib.parse
 from pathlib import Path
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
@@ -107,6 +108,7 @@ LOCAL_DEV_HOSTS = {"127.0.0.1", "localhost"}
 HOSTED_SESSION_USER_ID_KEY = "hosted_user_id"
 HOSTED_SESSION_EMAIL_KEY = "hosted_user_email"
 HOSTED_SESSION_DISPLAY_NAME_KEY = "hosted_user_display_name"
+HOSTED_SESSION_DEVICE_BRANCH_KEY = "hosted_device_branch"
 HOSTED_LOCAL_BROWSER_SESSION_COOKIE = "delphi_hosted_local_session"
 HOSTED_PAYLOAD_CACHE_EXTENSION_KEY = "hosted_payload_cache"
 HOSTED_DELPHI4_SYNC_RESULT_KEY = "hosted_delphi4_sync_result"
@@ -668,18 +670,28 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         if app.config.get("RUNTIME_TARGET") != "hosted":
             abort(404)
         next_path = sanitize_hosted_next_path(request.values.get("next"))
+        return redirect(build_hosted_launch_url(next_path=next_path, view=request.values.get("view")))
+
+    @app.route("/hosted/login/<branch>", methods=["GET", "POST"])
+    def hosted_branch_login(branch: str) -> Any:
+        if app.config.get("RUNTIME_TARGET") != "hosted":
+            abort(404)
+        active_branch = resolve_hosted_device_branch(branch)
+        if active_branch != str(branch or "").strip().lower():
+            return redirect(url_for("hosted_branch_login", branch=active_branch, next=sanitize_hosted_next_path(request.values.get("next"))))
+
+        next_path = sanitize_hosted_next_path(request.values.get("next"))
+        remember_hosted_device_branch(active_branch)
+
         if request.method == "POST":
             email = str(request.form.get("email") or "").strip()
             password = str(request.form.get("password") or "")
             try:
-                session = get_hosted_session_authenticator(app).sign_in(email=email, password=password)
-                identity = get_private_access_gate(app).require_private_access(session.to_request_identity())
+                hosted_session = get_hosted_session_authenticator(app).sign_in(email=email, password=password)
+                identity = get_private_access_gate(app).require_private_access(hosted_session.to_request_identity())
             except AuthenticationRequiredError as exc:
-                return render_template(
-                    "hosted_login.html",
-                    page_browser_title="Hosted Login",
-                    page_heading=f"{HOSTED_APP_DISPLAY_NAME} Sign In",
-                    page_copy=f"Sign in with your hosted {HOSTED_APP_DISPLAY_NAME} credentials to access the browser shell.",
+                return render_hosted_login_page(
+                    branch=active_branch,
                     next_path=next_path,
                     form_email=email,
                     error_message=str(exc),
@@ -696,16 +708,17 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
                 browser_response = current_app.make_response((response, 403))
                 get_session_invalidator(app).invalidate_response(browser_response)
                 return browser_response
-            response = redirect(build_hosted_launch_url(next_path))
-            get_hosted_session_authenticator(app).establish_response_session(response, session)
+            response = redirect(build_hosted_branch_destination(active_branch, next_path=next_path))
+            get_hosted_session_authenticator(app).establish_response_session(response, hosted_session)
             remember_hosted_browser_session(identity)
+            remember_hosted_device_branch(active_branch)
             establish_hosted_browser_cache_session(identity, response, app=app)
-            current_app.logger.info("Hosted browser sign-in established for %s", identity.email)
+            current_app.logger.info("Hosted %s browser sign-in established for %s", active_branch, identity.email)
             return response
 
         try:
             require_hosted_private_access(app)
-            return redirect(build_hosted_launch_url(next_path))
+            return redirect(build_hosted_branch_destination(active_branch, next_path=next_path))
         except PrivateAccessDeniedError as exc:
             browser_response = current_app.make_response(
                 (
@@ -723,11 +736,8 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             get_session_invalidator(app).invalidate_response(browser_response)
             return browser_response
         except AuthenticationRequiredError:
-            return render_template(
-                "hosted_login.html",
-                page_browser_title="Hosted Login",
-                page_heading=f"{HOSTED_APP_DISPLAY_NAME} Sign In",
-                page_copy=f"Sign in with your hosted {HOSTED_APP_DISPLAY_NAME} credentials to access the browser shell.",
+            return render_hosted_login_page(
+                branch=active_branch,
                 next_path=next_path,
                 form_email="",
                 error_message="",
@@ -735,23 +745,60 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
     @app.route("/hosted/launch", methods=["GET"])
     def hosted_device_launch() -> Any:
-        identity, error_response = authorize_hosted_private_browser_request(app)
-        if error_response is not None:
-            return error_response
+        if app.config.get("RUNTIME_TARGET") != "hosted":
+            abort(404)
         next_path = sanitize_hosted_next_path(request.args.get("next"))
-        explicit_view = str(request.args.get("view") or "").strip().lower()
-        if explicit_view not in {"mobile", "desktop"}:
-            explicit_view = ""
+        explicit_view = normalize_hosted_device_branch(request.args.get("view"))
+        if explicit_view:
+            remember_hosted_device_branch(explicit_view)
+        preferred_view = explicit_view or get_hosted_device_branch(default="")
+
+        authenticated = False
+        identity: Optional[RequestIdentity] = None
+        try:
+            identity = require_hosted_private_access(app)
+            authenticated = True
+        except AuthenticationRequiredError:
+            identity = None
+        except PrivateAccessDeniedError as exc:
+            browser_response = current_app.make_response(
+                (
+                    render_template(
+                        "hosted_shell_access_error.html",
+                        page_browser_title="Hosted Access Restricted",
+                        page_heading="Hosted Access Restricted",
+                        page_copy=f"This hosted {HOSTED_APP_DISPLAY_NAME} shell is currently limited to the approved private-access allowlist.",
+                        error_code="private_access_denied",
+                        error_detail=str(exc),
+                    ),
+                    403,
+                )
+            )
+            get_session_invalidator(app).invalidate_response(browser_response)
+            return browser_response
+
+        desktop_target = (
+            build_hosted_branch_destination("desktop", next_path=next_path)
+            if authenticated
+            else build_hosted_login_url("desktop", next_path=next_path)
+        )
+        mobile_target = (
+            build_hosted_branch_destination("mobile", next_path=next_path)
+            if authenticated
+            else build_hosted_login_url("mobile", next_path=next_path)
+        )
         return render_template(
             "hosted_device_launch.html",
-            page_browser_title=f"{HOSTED_APP_DISPLAY_NAME} Launch",
-            desktop_target=next_path,
-            mobile_target=map_hosted_next_path_to_mobile_path(next_path),
+            page_browser_title=f"{HOSTED_APP_DISPLAY_NAME} Portal",
+            desktop_target=desktop_target,
+            mobile_target=mobile_target,
             explicit_view=explicit_view,
+            preferred_view=preferred_view,
+            authenticated=authenticated,
             mobile_breakpoint=HOSTED_MOBILE_PHONE_MAX_WIDTH + 1,
-            desktop_home_url=url_for("hosted_shell_home"),
-            mobile_home_url=url_for("hosted_mobile_home"),
-            **build_hosted_template_context(identity, app=app),
+            desktop_home_url=build_hosted_branch_destination("desktop", next_path=next_path),
+            mobile_home_url=build_hosted_branch_destination("mobile", next_path=next_path),
+            **(build_hosted_template_context(identity, app=app) if identity is not None else {}),
         )
 
     def render_hosted_mobile_shell(active_tab: str) -> Any:
@@ -842,7 +889,8 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     def hosted_browser_sign_out() -> Any:
         if app.config.get("RUNTIME_TARGET") != "hosted":
             abort(404)
-        response = redirect(url_for("hosted_login_entry"))
+        preferred_branch = get_hosted_device_branch(default="")
+        response = redirect(build_hosted_launch_url(view=preferred_branch))
         invalidate_hosted_browser_cache_session(response, app=app)
         clear_hosted_browser_session()
         get_session_invalidator(app).invalidate_response(response)
@@ -3029,7 +3077,7 @@ def authorize_hosted_private_browser_request(app: Optional[Flask] = None) -> tup
     try:
         return require_hosted_private_access(app), None
     except AuthenticationRequiredError:
-        return None, redirect(url_for("hosted_login_entry", next=build_hosted_browser_next_path()))
+        return None, redirect(build_hosted_launch_url(next_path=build_hosted_browser_next_path()))
     except PrivateAccessDeniedError as exc:
         return None, (
             render_template(
@@ -3359,6 +3407,55 @@ def build_delphi_route_map(*, hosted: bool = False) -> Dict[str, str]:
 
 HOSTED_MOBILE_PHONE_MAX_WIDTH = 767
 HOSTED_MOBILE_TABS = ("home", "runs", "trades", "journal", "more")
+HOSTED_DEVICE_BRANCHES = ("desktop", "mobile")
+
+
+def normalize_hosted_device_branch(value: Any) -> str:
+    candidate = str(value or "").strip().lower()
+    return candidate if candidate in HOSTED_DEVICE_BRANCHES else ""
+
+
+def resolve_hosted_device_branch(value: Any, *, default: str = "desktop") -> str:
+    return normalize_hosted_device_branch(value) or default
+
+
+def remember_hosted_device_branch(branch: Any) -> None:
+    if not has_request_context():
+        return
+    session[HOSTED_SESSION_DEVICE_BRANCH_KEY] = resolve_hosted_device_branch(branch)
+
+
+def get_hosted_device_branch(*, default: str = "desktop") -> str:
+    if not has_request_context():
+        return resolve_hosted_device_branch(default)
+    return resolve_hosted_device_branch(session.get(HOSTED_SESSION_DEVICE_BRANCH_KEY), default=default)
+
+
+def build_hosted_login_url(branch: Any, *, next_path: Any = None) -> str:
+    active_branch = resolve_hosted_device_branch(branch)
+    sanitized_next = sanitize_hosted_next_path(next_path)
+    default_home = url_for("hosted_shell_home") if has_request_context() else "/hosted"
+    if sanitized_next == default_home:
+        return url_for("hosted_branch_login", branch=active_branch) if has_request_context() else f"/hosted/login/{active_branch}"
+    return (
+        url_for("hosted_branch_login", branch=active_branch, next=sanitized_next)
+        if has_request_context()
+        else f"/hosted/login/{active_branch}?next={sanitized_next}"
+    )
+
+
+def map_hosted_next_path_to_desktop_path(next_path: Any) -> str:
+    candidate = sanitize_hosted_next_path(next_path)
+    normalized = candidate.split("#", 1)[0]
+    if normalized.startswith("/hosted/mobile/journal"):
+        return url_for("hosted_shell_journal", trade_mode="real") if has_request_context() else "/hosted/journal?trade_mode=real"
+    if normalized.startswith("/hosted/mobile/trades"):
+        return url_for("hosted_shell_manage_trades") if has_request_context() else "/hosted/manage-trades"
+    if normalized.startswith("/hosted/mobile/runs"):
+        return url_for("hosted_shell_apollo") if has_request_context() else "/hosted/apollo"
+    if normalized.startswith("/hosted/mobile/more") or normalized == "/hosted/mobile":
+        return url_for("hosted_shell_home") if has_request_context() else "/hosted"
+    return candidate
 
 
 def build_hosted_mobile_route_map() -> Dict[str, str]:
@@ -3377,12 +3474,52 @@ def resolve_hosted_mobile_tab(value: Any) -> str:
     return candidate if candidate in HOSTED_MOBILE_TABS else "home"
 
 
-def build_hosted_launch_url(next_path: Any = None) -> str:
+def build_hosted_launch_url(next_path: Any = None, view: Any = None) -> str:
     sanitized_next = sanitize_hosted_next_path(next_path)
     default_home = url_for("hosted_shell_home") if has_request_context() else "/hosted"
-    if sanitized_next == default_home:
-        return url_for("hosted_device_launch") if has_request_context() else "/hosted/launch"
-    return url_for("hosted_device_launch", next=sanitized_next) if has_request_context() else f"/hosted/launch?next={sanitized_next}"
+    normalized_view = normalize_hosted_device_branch(view)
+    route_params: Dict[str, Any] = {}
+    if sanitized_next != default_home:
+        route_params["next"] = sanitized_next
+    if normalized_view:
+        route_params["view"] = normalized_view
+    if has_request_context():
+        return url_for("hosted_device_launch", **route_params)
+    if not route_params:
+        return "/hosted/launch"
+    encoded = urllib.parse.urlencode(route_params)
+    return f"/hosted/launch?{encoded}"
+
+
+def build_hosted_branch_destination(branch: Any, *, next_path: Any = None) -> str:
+    active_branch = resolve_hosted_device_branch(branch)
+    if active_branch == "mobile":
+        return map_hosted_next_path_to_mobile_path(next_path)
+    return map_hosted_next_path_to_desktop_path(next_path)
+
+
+def render_hosted_login_page(
+    *,
+    branch: Any,
+    next_path: Any,
+    form_email: str,
+    error_message: str,
+) -> Any:
+    active_branch = resolve_hosted_device_branch(branch)
+    template_name = "hosted_login_mobile.html" if active_branch == "mobile" else "hosted_login.html"
+    return render_template(
+        template_name,
+        page_browser_title=f"{HOSTED_APP_DISPLAY_NAME} Sign In",
+        page_heading=f"{HOSTED_APP_DISPLAY_NAME} Sign In",
+        page_copy="Structured market intelligence for disciplined options execution.",
+        next_path=sanitize_hosted_next_path(next_path),
+        form_email=form_email,
+        error_message=error_message,
+        active_branch=active_branch,
+        login_action_url=url_for("hosted_branch_login", branch=active_branch),
+        alternate_branch=("mobile" if active_branch == "desktop" else "desktop"),
+        alternate_login_url=build_hosted_login_url("mobile" if active_branch == "desktop" else "desktop", next_path=next_path),
+    )
 
 
 def map_hosted_next_path_to_mobile_path(next_path: Any) -> str:
