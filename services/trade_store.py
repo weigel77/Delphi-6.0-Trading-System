@@ -17,7 +17,7 @@ VALID_STATUSES = {"open", "closed", "expired", "cancelled"}
 VALID_CLOSE_EVENT_TYPES = {"reduce", "close", "expire"}
 VALID_CLOSE_METHODS = {"Reduce", "Close", "Expire", "Manage Trade Prefill"}
 VALID_SYSTEM_NAMES = {"Apollo", "Kairos", "Aegis"}
-VALID_CANDIDATE_PROFILES = {"Legacy", "Aggressive", "Fortress", "Standard", "Prime"}
+VALID_CANDIDATE_PROFILES = {"Legacy", "Aggressive", "Fortress", "Standard", "Prime", "Subprime"}
 DEFAULT_SYSTEM_NAME = "Apollo"
 DEFAULT_CANDIDATE_PROFILE = "Legacy"
 CHICAGO_TZ = ZoneInfo("America/Chicago")
@@ -397,7 +397,7 @@ class TradeStore:
             next_number = max(next_number, normalized_trade_number + 1)
 
             normalized_system_name = normalize_system_name(row["system_name"])
-            normalized_profile = normalize_candidate_profile(row["candidate_profile"])
+            normalized_profile = resolve_trade_candidate_profile(trade_record)
             expected_move_metadata = resolve_trade_expected_move(
                 trade_record,
                 snapshot_lookup=self._lookup_expected_move_preview,
@@ -1402,17 +1402,49 @@ def normalize_candidate_profile(value: Any) -> str:
     for option in VALID_CANDIDATE_PROFILES:
         if option.lower() == lowered:
             return option
+    kairos_slot_profile = detect_kairos_slot_profile(text)
+    if kairos_slot_profile:
+        return kairos_slot_profile
     if "aggressive" in lowered:
         return "Aggressive"
     if "fortress" in lowered:
         return "Fortress"
     if "standard" in lowered:
         return "Standard"
+    if "subprime" in lowered:
+        return "Subprime"
     if "prime" in lowered:
         return "Prime"
     if "legacy" in lowered:
         return "Legacy"
     return DEFAULT_CANDIDATE_PROFILE
+
+
+def detect_kairos_slot_profile(value: Any) -> str:
+    lowered = str(value or "").strip().lower()
+    if not lowered:
+        return ""
+    if "best available" in lowered or "subprime" in lowered:
+        return "Subprime"
+    if "window open trade" in lowered or "window open" in lowered or "kairos window" in lowered or lowered == "prime":
+        return "Prime"
+    return ""
+
+
+def resolve_trade_candidate_profile(trade: Dict[str, Any]) -> str:
+    system_name = normalize_system_name(trade.get("system_name"))
+    if system_name == "Kairos":
+        for value in (
+            trade.get("candidate_profile"),
+            trade.get("pass_type"),
+            trade.get("notes_entry"),
+            trade.get("notes_exit"),
+            trade.get("close_reason"),
+        ):
+            detected = detect_kairos_slot_profile(value)
+            if detected:
+                return detected
+    return normalize_candidate_profile(trade.get("candidate_profile"))
 
 
 def normalize_close_method(value: Any) -> str:
@@ -1611,10 +1643,14 @@ def resolve_trade_credit_model(values: Dict[str, Any]) -> Dict[str, Any]:
 
     if _looks_like_net_credit_per_contract(explicit_net_credit, spread_width):
         net_credit_per_contract = explicit_net_credit
+        premium_per_contract = None
+        total_premium = None
         source = "net_credit_per_contract"
     else:
         raw_credit_value = first_float(actual_entry_credit, candidate_credit, legacy_credit_received)
         if raw_credit_value is not None:
+            premium_per_contract = None
+            total_premium = None
             if _looks_like_net_credit_per_contract(raw_credit_value, spread_width):
                 net_credit_per_contract = raw_credit_value
                 source = "per_contract_credit"

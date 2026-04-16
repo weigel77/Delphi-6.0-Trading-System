@@ -36,7 +36,7 @@ class ApolloService:
         self.candidate_service = ApolloCandidateService(self.config)
         self.display_timezone = ZoneInfo(self.config.app_timezone)
 
-    def run_precheck(self) -> Dict[str, Any]:
+    def run_precheck(self, *, force_refresh: bool = False) -> Dict[str, Any]:
         """Execute the first-stage Apollo workflow."""
         checked_at = datetime.now(self.display_timezone)
         reasons: List[str] = []
@@ -57,14 +57,19 @@ class ApolloService:
 
         spx_data = None
         vix_data = None
+        latest_snapshot_reader = (
+            self.market_data_service.get_fresh_latest_snapshot
+            if force_refresh and hasattr(self.market_data_service, "get_fresh_latest_snapshot")
+            else self.market_data_service.get_latest_snapshot
+        )
         try:
-            spx_data = self.market_data_service.get_latest_snapshot("^GSPC", query_type="apollo_latest_spx")
+            spx_data = latest_snapshot_reader("^GSPC", query_type="apollo_latest_spx")
             reasons.append("Live SPX data retrieved successfully.")
         except MarketDataError as exc:
             reasons.append(f"Unable to retrieve live SPX data: {exc}")
 
         try:
-            vix_data = self.market_data_service.get_latest_snapshot("^VIX", query_type="apollo_latest_vix")
+            vix_data = latest_snapshot_reader("^VIX", query_type="apollo_latest_vix")
             reasons.append("Live VIX data retrieved successfully.")
         except MarketDataError as exc:
             reasons.append(f"Unable to retrieve live VIX data: {exc}")

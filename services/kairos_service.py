@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
+import inspect
 import logging
 from math import ceil
 from pathlib import Path
@@ -10,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from enum import Enum
 from threading import RLock, Timer
+from time import monotonic
 from typing import Any, Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -18,12 +21,15 @@ import pandas as pd
 from config import AppConfig, get_app_config
 
 from .kairos_simulation_runner import KAIROS_RUNNER_SCENARIOS, SESSION_BAR_COUNT, KairosTapeBar, KairosTapeScenario, validate_tape_scenario
+from .kairos_scenario_repository import KairosScenarioRepository
 from .market_calendar_service import MarketCalendarService
 from .market_data import MarketDataAuthenticationError, MarketDataError, MarketDataReauthenticationRequired, MarketDataService
 from .options_chain_service import OptionsChainService
-from .kairos_scenario_repository import KairosScenarioRepository
 from .pushover_service import PushoverService
-from .trade_store import TradeStore
+from .repositories.scenario_repository import FileSystemKairosScenarioRepository, KairosBundleRepository
+from .repositories.trade_repository import TradeRepository
+from .runtime.notifications import NotificationDelivery, PushoverNotificationDelivery
+from .runtime.scheduler import RuntimeJobHandle, RuntimeScheduler, ThreadingTimerScheduler
 
 
 LOGGER = logging.getLogger(__name__)
@@ -503,6 +509,10 @@ class KairosService:
     KAIROS_CANDIDATE_MAX_CONTRACTS = 10
     DEFAULT_ROUTINE_LOSS_PERCENTAGE = 0.28
     DEFAULT_BLACK_SWAN_LOSS_PERCENTAGE = 0.60
+    KAIROS_SLOT_LABELS = {
+        "best-available": "Subprime",
+        "kairos-window": "Prime",
+    }
     KAIROS_CANDIDATE_PROFILES = (
         {
             "key": "standard",
@@ -543,6 +553,7 @@ class KairosService:
         "Failed",
     )
     MOMENTUM_STATUS_OPTIONS = ("Improving", "Steady", "Weakening", "Expired")
+    PERSISTED_SCENARIO_SYNC_INTERVAL_SECONDS = 30.0
     KAIROS_EXIT_GATES = (
         {
             "key": "structure-break",
@@ -650,24 +661,33 @@ class KairosService:
         *,
         config: AppConfig | None = None,
         replay_storage_dir: str | Path | None = None,
-        scenario_repository: KairosScenarioRepository | None = None,
-        trade_store: TradeStore | None = None,
+        scenario_repository: KairosBundleRepository | None = None,
+        trade_store: TradeRepository | None = None,
         scan_interval_seconds: int = LIVE_SCAN_INTERVAL_SECONDS,
         timer_factory: Callable[..., Timer] | None = None,
+        scheduler: RuntimeScheduler | None = None,
         now_provider: Callable[[], datetime] | None = None,
     ) -> None:
         self.config = config or get_app_config()
         self.display_timezone = ZoneInfo(self.config.app_timezone)
         self.market_data_service = market_data_service
         self.market_calendar_service = market_calendar_service or MarketCalendarService(self.config)
-        self.options_chain_service = options_chain_service or OptionsChainService(self.config)
+        shared_live_provider = getattr(self.market_data_service, "live_provider", None)
+        self.options_chain_service = options_chain_service or OptionsChainService(
+            self.config,
+            provider=shared_live_provider,
+        )
         self.pushover_service = pushover_service
+        self.notification_delivery = (
+            PushoverNotificationDelivery(pushover_service) if isinstance(pushover_service, PushoverService) else pushover_service
+        )
         self.live_scan_interval_seconds = scan_interval_seconds
         self.timer_factory = timer_factory or Timer
+        self.scheduler = scheduler
         self.now_provider = now_provider or (lambda: datetime.now(self.display_timezone))
         self._lock = RLock()
-        self._timer: Timer | None = None
-        self._runner_timer: Timer | None = None
+        self._timer: RuntimeJobHandle | None = None
+        self._runner_timer: RuntimeJobHandle | None = None
         self._session = KairosSessionRecord()
         self._runtime = KairosRuntimeConfig()
         self._runner = KairosRunnerState()
@@ -675,11 +695,19 @@ class KairosService:
         self._historical_replay_scenarios: Dict[str, KairosTapeScenario] = {}
         self._historical_replay_templates: Dict[str, KairosHistoricalReplayTemplate] = {}
         self._historical_replay_catalog: Dict[str, Dict[str, Any]] = {}
+        self._persisted_scenarios_dirty = False
+        self._persisted_scenarios_last_synced_at: float | None = None
+        self._cached_runner_candidate_context_key: tuple[Any, ...] | None = None
+        self._cached_runner_candidate_context: Dict[str, Any] | None = None
         self._live_best_trade_override_requested = False
         self._live_active_trade: KairosSimulatedTradeLockIn | None = None
         self._live_trade_history: List[KairosSimulatedTradeLockIn] = []
         self._replay_storage_dir = Path(replay_storage_dir) if replay_storage_dir is not None else None
-        self._scenario_repository = scenario_repository or (KairosScenarioRepository(self._replay_storage_dir) if self._replay_storage_dir is not None else None)
+        self._scenario_repository = scenario_repository or (
+            FileSystemKairosScenarioRepository(KairosScenarioRepository(self._replay_storage_dir))
+            if self._replay_storage_dir is not None
+            else None
+        )
         self.trade_store = trade_store
         self._load_persisted_kairos_scenarios()
 
@@ -723,9 +751,18 @@ class KairosService:
             if template.session_status not in {"complete", "recovered"}:
                 continue
             self._register_persisted_replay_scenario(scenario, template)
+        self._persisted_scenarios_dirty = False
+        self._persisted_scenarios_last_synced_at = monotonic()
 
-    def _sync_persisted_scenarios_locked(self) -> None:
+    def _sync_persisted_scenarios_locked(self, *, force: bool = False) -> None:
+        if not force and not self._persisted_scenarios_dirty and self._persisted_scenarios_last_synced_at is not None:
+            if (monotonic() - self._persisted_scenarios_last_synced_at) < self.PERSISTED_SCENARIO_SYNC_INTERVAL_SECONDS:
+                return
         self._load_persisted_kairos_scenarios()
+
+    def _mark_persisted_scenarios_dirty_locked(self) -> None:
+        self._persisted_scenarios_dirty = True
+        self._persisted_scenarios_last_synced_at = None
 
     def _normalize_persisted_live_tape_payload(self, payload: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
         template_payload = payload.get("template") or {}
@@ -777,7 +814,10 @@ class KairosService:
         repository = self._scenario_repository
         if repository is None:
             return False
-        return repository.save_bundle(scenario_key, payload)
+        saved = repository.save_bundle(scenario_key, payload)
+        if saved:
+            self._mark_persisted_scenarios_dirty_locked()
+        return saved
 
     def _build_replay_bundle_payload(
         self,
@@ -1063,7 +1103,7 @@ class KairosService:
 
             if self._session.session_date is None:
                 self._session.session_date = now.date()
-            self._session.status_note = "Best available live trade refreshed from the current Schwab chain snapshot."
+            self._session.status_note = "Subprime live trade refreshed from the current Schwab chain snapshot."
             return self._build_payload_locked(now)
 
     def open_live_trade(self, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -1355,7 +1395,7 @@ class KairosService:
             return self.run_scan_cycle(trigger_reason="simulation-config")
         return self.get_dashboard_payload()
 
-    def activate_for_today(self) -> Dict[str, Any]:
+    def activate_for_today(self, *, force_refresh: bool = False) -> Dict[str, Any]:
         """Activate Kairos for the current session and run the first scan."""
         if self._runtime.mode == KairosMode.LIVE:
             return self.initialize_live_kairos_on_page_load()
@@ -1374,11 +1414,11 @@ class KairosService:
                 status_note=(
                     "Kairos armed in Simulation Mode. Off-hours testing and accelerated scans are enabled."
                     if self._runtime.mode == KairosMode.SIMULATION
-                    else "Kairos armed in Live Mode. Best available live trade is refreshing now."
+                    else "Kairos armed in Live Mode. Subprime live trade is refreshing now."
                 ),
             )
 
-        return self.run_scan_cycle(trigger_reason=f"{slugify_label(self._runtime.mode.value)}-activation")
+        return self.run_scan_cycle(trigger_reason=f"{slugify_label(self._runtime.mode.value)}-activation", force_refresh=force_refresh)
 
     def stop_for_today(self) -> Dict[str, Any]:
         """Manually stop Kairos scanning for the current day."""
@@ -2089,7 +2129,7 @@ class KairosService:
             self._refresh_session_locked(now)
             return self._build_payload_locked(now)
 
-    def initialize_live_kairos_on_page_load(self) -> Dict[str, Any]:
+    def initialize_live_kairos_on_page_load(self, *, force_refresh: bool = False) -> Dict[str, Any]:
         """Initialize the Live Kairos workspace when the live page is opened."""
         now = self._now()
         with self._lock:
@@ -2127,19 +2167,19 @@ class KairosService:
                 self._session.stopped_manually = False
                 self._session.auto_ended = False
                 self._session.next_scan_at = None
-                self._session.status_note = "Live Kairos initialized from the workspace. Best available live trade is refreshing now."
+                self._session.status_note = "Live Kairos initialized from the workspace. Subprime live trade is refreshing now."
             else:
                 self._session = KairosSessionRecord(
                     session_date=now.date(),
                     activated_at=now,
                     current_state=KairosState.ACTIVATED.value,
                     armed_for_day=True,
-                    status_note="Live Kairos initialized from the workspace. Best available live trade is refreshing now.",
+                    status_note="Live Kairos initialized from the workspace. Subprime live trade is refreshing now.",
                 )
 
-        return self.run_scan_cycle(trigger_reason="live-workspace-open")
+        return self.run_scan_cycle(trigger_reason="live-workspace-open", force_refresh=force_refresh)
 
-    def run_scan_cycle(self, trigger_reason: str = "scheduled") -> Dict[str, Any]:
+    def run_scan_cycle(self, trigger_reason: str = "scheduled", *, force_refresh: bool = False) -> Dict[str, Any]:
         """Execute one Kairos scan cycle and reschedule when appropriate."""
         now = self._now()
         with self._lock:
@@ -2155,8 +2195,8 @@ class KairosService:
             self._session.scan_engine_running = True
             self._session.current_state = KairosState.SCANNING.value
 
-        live_scan_results = self._evaluate_live_intraday_backfill(now, trigger_reason=trigger_reason) if self._runtime.mode == KairosMode.LIVE else None
-        scan_result = (live_scan_results[-1] if live_scan_results else None) or self._evaluate_scan(now, trigger_reason=trigger_reason)
+        live_scan_results = self._run_live_intraday_backfill(now, trigger_reason=trigger_reason, force_refresh=force_refresh) if self._runtime.mode == KairosMode.LIVE else None
+        scan_result = (live_scan_results[-1] if live_scan_results else None) or self._evaluate_scan(now, trigger_reason=trigger_reason, force_refresh=force_refresh)
 
         with self._lock:
             if self._session.stopped_manually:
@@ -2198,9 +2238,21 @@ class KairosService:
 
             return self._build_payload_locked(self._now())
 
+    def _run_live_intraday_backfill(
+        self,
+        now: datetime,
+        *,
+        trigger_reason: str,
+        force_refresh: bool = False,
+    ) -> List[KairosScanResult] | None:
+        evaluator = self._evaluate_live_intraday_backfill
+        if "force_refresh" in inspect.signature(evaluator).parameters:
+            return evaluator(now, trigger_reason=trigger_reason, force_refresh=force_refresh)
+        return evaluator(now, trigger_reason=trigger_reason)
+
     def _send_window_open_notification_locked(self, now: datetime, scan_result: KairosScanResult) -> None:
         """Send one live Pushover notification when Kairos transitions into a tradable window with a ready candidate."""
-        if self.pushover_service is None:
+        if self.notification_delivery is None:
             return
         if not scan_result.is_window_open or not scan_result.state_transition.is_transition:
             return
@@ -2209,7 +2261,7 @@ class KairosService:
         if best_trade_payload.get("status") != "ready" or not best_trade_payload.get("candidate"):
             return
 
-        result = self.pushover_service.send_kairos_window_open_alert(
+        result = self.notification_delivery.send_kairos_window_open_alert(
             scan_result=scan_result,
             best_trade_payload=best_trade_payload,
             generated_at=now,
@@ -2217,7 +2269,7 @@ class KairosService:
         if not result.get("ok"):
             LOGGER.warning("Kairos window-open Pushover alert failed: %s", result.get("error") or "Unknown error")
 
-    def _evaluate_scan(self, now: datetime, *, trigger_reason: str) -> KairosScanResult:
+    def _evaluate_scan(self, now: datetime, *, trigger_reason: str, force_refresh: bool = False) -> KairosScanResult:
         session_status = self._get_effective_market_session_status(now)
         prior_state = self._derive_prior_state()
 
@@ -2233,13 +2285,25 @@ class KairosService:
             classification_note = "Simulation controls are driving the current Kairos scan; live market data is not being used."
             scenario_name = self._runtime.simulation_scenario_name
         else:
-            spx_snapshot = self._safe_latest_snapshot("^GSPC", query_type="kairos_latest_spx")
-            vix_snapshot = self._safe_latest_snapshot("^VIX", query_type="kairos_latest_vix")
+            spx_snapshot = self._safe_latest_snapshot("^GSPC", query_type="kairos_latest_spx", force_refresh=force_refresh)
+            vix_snapshot = self._safe_latest_snapshot("^VIX", query_type="kairos_latest_vix", force_refresh=force_refresh)
             spx_value = format_snapshot_value(spx_snapshot)
             vix_value = format_snapshot_value(vix_snapshot)
             vix_numeric = coerce_snapshot_number(vix_snapshot, "Latest Value")
-            spx_change = coerce_snapshot_number(spx_snapshot, "Daily Percent Change")
             vix_status = self._evaluate_vix_regime(vix_numeric)
+            live_bar_payloads = self._build_live_bar_map_bars_locked(query_type="kairos_latest_state")
+            if live_bar_payloads:
+                metrics = self._build_live_bar_metrics_from_payloads(live_bar_payloads, len(live_bar_payloads) - 1)
+                return self._build_live_intraday_scan_result(
+                    timestamp=now,
+                    scan_sequence_number=self._session.total_scans_completed + 1,
+                    metrics=metrics,
+                    vix_status=vix_status,
+                    vix_display=vix_value,
+                    prior_state=prior_state,
+                    trigger_reason=trigger_reason,
+                )
+            spx_change = coerce_snapshot_number(spx_snapshot, "Daily Percent Change")
             timing_status = self._evaluate_timing_status(now, session_status)
             structure_status = self._evaluate_structure_status(spx_change)
             momentum_status = self._evaluate_live_momentum_status(
@@ -2248,7 +2312,7 @@ class KairosService:
                 vix_status=vix_status,
                 prior_state=prior_state,
             )
-            classification_note = "Live Mode still uses provisional structure inference from SPX daily percent change until chart-derived Kairos structure is wired."
+            classification_note = "Live Mode is using daily SPX percent-change fallback because the intraday SPX tape was unavailable."
             scenario_name = None
 
         state = self._classify_overall_state(
@@ -2298,19 +2362,20 @@ class KairosService:
             classification_note=classification_note,
         )
 
-    def _evaluate_live_intraday_backfill(self, now: datetime, *, trigger_reason: str) -> List[KairosScanResult] | None:
+    def _evaluate_live_intraday_backfill(self, now: datetime, *, trigger_reason: str, force_refresh: bool = False) -> List[KairosScanResult] | None:
         if self._runtime.mode != KairosMode.LIVE:
             return None
 
         frame = self._load_live_spx_bar_frame_locked(
             session_date=self._session.session_date or now.date(),
             query_type="kairos_live_intraday_backfill",
+            force_refresh=force_refresh,
         )
         bar_payloads = self._build_live_bar_map_bars_from_frame(frame)
         if not bar_payloads:
             return None
 
-        vix_snapshot = self._safe_latest_snapshot("^VIX", query_type="kairos_live_intraday_backfill_vix")
+        vix_snapshot = self._safe_latest_snapshot("^VIX", query_type="kairos_live_intraday_backfill_vix", force_refresh=force_refresh)
         vix_numeric = coerce_snapshot_number(vix_snapshot, "Latest Value")
         vix_status = self._evaluate_vix_regime(vix_numeric)
         vix_display = format_number_value(vix_numeric) if vix_numeric is not None else "—"
@@ -2327,55 +2392,17 @@ class KairosService:
                 break
 
             metrics = self._build_live_bar_metrics_from_payloads(bar_payloads, index)
-            timing_status = self._evaluate_timing_status_for_time(timestamp.astimezone(self.display_timezone).time(), "Open")
-            structure_status = self._derive_runner_structure_status(metrics, timing_status)
-            momentum_status = self._derive_runner_momentum_status(metrics, timing_status, structure_status)
-            state = self._classify_overall_state(
-                session_status="Open",
+            scan_result = self._build_live_intraday_scan_result(
+                timestamp=timestamp,
+                scan_sequence_number=index + 1,
+                metrics=metrics,
                 vix_status=vix_status,
-                timing_status=timing_status,
-                structure_status=structure_status,
-                momentum_status=momentum_status,
+                vix_display=vix_display,
                 prior_state=prior_state,
+                trigger_reason=trigger_reason,
             )
-            summary_text = self._build_summary_text(state)
-            transition = self._build_state_transition(prior_state, state)
-            results.append(
-                KairosScanResult(
-                    timestamp=timestamp,
-                    scan_sequence_number=index + 1,
-                    mode=KairosMode.LIVE.value,
-                    kairos_state=state,
-                    prior_kairos_state=prior_state,
-                    vix_status=vix_status,
-                    timing_status=timing_status,
-                    structure_status=structure_status,
-                    momentum_status=momentum_status,
-                    readiness_state=state,
-                    summary_text=summary_text,
-                    reasons=self._build_reasons(
-                        mode=KairosMode.LIVE,
-                        session_status="Open",
-                        vix_status=vix_status,
-                        timing_status=timing_status,
-                        structure_status=structure_status,
-                        momentum_status=momentum_status,
-                        vix_value=vix_display,
-                        scenario_name=None,
-                    ),
-                    state_transition=transition,
-                    is_window_open=state == KairosState.WINDOW_OPEN.value,
-                    is_window_closing=state == KairosState.WINDOW_CLOSING.value,
-                    is_expired=state == KairosState.EXPIRED.value,
-                    trigger_reason=trigger_reason,
-                    market_session_status="Open",
-                    spx_value=format_number_value(metrics.get("current_close")),
-                    vix_value=vix_display,
-                    simulation_scenario_name=None,
-                    classification_note="Live intraday scan log is backfilled from the currently loaded same-day SPX session tape using the Kairos simulator-style grading path.",
-                )
-            )
-            prior_state = state
+            results.append(scan_result)
+            prior_state = scan_result.kairos_state
 
         return results or None
 
@@ -2448,10 +2475,7 @@ class KairosService:
         if self._runner.status == KairosRunnerStatus.RUNNING or not self._session.armed_for_day or self._session.next_scan_at is None:
             return
         delay_seconds = max(0.0, (self._session.next_scan_at - self._now()).total_seconds())
-        timer = self.timer_factory(delay_seconds, self._scheduled_scan_callback)
-        timer.daemon = True
-        timer.start()
-        self._timer = timer
+        self._timer = self._runtime_scheduler().schedule(delay_seconds, self._scheduled_scan_callback, daemon=True)
 
     def _schedule_next_runner_step_locked(self) -> None:
         self._cancel_runner_timer_locked()
@@ -2460,10 +2484,14 @@ class KairosService:
         scenario = self._current_runner_scenario_locked()
         if scenario is None or self._runner.current_bar_index >= len(scenario.bars) - 1:
             return
-        timer = self.timer_factory(self.RUNNER_TICK_INTERVAL_SECONDS, self._scheduled_runner_callback)
-        timer.daemon = True
-        timer.start()
-        self._runner_timer = timer
+        self._runner_timer = self._runtime_scheduler().schedule(
+            self.RUNNER_TICK_INTERVAL_SECONDS,
+            self._scheduled_runner_callback,
+            daemon=True,
+        )
+
+    def _runtime_scheduler(self) -> RuntimeScheduler:
+        return self.scheduler or ThreadingTimerScheduler(self.timer_factory)
 
     def _scheduled_scan_callback(self) -> None:
         self.run_scan_cycle(trigger_reason="scheduled")
@@ -3676,9 +3704,106 @@ class KairosService:
             return "Weakening"
         return "Steady"
 
-    def _safe_latest_snapshot(self, ticker: str, *, query_type: str) -> Dict[str, Any] | None:
+    def _classify_live_intraday_state(
+        self,
+        *,
+        session_status: str,
+        vix_status: str,
+        timing_status: str,
+        structure_status: str,
+        momentum_status: str,
+        prior_state: Optional[str],
+    ) -> str:
+        previously_active = prior_state in self.ACTIVE_STATES
+        if session_status != "Open" or timing_status == "Closed":
+            return KairosState.NOT_ELIGIBLE.value if not previously_active else KairosState.EXPIRED.value
+        if structure_status == "Chop / Unclear":
+            return KairosState.NOT_ELIGIBLE.value
+        if structure_status == "Failed":
+            return KairosState.EXPIRED.value if previously_active else KairosState.NOT_ELIGIBLE.value
+        if momentum_status == "Expired":
+            return KairosState.EXPIRED.value if previously_active else KairosState.NOT_ELIGIBLE.value
+        if timing_status == "Late":
+            return KairosState.WINDOW_CLOSING.value
+        if structure_status == "Weakening" or momentum_status == "Weakening":
+            return KairosState.WINDOW_CLOSING.value if previously_active else KairosState.SETUP_FORMING.value
+        if timing_status == "Locked":
+            return KairosState.SETUP_FORMING.value if structure_status in {"Bullish Confirmation", "Developing"} else KairosState.NOT_ELIGIBLE.value
+        if structure_status == "Bullish Confirmation" and momentum_status in {"Improving", "Steady"}:
+            return KairosState.WINDOW_OPEN.value
+        if structure_status in {"Bullish Confirmation", "Developing"}:
+            return KairosState.SETUP_FORMING.value
+        return KairosState.NOT_ELIGIBLE.value
+
+    def _build_live_intraday_scan_result(
+        self,
+        *,
+        timestamp: datetime,
+        scan_sequence_number: int,
+        metrics: Dict[str, Any],
+        vix_status: str,
+        vix_display: str,
+        prior_state: Optional[str],
+        trigger_reason: str,
+    ) -> KairosScanResult:
+        timing_status = self._evaluate_timing_status_for_time(timestamp.astimezone(self.display_timezone).time(), "Open")
+        structure_status = self._derive_runner_structure_status(metrics, timing_status)
+        momentum_status = self._derive_runner_momentum_status(metrics, timing_status, structure_status)
+        state = self._classify_live_intraday_state(
+            session_status="Open",
+            vix_status=vix_status,
+            timing_status=timing_status,
+            structure_status=structure_status,
+            momentum_status=momentum_status,
+            prior_state=prior_state,
+        )
+        transition = self._build_state_transition(prior_state, state)
+        current_close = self._coerce_float(metrics.get("current_close"), fallback=0.0)
+        return KairosScanResult(
+            timestamp=timestamp,
+            scan_sequence_number=scan_sequence_number,
+            mode=KairosMode.LIVE.value,
+            kairos_state=state,
+            prior_kairos_state=prior_state,
+            vix_status=vix_status,
+            timing_status=timing_status,
+            structure_status=structure_status,
+            momentum_status=momentum_status,
+            readiness_state=state,
+            summary_text=self._build_summary_text(state),
+            reasons=self._build_reasons(
+                mode=KairosMode.LIVE,
+                session_status="Open",
+                vix_status=vix_status,
+                timing_status=timing_status,
+                structure_status=structure_status,
+                momentum_status=momentum_status,
+                vix_value=vix_display,
+                scenario_name=None,
+            ),
+            state_transition=transition,
+            is_window_open=state == KairosState.WINDOW_OPEN.value,
+            is_window_closing=state == KairosState.WINDOW_CLOSING.value,
+            is_expired=state == KairosState.EXPIRED.value,
+            trigger_reason=trigger_reason,
+            market_session_status="Open",
+            spx_value=format_number_value(current_close),
+            vix_value=vix_display,
+            simulation_scenario_name=None,
+            classification_note=(
+                "Live intraday scan log and current Kairos state are derived from the same SPX tape, VWAP posture, "
+                "and shared live structure/window classifier."
+            ),
+        )
+
+    def _safe_latest_snapshot(self, ticker: str, *, query_type: str, force_refresh: bool = False) -> Dict[str, Any] | None:
         try:
-            return self.market_data_service.get_latest_snapshot(ticker, query_type=query_type)
+            reader = (
+                self.market_data_service.get_fresh_latest_snapshot
+                if force_refresh and hasattr(self.market_data_service, "get_fresh_latest_snapshot")
+                else self.market_data_service.get_latest_snapshot
+            )
+            return reader(ticker, query_type=query_type)
         except (AttributeError, MarketDataError):
             return None
         except Exception:
@@ -3687,8 +3812,6 @@ class KairosService:
     def _evaluate_vix_regime(self, vix_value: float | None) -> str:
         if vix_value is None:
             return "Unavailable"
-        if vix_value < 18:
-            return "Not Eligible"
         if vix_value < 19:
             return "Caution"
         return "Favorable"
@@ -4166,7 +4289,7 @@ class KairosService:
                 **hidden_payload,
                 "visible": True,
                 "status": "unavailable",
-                "message": "Best available live trade is unavailable because current SPX or VIX data could not be resolved.",
+                "message": "Subprime live trade is unavailable because current SPX or VIX data could not be resolved.",
                 "caution_text": "Live market data is incomplete, so no sane override candidate can be produced right now.",
             }
         if not candidate_context.get("chain_success", True):
@@ -4174,7 +4297,7 @@ class KairosService:
                 **hidden_payload,
                 "visible": True,
                 "status": "unavailable",
-                "message": candidate_context.get("chain_message") or "Best available live trade is unavailable because the same-day Schwab option chain could not be resolved.",
+                "message": candidate_context.get("chain_message") or "Subprime live trade is unavailable because the same-day Schwab option chain could not be resolved.",
                 "caution_text": "Live Kairos will not fall back to estimated chains when Schwab same-day contracts are unavailable.",
                 "summary_chips": self._build_trade_candidate_summary_chips(candidate_context),
                 "chain_source_label": candidate_context.get("chain_source_label") or "Schwab (Unavailable)",
@@ -4203,9 +4326,9 @@ class KairosService:
             "visible": True,
             "status": "ready" if is_fully_valid else "stand-aside",
             "message": (
-                "Best available live trade reflects the strongest currently modeled Kairos spread from the live Schwab chain."
+                "Subprime reflects the strongest currently modeled Kairos spread from the live Schwab chain."
                 if is_fully_valid
-                else "Best available live trade ranked the strongest currently available live Schwab chain candidate, but it still falls short of Kairos minimum standards."
+                else "Subprime ranked the strongest currently available live Schwab chain candidate, but it still falls short of Kairos minimum standards."
             ),
             "caution_text": caution_text,
             "summary_chips": self._build_trade_candidate_summary_chips(candidate_context),
@@ -4256,24 +4379,24 @@ class KairosService:
 
         best_card = self._build_live_candidate_card_payload_locked(
             slot_key="best-available",
-            slot_label="Best Available",
+            slot_label=self.KAIROS_SLOT_LABELS["best-available"],
             card_note="Strongest currently modeled same-day live-chain candidate.",
             candidate=best_candidate,
             candidate_context=candidate_context,
             latest_scan=latest_scan,
-            fallback_message=(live_best_trade.get("message") if isinstance(live_best_trade, dict) else "No best-available Kairos trade is ready right now."),
+            fallback_message=(live_best_trade.get("message") if isinstance(live_best_trade, dict) else "No Subprime Kairos trade is ready right now."),
         )
         window_card = self._build_live_candidate_card_payload_locked(
             slot_key="kairos-window",
-            slot_label="Kairos Window",
+            slot_label=self.KAIROS_SLOT_LABELS["kairos-window"],
             card_note="Candidate that fully aligns with the current Kairos window state.",
             candidate=window_candidate,
             candidate_context=candidate_context,
             latest_scan=latest_scan,
             fallback_message=(
-                "Current state is not Window Open, so no valid Kairos Window trade is active."
+                "Current state is not Window Open, so no valid Prime trade is active."
                 if latest_scan is None or latest_scan.kairos_state != KairosState.WINDOW_OPEN.value
-                else "Current live-chain candidates do not fully qualify for the Kairos Window slot."
+                else "Current live-chain candidates do not fully qualify for the Prime slot."
             ),
         )
         return {
@@ -4413,7 +4536,7 @@ class KairosService:
             "system_name": "Kairos",
             "journal_name": "Horme",
             "system_version": "4.0",
-            "candidate_profile": str(candidate.get("mode_label") or slot_label or "Kairos").strip() or "Kairos",
+            "candidate_profile": str(slot_label or candidate.get("mode_label") or "Kairos").strip() or "Kairos",
             "expiration_date": session_date,
             "underlying_symbol": "SPX",
             "spx_at_entry": round(spot_value, 2) if spot_value > 0 else "",
@@ -4572,7 +4695,7 @@ class KairosService:
             )
         barrier_markers.append(
             {
-                "label": "Kairos Window Boundary",
+                "label": "Prime Boundary",
                 "short_label": "Window Boundary",
                 "value_label": format_number_value(window_boundary),
                 "css_class": "apollo-risk-reference-danger",
@@ -4652,7 +4775,7 @@ class KairosService:
 
         if markers:
             positioning_note = (
-                "Best Available and Kairos Window are plotted against the current spot, the same-day ATM expected-move barrier, "
+                "Subprime and Prime are plotted against the current spot, the same-day ATM expected-move barrier, "
                 f"and the hybrid boundary ({standard_boundary['boundary_binding_source']})."
             )
         else:
@@ -4820,7 +4943,18 @@ class KairosService:
             return None
         current_bar = metrics["current_bar"]
         scenario = self._current_runner_scenario_locked()
-        return self._enrich_candidate_context_profiles(self._build_trade_candidate_context_from_inputs_locked(
+        cache_key = (
+            self._runner.scenario_key,
+            self._runner.current_bar_index,
+            self._runner.pause_reason,
+            True,
+            latest_scan.kairos_state if latest_scan is not None else None,
+            latest_scan.structure_status if latest_scan is not None else None,
+            latest_scan.vix_status if latest_scan is not None else None,
+        )
+        if self._cached_runner_candidate_context_key == cache_key and self._cached_runner_candidate_context is not None:
+            return deepcopy(self._cached_runner_candidate_context)
+        context = self._enrich_candidate_context_profiles(self._build_trade_candidate_context_from_inputs_locked(
             event_id=f"{self._build_runner_trade_candidate_event_id_locked_for_bar(self._runner.pause_bar_number or max(0, self._runner.current_bar_index + 1))}:override",
             scenario_name=scenario.name if scenario is not None else "No scenario selected",
             simulated_time_label=format_simulated_clock(current_bar.simulated_time),
@@ -4830,6 +4964,9 @@ class KairosService:
             decision_time=current_bar.simulated_time,
             is_override=True,
         ), latest_scan=latest_scan)
+        self._cached_runner_candidate_context_key = cache_key
+        self._cached_runner_candidate_context = deepcopy(context)
+        return context
 
     def _build_runner_trade_candidate_context_locked(
         self,
@@ -4841,7 +4978,18 @@ class KairosService:
 
         scenario = self._current_runner_scenario_locked()
         current_bar = metrics["current_bar"]
-        return self._enrich_candidate_context_profiles(self._build_trade_candidate_context_from_inputs_locked(
+        cache_key = (
+            self._runner.scenario_key,
+            self._runner.current_bar_index,
+            self._runner.pause_reason,
+            False,
+            latest_scan.kairos_state,
+            latest_scan.structure_status,
+            latest_scan.vix_status,
+        )
+        if self._cached_runner_candidate_context_key == cache_key and self._cached_runner_candidate_context is not None:
+            return deepcopy(self._cached_runner_candidate_context)
+        context = self._enrich_candidate_context_profiles(self._build_trade_candidate_context_from_inputs_locked(
             event_id=self._build_runner_trade_candidate_event_id_locked(),
             scenario_name=scenario.name if scenario is not None else "No scenario selected",
             simulated_time_label=format_simulated_clock(current_bar.simulated_time),
@@ -4851,6 +4999,9 @@ class KairosService:
             decision_time=current_bar.simulated_time,
             is_override=False,
         ), latest_scan=latest_scan)
+        self._cached_runner_candidate_context_key = cache_key
+        self._cached_runner_candidate_context = deepcopy(context)
+        return context
 
     def _build_live_trade_candidate_context_locked(
         self,
@@ -6234,11 +6385,21 @@ class KairosService:
             "note": note,
         }
 
-    def _load_live_spx_bar_frame_locked(self, *, session_date: date | None = None, query_type: str = "kairos_live_bar_map") -> pd.DataFrame | None:
+    def _load_live_spx_bar_frame_locked(self, *, session_date: date | None = None, query_type: str = "kairos_live_bar_map", force_refresh: bool = False) -> pd.DataFrame | None:
         try:
+            same_day_reader = (
+                self.market_data_service.get_fresh_same_day_intraday_candles
+                if force_refresh and hasattr(self.market_data_service, "get_fresh_same_day_intraday_candles")
+                else self.market_data_service.get_same_day_intraday_candles
+            )
+            dated_reader = (
+                self.market_data_service.get_fresh_intraday_candles_for_date
+                if force_refresh and hasattr(self.market_data_service, "get_fresh_intraday_candles_for_date")
+                else self.market_data_service.get_intraday_candles_for_date
+            )
             if session_date is None or session_date == self._now().date():
-                return self.market_data_service.get_same_day_intraday_candles("^GSPC", interval_minutes=1, query_type=query_type)
-            return self.market_data_service.get_intraday_candles_for_date(
+                return same_day_reader("^GSPC", interval_minutes=1, query_type=query_type)
+            return dated_reader(
                 "^GSPC",
                 target_date=session_date,
                 interval_minutes=1,

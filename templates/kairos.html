@@ -1,3 +1,7 @@
+{% set is_sim_workspace = workspace == 'sim' %}
+{% set workspace_title = 'Kairos Sim' if is_sim_workspace else 'Kairos Live' %}
+{% set live_page_url = url_for('hosted_kairos_live_page') if hosted_mode else url_for('kairos_live_page') %}
+{% set sim_page_url = url_for('hosted_kairos_sim_page') if hosted_mode else url_for('kairos_sim_page') %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -16,27 +20,25 @@
     {% set live_trade_manager = kairos_payload.live_trade_manager if kairos_payload.live_trade_manager is defined else {} %}
     {% set live_workspace = kairos_payload.live_workspace if kairos_payload.live_workspace is defined else {} %}
     {% set bar_map = kairos_payload.bar_map %}
-    {% set is_sim_workspace = workspace == 'sim' %}
-    {% set workspace_title = 'Kairos Sim' if is_sim_workspace else 'Kairos Live' %}
     {% set workspace_copy = 'Full simulation lab for deterministic session replay, candidate testing, and end-of-day settlement analysis.' if is_sim_workspace else 'Operator console for live intraday timing surveillance, watchtower status, and session-aware scan cadence.' %}
-    {% set status_url = url_for('kairos_sim_status') if is_sim_workspace else url_for('kairos_live_status') %}
-    {% set stop_url = url_for('kairos_sim_stop') if is_sim_workspace else url_for('kairos_live_stop') %}
-    {% set configure_url = url_for('kairos_sim_configure') if is_sim_workspace else url_for('kairos_live_configure') %}
-    {% set runner_start_url = url_for('kairos_sim_runner_start') if is_sim_workspace else url_for('kairos_live_runner_start') %}
-    {% set runner_pause_url = url_for('kairos_sim_runner_pause') if is_sim_workspace else url_for('kairos_live_runner_pause') %}
-    {% set runner_resume_url = url_for('kairos_sim_runner_resume') if is_sim_workspace else url_for('kairos_live_runner_resume') %}
-    {% set runner_restart_url = url_for('kairos_sim_runner_restart') if is_sim_workspace else url_for('kairos_live_runner_restart') %}
-    {% set runner_candidate_select_url = url_for('kairos_sim_runner_candidate_select') if is_sim_workspace else url_for('kairos_live_runner_candidate_select') %}
-    {% set runner_candidate_take_url = url_for('kairos_sim_runner_candidate_take') if is_sim_workspace else url_for('kairos_live_runner_candidate_take') %}
-    {% set runner_candidate_ignore_url = url_for('kairos_sim_runner_candidate_ignore') if is_sim_workspace else url_for('kairos_live_runner_candidate_ignore') %}
-    {% set runner_exit_accept_url = url_for('kairos_sim_runner_exit_accept') if is_sim_workspace else '' %}
-    {% set runner_exit_skip_url = url_for('kairos_sim_runner_exit_skip') if is_sim_workspace else '' %}
-    {% set runner_end_url = url_for('kairos_sim_runner_end') if is_sim_workspace else url_for('kairos_live_runner_end') %}
-    {% set historical_replay_import_url = url_for('kairos_sim_replay_import') if is_sim_workspace else '' %}
-    {% set best_trade_url = url_for('kairos_sim_runner_best_trade') if is_sim_workspace else url_for('kairos_live_best_trade') %}
-    {% set live_trade_open_url = url_for('kairos_live_trade_open') if not is_sim_workspace else '' %}
-    {% set live_trade_exit_accept_url = url_for('kairos_live_trade_exit_accept') if not is_sim_workspace else '' %}
-    {% set live_trade_exit_skip_url = url_for('kairos_live_trade_exit_skip') if not is_sim_workspace else '' %}
+    {% set status_url = url_for('hosted_kairos_workspace_action', workspace=workspace, action_path='status') if hosted_mode else (url_for('kairos_sim_status') if is_sim_workspace else url_for('kairos_live_status')) %}
+    {% set stop_url = url_for('hosted_kairos_workspace_action', workspace=workspace, action_path='stop') if hosted_mode else (url_for('kairos_sim_stop') if is_sim_workspace else url_for('kairos_live_stop')) %}
+    {% set configure_url = url_for('hosted_kairos_workspace_action', workspace=workspace, action_path='configure') if hosted_mode else (url_for('kairos_sim_configure') if is_sim_workspace else url_for('kairos_live_configure')) %}
+    {% set runner_start_url = url_for('hosted_kairos_workspace_action', workspace=workspace, action_path='runner/start') if hosted_mode else (url_for('kairos_sim_runner_start') if is_sim_workspace else url_for('kairos_live_runner_start')) %}
+    {% set runner_pause_url = url_for('hosted_kairos_workspace_action', workspace=workspace, action_path='runner/pause') if hosted_mode else (url_for('kairos_sim_runner_pause') if is_sim_workspace else url_for('kairos_live_runner_pause')) %}
+    {% set runner_resume_url = url_for('hosted_kairos_workspace_action', workspace=workspace, action_path='runner/resume') if hosted_mode else (url_for('kairos_sim_runner_resume') if is_sim_workspace else url_for('kairos_live_runner_resume')) %}
+    {% set runner_restart_url = url_for('hosted_kairos_workspace_action', workspace=workspace, action_path='runner/restart') if hosted_mode else (url_for('kairos_sim_runner_restart') if is_sim_workspace else url_for('kairos_live_runner_restart')) %}
+    {% set runner_candidate_select_url = url_for('hosted_kairos_workspace_action', workspace=workspace, action_path='runner/candidate/select') if hosted_mode else (url_for('kairos_sim_runner_candidate_select') if is_sim_workspace else url_for('kairos_live_runner_candidate_select')) %}
+    {% set runner_candidate_take_url = url_for('hosted_kairos_workspace_action', workspace=workspace, action_path='runner/candidate/take') if hosted_mode else (url_for('kairos_sim_runner_candidate_take') if is_sim_workspace else url_for('kairos_live_runner_candidate_take')) %}
+    {% set runner_candidate_ignore_url = url_for('hosted_kairos_workspace_action', workspace=workspace, action_path='runner/candidate/ignore') if hosted_mode else (url_for('kairos_sim_runner_candidate_ignore') if is_sim_workspace else url_for('kairos_live_runner_candidate_ignore')) %}
+    {% set runner_exit_accept_url = url_for('hosted_kairos_workspace_action', workspace=workspace, action_path='runner/exit/accept') if hosted_mode and is_sim_workspace else (url_for('kairos_sim_runner_exit_accept') if is_sim_workspace else '') %}
+    {% set runner_exit_skip_url = url_for('hosted_kairos_workspace_action', workspace=workspace, action_path='runner/exit/skip') if hosted_mode and is_sim_workspace else (url_for('kairos_sim_runner_exit_skip') if is_sim_workspace else '') %}
+    {% set runner_end_url = url_for('hosted_kairos_workspace_action', workspace=workspace, action_path='runner/end') if hosted_mode else (url_for('kairos_sim_runner_end') if is_sim_workspace else url_for('kairos_live_runner_end')) %}
+    {% set historical_replay_import_url = url_for('hosted_kairos_workspace_action', workspace=workspace, action_path='replay/import') if hosted_mode and is_sim_workspace else (url_for('kairos_sim_replay_import') if is_sim_workspace else '') %}
+    {% set best_trade_url = url_for('hosted_kairos_workspace_action', workspace=workspace, action_path='best-trade') if hosted_mode else (url_for('kairos_sim_runner_best_trade') if is_sim_workspace else url_for('kairos_live_best_trade')) %}
+    {% set live_trade_open_url = url_for('hosted_kairos_workspace_action', workspace=workspace, action_path='trade/open') if hosted_mode and not is_sim_workspace else (url_for('kairos_live_trade_open') if not is_sim_workspace else '') %}
+    {% set live_trade_exit_accept_url = url_for('hosted_kairos_workspace_action', workspace=workspace, action_path='trade/exit/accept') if hosted_mode and not is_sim_workspace else (url_for('kairos_live_trade_exit_accept') if not is_sim_workspace else '') %}
+    {% set live_trade_exit_skip_url = url_for('hosted_kairos_workspace_action', workspace=workspace, action_path='trade/exit/skip') if hosted_mode and not is_sim_workspace else (url_for('kairos_live_trade_exit_skip') if not is_sim_workspace else '') %}
     <main class="page-shell kairos-shell">
         <section class="hero-card delphi-header-card delphi-shared-header delphi-header-card-subpage">
             {{ render_delphi_header(
@@ -93,8 +95,8 @@
                 {% endif %}
                 <div class="kairos-subtitle-meta{% if is_sim_workspace %} kairos-subtitle-meta-sim{% endif %}">
                     <div class="kairos-mode-toggle" role="group" aria-label="Kairos workspace switcher">
-                        <a href="{{ url_for('kairos_live_page') }}" class="kairos-mode-button{% if not is_sim_workspace %} kairos-mode-button-active{% endif %}">Kairos Live</a>
-                        <a href="{{ url_for('kairos_sim_page') }}" class="kairos-mode-button{% if is_sim_workspace %} kairos-mode-button-active{% endif %}">Kairos Sim</a>
+                        <a href="{{ live_page_url }}" class="kairos-mode-button{% if not is_sim_workspace %} kairos-mode-button-active{% endif %}">Kairos Live</a>
+                        <a href="{{ sim_page_url }}" class="kairos-mode-button{% if is_sim_workspace %} kairos-mode-button-active{% endif %}">Kairos Sim</a>
                     </div>
                     <div class="kairos-pill-row kairos-subtitle-pill-row">
                         {% if is_sim_workspace %}
@@ -175,7 +177,7 @@
             <div class="result-header">
                 <div>
                     <h2>Kairos Credit Map</h2>
-                    <p class="subtle">Apollo-style spread positioning map for the current Best Available and Kairos Window live-chain candidates.</p>
+                    <p class="subtle">{{ 'Apollo-style spread positioning map for the current Best Available and Window Open live-chain candidates.' if hosted_mode else 'Apollo-style spread positioning map for the current Subprime and Prime live-chain candidates.' }}</p>
                 </div>
             </div>
 
@@ -192,7 +194,7 @@
                         <div class="apollo-risk-legend">
                             <span class="apollo-risk-legend-item"><span class="apollo-risk-legend-swatch apollo-risk-legend-swatch-spot"></span>Spot</span>
                             <span class="apollo-risk-legend-item"><span class="apollo-risk-legend-swatch apollo-risk-legend-swatch-em"></span>Expected Move Barrier</span>
-                            <span class="apollo-risk-legend-item"><span class="apollo-risk-legend-swatch apollo-risk-legend-swatch-barrier"></span>Kairos Window Boundary</span>
+                            <span class="apollo-risk-legend-item"><span class="apollo-risk-legend-swatch apollo-risk-legend-swatch-barrier"></span>Prime Boundary</span>
                             <span class="apollo-risk-legend-item"><span class="apollo-risk-legend-swatch-fill"></span>Candidate spread width</span>
                         </div>
                         <svg viewBox="0 0 1020 220" role="img" aria-label="Kairos live credit map" class="apollo-risk-svg">
@@ -245,11 +247,11 @@
             <div class="result-header">
                 <div>
                     <h2>Kairos Candidates</h2>
-                    <p class="subtle">Exactly two Apollo-style live cards: Best Available for the strongest advisory setup and Kairos Window for the fully qualified active window trade.</p>
+                    <p class="subtle">{{ 'Exactly two Apollo-style live cards: Best Available for the strongest advisory setup and Window Open for the fully qualified active window trade.' if hosted_mode else 'Exactly two Apollo-style live cards: Subprime for the strongest advisory setup and Prime for the fully qualified active window trade.' }}</p>
                 </div>
             </div>
 
-            <div id="kairos-live-candidate-cards" class="kairos-live-candidate-grid" data-kairos-prefill-url="{{ url_for('kairos_prefill_candidate') }}">
+            <div id="kairos-live-candidate-cards" class="kairos-live-candidate-grid" data-kairos-prefill-url="{{ url_for('hosted_kairos_prefill_candidate') if hosted_mode else url_for('kairos_prefill_candidate') }}">
                 {% for item in live_workspace.candidate_cards or [] %}
                     <article class="apollo-candidate-card apollo-candidate-card-{{ item.mode_key }} kairos-live-candidate-card{% if not item.available %} kairos-live-candidate-card-unavailable{% endif %}">
                         <div class="apollo-candidate-header">
@@ -329,14 +331,14 @@
 
                         <div class="actions kairos-runner-candidate-action-row">
                             {% if item.prefill_enabled and item.prefill_fields %}
-                                <form method="post" action="{{ url_for('kairos_prefill_candidate') }}" class="apollo-transfer-form" onsubmit="this.querySelectorAll('button').forEach((button) => { button.disabled = true; });">
+                                <form method="post" action="{{ url_for('hosted_kairos_prefill_candidate') if hosted_mode else url_for('kairos_prefill_candidate') }}" class="apollo-transfer-form" onsubmit="this.querySelectorAll('button').forEach((button) => { button.disabled = true; });">
                                     <input type="hidden" name="target_mode" value="real">
                                     {% for key, value in item.prefill_fields.items() %}
                                         <input type="hidden" name="{{ key }}" value="{{ value }}">
                                     {% endfor %}
                                     <button type="submit">Send to Real Trades</button>
                                 </form>
-                                <form method="post" action="{{ url_for('kairos_prefill_candidate') }}" class="apollo-transfer-form" onsubmit="this.querySelectorAll('button').forEach((button) => { button.disabled = true; });">
+                                <form method="post" action="{{ url_for('hosted_kairos_prefill_candidate') if hosted_mode else url_for('kairos_prefill_candidate') }}" class="apollo-transfer-form" onsubmit="this.querySelectorAll('button').forEach((button) => { button.disabled = true; });">
                                     <input type="hidden" name="target_mode" value="simulated">
                                     {% for key, value in item.prefill_fields.items() %}
                                         <input type="hidden" name="{{ key }}" value="{{ value }}">
@@ -855,6 +857,7 @@
         let kairosStatusPoll = null;
         let kairosPollIntervalMs = 5000;
         let kairosCountdownTimer = null;
+        let kairosRunnerRequestInFlight = false;
 
         function readKairosPayload() {
             try {
@@ -898,6 +901,53 @@
                 .replaceAll("'", '&#39;');
         }
 
+        function mergeKairosPayload(nextPayload) {
+            if (!nextPayload || typeof nextPayload !== 'object') {
+                return kairosPayload;
+            }
+            if (nextPayload.partial_response !== 'runner') {
+                return nextPayload;
+            }
+            return {
+                ...kairosPayload,
+                ...nextPayload,
+                simulation_controls: nextPayload.simulation_controls || kairosPayload.simulation_controls,
+                live_workspace: nextPayload.live_workspace || kairosPayload.live_workspace,
+                live_trade_manager: nextPayload.live_trade_manager || kairosPayload.live_trade_manager,
+                best_trade_override: nextPayload.best_trade_override || kairosPayload.best_trade_override,
+                placeholder_logic_note: nextPayload.placeholder_logic_note || kairosPayload.placeholder_logic_note,
+            };
+        }
+
+        function setButtonBusy(button, busyText) {
+            if (!button) {
+                return;
+            }
+            if (!button.dataset.originalText) {
+                button.dataset.originalText = button.textContent || '';
+            }
+            button.disabled = true;
+            button.textContent = busyText || 'Working...';
+            button.setAttribute('aria-busy', 'true');
+        }
+
+        function clearButtonBusy(button) {
+            if (!button) {
+                return;
+            }
+            if (button.dataset.originalText) {
+                button.textContent = button.dataset.originalText;
+            }
+            button.removeAttribute('aria-busy');
+        }
+
+        function buildRunnerResponseUrl(url) {
+            if (!url) {
+                return url;
+            }
+            return `${url}${url.includes('?') ? '&' : '?'}response=runner`;
+        }
+
         function setPill(id, text, stateKey) {
             const element = document.getElementById(id);
             if (!element) {
@@ -939,7 +989,7 @@
                     <div class="apollo-risk-legend">
                         <span class="apollo-risk-legend-item"><span class="apollo-risk-legend-swatch apollo-risk-legend-swatch-spot"></span>Spot</span>
                         <span class="apollo-risk-legend-item"><span class="apollo-risk-legend-swatch apollo-risk-legend-swatch-em"></span>Expected Move Barrier</span>
-                        <span class="apollo-risk-legend-item"><span class="apollo-risk-legend-swatch apollo-risk-legend-swatch-barrier"></span>Kairos Window Boundary</span>
+                        <span class="apollo-risk-legend-item"><span class="apollo-risk-legend-swatch apollo-risk-legend-swatch-barrier"></span>Prime Boundary</span>
                         <span class="apollo-risk-legend-item"><span class="apollo-risk-legend-swatch-fill"></span>Candidate spread width</span>
                     </div>
                     <svg viewBox="0 0 1020 220" role="img" aria-label="Kairos live credit map" class="apollo-risk-svg">
@@ -1951,6 +2001,9 @@
         }
 
         async function fetchKairosStatus() {
+            if (kairosRunnerRequestInFlight) {
+                return;
+            }
             try {
                 const response = await fetch('{{ status_url }}', { headers: { 'Accept': 'application/json' } });
                 if (!response.ok) {
@@ -1984,13 +2037,16 @@
             }
         }
 
-        async function postKairosRunner(url, payload = null, button = null) {
-            if (button) {
-                button.disabled = true;
+        async function postKairosRunner(url, payload = null, button = null, busyText = 'Working...', pendingNote = 'Working...') {
+            if (kairosRunnerRequestInFlight) {
+                return;
             }
+            kairosRunnerRequestInFlight = true;
+            setButtonBusy(button, busyText);
+            setText('kairos-control-note', pendingNote);
             let succeeded = false;
             try {
-                const response = await fetch(url, {
+                const response = await fetch(buildRunnerResponseUrl(url), {
                     method: 'POST',
                     headers: payload ? {
                         'Accept': 'application/json',
@@ -2001,11 +2057,13 @@
                 if (!response.ok) {
                     throw new Error('Kairos runner action failed.');
                 }
-                renderKairos(await response.json());
+                renderKairos(mergeKairosPayload(await response.json()));
                 succeeded = true;
             } catch (error) {
                 setText('kairos-control-note', error.message || 'Kairos runner action failed.');
             } finally {
+                clearButtonBusy(button);
+                kairosRunnerRequestInFlight = false;
                 if (button && !succeeded) {
                     button.disabled = false;
                 }
@@ -2172,26 +2230,26 @@
             kairosRunnerSelectedScenarioDirty = false;
             postKairosRunner('{{ runner_start_url }}', { scenario_key: kairosRunnerSelectedScenario, pause_events: collectRunnerPauseEvents() }, kairosRunnerStartButton);
         });
-        kairosRunnerPauseButton?.addEventListener('click', () => postKairosRunner('{{ runner_pause_url }}', null, kairosRunnerPauseButton));
-        kairosRunnerResumeButton?.addEventListener('click', () => postKairosRunner('{{ runner_resume_url }}', null, kairosRunnerResumeButton));
-        kairosRunnerResumeIgnoreButton?.addEventListener('click', () => postKairosRunner('{{ runner_resume_url }}', { ignore_successive_condition: true }, kairosRunnerResumeIgnoreButton));
-        kairosRunnerBestTradeButton?.addEventListener('click', () => postKairosRunner('{{ best_trade_url }}', null, kairosRunnerBestTradeButton));
+        kairosRunnerPauseButton?.addEventListener('click', () => postKairosRunner('{{ runner_pause_url }}', null, kairosRunnerPauseButton, 'Pausing...', 'Pausing replay...'));
+        kairosRunnerResumeButton?.addEventListener('click', () => postKairosRunner('{{ runner_resume_url }}', null, kairosRunnerResumeButton, 'Resuming...', 'Resuming replay...'));
+        kairosRunnerResumeIgnoreButton?.addEventListener('click', () => postKairosRunner('{{ runner_resume_url }}', { ignore_successive_condition: true }, kairosRunnerResumeIgnoreButton, 'Resuming...', 'Resuming replay and suppressing repeated pause conditions...'));
+        kairosRunnerBestTradeButton?.addEventListener('click', () => postKairosRunner('{{ best_trade_url }}', null, kairosRunnerBestTradeButton, 'Working...', 'Evaluating best trade at the current paused bar...'));
         kairosRunnerCandidateTakeButton?.addEventListener('click', () => {
             const profileKey = kairosPayload.simulation_runner?.trade_candidate_card?.selected_profile_key || '';
-            postKairosRunner('{{ runner_candidate_take_url }}', { profile_key: profileKey }, kairosRunnerCandidateTakeButton);
+            postKairosRunner('{{ runner_candidate_take_url }}', { profile_key: profileKey }, kairosRunnerCandidateTakeButton, 'Taking...', 'Locking in the selected simulated trade...');
         });
-        kairosRunnerCandidateIgnoreButton?.addEventListener('click', () => postKairosRunner('{{ runner_candidate_ignore_url }}', null, kairosRunnerCandidateIgnoreButton));
-        kairosRunnerCandidateResumeButton?.addEventListener('click', () => postKairosRunner('{{ runner_resume_url }}', { ignore_successive_condition: true }, kairosRunnerCandidateResumeButton));
-        kairosRunnerExitAcceptButton?.addEventListener('click', () => postKairosRunner('{{ runner_exit_accept_url }}', null, kairosRunnerExitAcceptButton));
-        kairosRunnerExitSkipButton?.addEventListener('click', () => postKairosRunner('{{ runner_exit_skip_url }}', null, kairosRunnerExitSkipButton));
+        kairosRunnerCandidateIgnoreButton?.addEventListener('click', () => postKairosRunner('{{ runner_candidate_ignore_url }}', null, kairosRunnerCandidateIgnoreButton, 'Ignoring...', 'Ignoring candidate set and continuing replay...'));
+        kairosRunnerCandidateResumeButton?.addEventListener('click', () => postKairosRunner('{{ runner_resume_url }}', { ignore_successive_condition: true }, kairosRunnerCandidateResumeButton, 'Resuming...', 'Continuing replay without taking a trade...'));
+        kairosRunnerExitAcceptButton?.addEventListener('click', () => postKairosRunner('{{ runner_exit_accept_url }}', null, kairosRunnerExitAcceptButton, 'Closing...', 'Applying simulated exit and updating runner state...'));
+        kairosRunnerExitSkipButton?.addEventListener('click', () => postKairosRunner('{{ runner_exit_skip_url }}', null, kairosRunnerExitSkipButton, 'Skipping...', 'Skipping exit gate and continuing replay...'));
         kairosRunnerRestartButton?.addEventListener('click', () => {
             setKairosBarMapAutoFollow(true);
             kairosRunnerPauseEventFiltersDirty = false;
             kairosRunnerSelectedScenario = kairosRunnerScenario?.value || kairosRunnerSelectedScenario || kairosPayload.simulation_runner?.scenario_key;
             kairosRunnerSelectedScenarioDirty = false;
-            postKairosRunner('{{ runner_restart_url }}', { scenario_key: kairosRunnerSelectedScenario || kairosPayload.simulation_runner?.scenario_key, pause_events: collectRunnerPauseEvents() }, kairosRunnerRestartButton);
+            postKairosRunner('{{ runner_restart_url }}', { scenario_key: kairosRunnerSelectedScenario || kairosPayload.simulation_runner?.scenario_key, pause_events: collectRunnerPauseEvents() }, kairosRunnerRestartButton, 'Restarting...', 'Restarting replay from the selected tape...');
         });
-        kairosRunnerEndButton?.addEventListener('click', () => postKairosRunner('{{ runner_end_url }}', null, kairosRunnerEndButton));
+        kairosRunnerEndButton?.addEventListener('click', () => postKairosRunner('{{ runner_end_url }}', null, kairosRunnerEndButton, 'Ending...', 'Ending replay and finalizing simulator state...'));
 
         renderKairos(readKairosPayload());
         startKairosPolling();

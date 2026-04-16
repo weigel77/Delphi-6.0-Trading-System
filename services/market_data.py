@@ -14,6 +14,7 @@ from config import AppConfig, get_app_config
 from .cache_service import CacheEntry, CacheService
 from .calculations import add_daily_change_columns, calculate_percent_change, calculate_point_change
 from .provider_factory import ProviderFactory
+from .runtime.provider_composition import LocalProviderComposer, ProviderComposer
 from .providers.base_provider import (
     ProviderAuthRequiredError,
     ProviderConfigurationError,
@@ -50,13 +51,15 @@ class MarketDataService:
         cache_service: Optional[CacheService] = None,
         provider: Any = None,
         historical_providers: Optional[Dict[str, Any]] = None,
+        provider_composer: ProviderComposer | None = None,
         config: Optional[AppConfig] = None,
     ) -> None:
         self.config = config or get_app_config()
+        self.provider_composer = provider_composer or LocalProviderComposer(self.config)
         timezone_name = display_timezone or self.config.app_timezone
         self.display_timezone = ZoneInfo(timezone_name)
         self.cache_service = cache_service or CacheService()
-        self.live_provider = provider or ProviderFactory.create_live_provider(self.config)
+        self.live_provider = provider or ProviderFactory.create_live_provider(self.config, provider_composer=self.provider_composer)
         if historical_providers is not None:
             self.historical_providers = historical_providers
         elif provider is not None:
@@ -65,7 +68,7 @@ class MarketDataService:
                 "^GSPC": provider,
             }
         else:
-            self.historical_providers = ProviderFactory.create_historical_providers(self.config)
+            self.historical_providers = ProviderFactory.create_historical_providers(self.config, provider_composer=self.provider_composer)
         self.provider = self.live_provider
 
     def get_latest_snapshot(self, ticker: str, query_type: str = "latest") -> Dict[str, Any]:
@@ -82,6 +85,10 @@ class MarketDataService:
             fetcher=lambda: self._build_latest_snapshot(ticker),
             provider=provider,
         )
+
+    def get_fresh_latest_snapshot(self, ticker: str, query_type: str = "latest") -> Dict[str, Any]:
+        """Force a fresh market snapshot by bypassing the short-lived cache key."""
+        return self.get_latest_snapshot(ticker, query_type=f"{query_type}:fresh:{self._current_time().isoformat()}")
 
     def get_history_with_changes(self, ticker: str, start_date: date, end_date: date, query_type: str = "history") -> pd.DataFrame:
         """Return daily history for a date range, including change columns."""
@@ -155,6 +162,19 @@ class MarketDataService:
             provider=provider,
         )
 
+    def get_fresh_same_day_intraday_candles(
+        self,
+        ticker: str,
+        interval_minutes: int = 5,
+        query_type: str = "intraday",
+    ) -> pd.DataFrame:
+        """Force a fresh same-day intraday request by bypassing the short-lived cache key."""
+        return self.get_same_day_intraday_candles(
+            ticker,
+            interval_minutes=interval_minutes,
+            query_type=f"{query_type}:fresh:{self._current_time().isoformat()}",
+        )
+
     def get_intraday_candles_for_date(
         self,
         ticker: str,
@@ -180,6 +200,21 @@ class MarketDataService:
                 interval_minutes=interval_minutes,
             ),
             provider=provider,
+        )
+
+    def get_fresh_intraday_candles_for_date(
+        self,
+        ticker: str,
+        target_date: date,
+        interval_minutes: int = 5,
+        query_type: str = "intraday_date",
+    ) -> pd.DataFrame:
+        """Force a fresh dated intraday request by bypassing the short-lived cache key."""
+        return self.get_intraday_candles_for_date(
+            ticker,
+            target_date=target_date,
+            interval_minutes=interval_minutes,
+            query_type=f"{query_type}:fresh:{self._current_time().isoformat()}",
         )
 
     @staticmethod

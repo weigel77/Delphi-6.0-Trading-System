@@ -12,6 +12,7 @@ from services.trade_store import (
     EXPECTED_MOVE_SOURCE_ORIGINAL,
     EXPECTED_MOVE_SOURCE_RECOVERED_CANDIDATE,
     TradeStore,
+    resolve_trade_credit_model,
     resolve_trade_distance,
     resolve_trade_expected_move,
 )
@@ -162,6 +163,24 @@ class TradeStoreDistanceTest(unittest.TestCase):
             self.assertAlmostEqual(updated_trade["expected_move_calibrated"], 54.32, places=2)
             self.assertAlmostEqual(updated_trade["expected_move_used"], 54.32, places=2)
             self.assertEqual(updated_trade["expected_move_confidence"], "low")
+
+    def test_resolve_trade_credit_model_recomputes_hidden_credit_totals_when_entry_credit_changes(self):
+        credit_model = resolve_trade_credit_model(
+            {
+                "contracts": "2",
+                "spread_width": "5",
+                "actual_entry_credit": "1.74",
+                "premium_per_contract": "173.00",
+                "total_premium": "346.00",
+                "max_theoretical_risk": "654.00",
+            }
+        )
+
+        self.assertEqual(credit_model["source"], "per_contract_credit")
+        self.assertAlmostEqual(credit_model["net_credit_per_contract"], 1.74)
+        self.assertAlmostEqual(credit_model["premium_per_contract"], 174.0)
+        self.assertAlmostEqual(credit_model["total_premium"], 348.0)
+        self.assertAlmostEqual(credit_model["max_theoretical_risk"], 652.0)
 
 
 if __name__ == "__main__":

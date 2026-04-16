@@ -8,8 +8,10 @@ from typing import Any, Dict, List
 from config import AppConfig, get_app_config
 
 from .provider_factory import ProviderFactory
+from .runtime.auth_composition import AuthComposer, LocalAuthComposer
+from .runtime.provider_composition import LocalProviderComposer, ProviderComposer
+from .repositories.token_repository import JsonFileTokenRepository
 from .schwab_auth_service import SchwabAuthService
-from .token_store import JsonTokenStore
 from .market_calendar_service import MarketCalendarService
 from .providers.base_provider import ProviderError
 from .providers.schwab_provider import SchwabProvider
@@ -21,9 +23,17 @@ class OptionsChainService:
     PREVIEW_WIDTHS = (5.0, 10.0, 15.0, 20.0, 25.0, 30.0)
     MIN_PREVIEW_NET_CREDIT = 1.0
 
-    def __init__(self, config: AppConfig | None = None, provider: Any | None = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig | None = None,
+        provider: Any | None = None,
+        provider_composer: ProviderComposer | None = None,
+        auth_composer: AuthComposer | None = None,
+    ) -> None:
         self.config = config or get_app_config()
         self.provider = provider
+        self.auth_composer = auth_composer or LocalAuthComposer(self.config)
+        self.provider_composer = provider_composer or LocalProviderComposer(self.config, self.auth_composer)
         self.market_calendar_service = MarketCalendarService(self.config)
 
     def get_spx_option_chain_summary(self, expiration_date: date) -> Dict[str, Any]:
@@ -195,12 +205,11 @@ class OptionsChainService:
                 f"Unsupported Apollo option-chain source '{self.config.apollo_option_chain_source}'. Use 'schwab'."
             )
 
-        provider = ProviderFactory.create_live_provider(self.config)
+        provider = ProviderFactory.create_live_provider(self.config, provider_composer=self.provider_composer)
         if isinstance(provider, SchwabProvider):
             return provider
 
-        token_store = JsonTokenStore(self.config.schwab_token_path)
-        auth_service = SchwabAuthService(config=self.config, token_store=token_store)
+        auth_service = self.auth_composer.create_schwab_auth_service()
         return SchwabProvider(config=self.config, display_timezone=self.config.app_timezone, auth_service=auth_service)
 
     def _build_preview_rows(

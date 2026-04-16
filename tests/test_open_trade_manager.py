@@ -383,6 +383,45 @@ class OpenTradeManagerTest(unittest.TestCase):
         self.assertIn("Closed Today:", eod_alerts[0]["message"])
         self.assertIn("Open (Next Day Risk):", eod_alerts[0]["message"])
 
+    def test_end_of_day_summary_is_suppressed_if_matching_alert_was_already_logged(self):
+        self._create_closed_real_trade()
+        self._set_runtime_field("last_morning_snapshot_date", "2026-04-10")
+        self.now = datetime(2026, 4, 10, 15, 10, tzinfo=ZoneInfo("America/Chicago"))
+        first_payload = self.manager.evaluate_open_trades(send_alerts=False)
+        closed_trade = max(
+            (trade for trade in self.trade_store.list_trades("real") if str(trade.get("status") or "").strip().lower() == "closed"),
+            key=lambda trade: int(trade.get("id") or 0),
+        )
+        expected_lines = [
+            "Closed Today:",
+            f"{closed_trade['system_name']} #{closed_trade['trade_number']} → ${int(closed_trade['gross_pnl'])} ({closed_trade.get('win_loss_result') or 'Closed'})",
+            "",
+            "Open (Next Day Risk):",
+        ]
+        for record in first_payload["records"]:
+            if str(record.get("trade_mode") or "").strip().lower() != "real":
+                continue
+            expected_lines.append(f"{record['system_name']} | {record['profile_label']}")
+            expected_lines.append(f"Dist: {record['distance_to_short_display']} | EM: {record['current_live_expected_move_display']}")
+        expected_message = "\n".join(expected_lines)
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.execute(
+                """
+                INSERT INTO open_trade_management_alert_log (
+                    trade_id, system_name, trade_mode, alert_type, alert_priority, alert_priority_label,
+                    reason_code, title, body, sent_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (0, "Delphi", "real", "eod-summary", 0, "Normal", "eod-summary", "DELPHI — EOD SUMMARY", expected_message, self.now.isoformat()),
+            )
+            connection.commit()
+
+        second_payload = self.manager.evaluate_open_trades(send_alerts=True)
+
+        self.assertEqual(first_payload["open_trade_count"], 3)
+        self.assertEqual(second_payload["alerts_sent"], 0)
+        self.assertEqual(len(self.pushover_service.sent), 0)
+
     def test_alerts_are_suppressed_when_notifications_are_off(self):
         self.now = datetime(2026, 4, 10, 8, 32, tzinfo=ZoneInfo("America/Chicago"))
         self.manager.set_notifications_enabled(False)

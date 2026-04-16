@@ -6,19 +6,19 @@ from dataclasses import dataclass
 import math
 from typing import Any, Dict, Iterable, Optional
 
+from .repositories.trade_repository import TradeRepository
 from .trade_store import (
     EXPECTED_MOVE_CONFIDENCE_NONE,
     EXPECTED_MOVE_SOURCE_ESTIMATED,
     EXPECTED_MOVE_USAGE_ACTUAL,
     EXPECTED_MOVE_USAGE_ESTIMATED,
     EXPECTED_MOVE_USAGE_EXCLUDED,
-    TradeStore,
     classify_closed_trade_outcome,
     classify_expected_move_usage,
     expected_move_learning_weight,
-    normalize_candidate_profile,
     normalize_expected_move_source,
     normalize_system_name,
+    resolve_trade_candidate_profile,
     resolve_trade_credit_model,
     resolve_trade_distance,
     resolve_trade_expected_move,
@@ -27,7 +27,7 @@ from .em_policy_engine import build_em_policy_payload
 
 PERFORMANCE_FILTER_GROUPS = {
     "system": ["Apollo", "Kairos", "Aegis"],
-    "profile": ["Legacy", "Aggressive", "Fortress", "Standard", "Prime"],
+    "profile": ["Legacy", "Aggressive", "Fortress", "Standard", "Prime", "Subprime"],
     "result": ["Win", "Loss", "Black Swan", "Scratched"],
     "trade_mode": ["Real", "Simulated"],
     "macro_grade": ["None", "Minor", "Major"],
@@ -114,7 +114,7 @@ class OutcomeSummary:
 class PerformanceDashboardService:
     """Build filter-aware dashboard payloads from the shared trade database."""
 
-    def __init__(self, store: TradeStore) -> None:
+    def __init__(self, store: TradeRepository) -> None:
         self.store = store
 
     def build_dashboard(self, filters: Optional[Dict[str, Iterable[str]]] = None) -> Dict[str, Any]:
@@ -155,6 +155,9 @@ def normalize_performance_filters(filters: Optional[Dict[str, Iterable[str]]] = 
     for key, options in PERFORMANCE_FILTER_GROUPS.items():
         allowed = {normalize_filter_value(key, option) for option in options}
         requested_values = filters.get(key)
+        if key in filters and not requested_values:
+            normalized[key] = tuple()
+            continue
         normalized_values = [normalize_filter_value(key, value) for value in (requested_values or []) if normalize_filter_value(key, value) in allowed]
         if normalized_values:
             normalized[key] = tuple(normalized_values)
@@ -166,7 +169,7 @@ def normalize_performance_filters(filters: Optional[Dict[str, Iterable[str]]] = 
 
 def build_performance_record(trade: Dict[str, Any]) -> Dict[str, Any]:
     trade_mode = "Real" if str(trade.get("trade_mode") or "").strip().lower() == "real" else "Simulated"
-    profile = normalize_candidate_profile(trade.get("candidate_profile"))
+    profile = resolve_trade_candidate_profile(trade)
     system = normalize_system_name(trade.get("system_name"))
     result = classify_trade_result(trade)
     gross_pnl = coerce_float(trade.get("gross_pnl") if trade.get("gross_pnl") is not None else trade.get("pnl"))

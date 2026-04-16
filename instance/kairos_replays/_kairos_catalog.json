@@ -1,6 +1,19 @@
 {
   "entries": [
     {
+      "id": "live-spx-tape-2026-04-13",
+      "scenario_key": "live-spx-tape-2026-04-13",
+      "session_date": "2026-04-13",
+      "label": "Live SPX Tape 2026-04-13",
+      "source": "Live SPX 1m",
+      "source_family_tag": "LIVE TAPE",
+      "source_type": "live_spx_tape",
+      "created_at": "2026-04-13T15:00:00.015573-05:00",
+      "session_status": "complete",
+      "bar_count": 390,
+      "bundle_path": "live-spx-tape-2026-04-13.json"
+    },
+    {
       "id": "live-spx-tape-2026-04-10",
       "scenario_key": "live-spx-tape-2026-04-10",
       "session_date": "2026-04-10",

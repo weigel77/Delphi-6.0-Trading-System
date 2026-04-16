@@ -226,6 +226,18 @@ h2 {
     min-width: 0;
 }
 
+.delphi-header-meta {
+    display: grid;
+    gap: 8px;
+    justify-items: end;
+    text-align: right;
+}
+
+.delphi-header-meta-hosted {
+    align-content: start;
+    justify-items: end;
+}
+
 .delphi-header-brand {
     display: flex;
     align-items: center;
@@ -256,6 +268,372 @@ h2 {
     background: rgba(255, 255, 255, 0.08);
     border-color: rgba(255, 255, 255, 0.16);
     color: #e6edf3;
+}
+
+.delphi-header-actions {
+    display: grid;
+    gap: 6px;
+    justify-items: end;
+}
+
+.delphi-header-hosted-auth-block {
+    min-width: 220px;
+    padding: 12px 14px;
+    border-radius: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background: rgba(12, 28, 49, 0.62);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.delphi-header-logout-form {
+    display: contents;
+}
+
+.hosted-shell-body {
+    --hosted-bg: #f6f0e5;
+    --hosted-panel: rgba(255, 250, 243, 0.92);
+    --hosted-border: #d8c8ad;
+    --hosted-text: #2f261a;
+    --hosted-muted: #756551;
+    --hosted-accent: #9b5d28;
+    --hosted-accent-dark: #6f3e18;
+    margin: 0;
+    font-family: "Aptos", "Trebuchet MS", "Segoe UI", sans-serif;
+    color: var(--hosted-text);
+    background:
+        radial-gradient(circle at top left, rgba(155, 93, 40, 0.12), transparent 28%),
+        linear-gradient(180deg, #f3ecdf 0%, var(--hosted-bg) 100%);
+}
+
+.hosted-shell-layout {
+    max-width: 1360px;
+    margin: 0 auto;
+    padding: 20px 18px 28px;
+}
+
+.hosted-shell-header-card,
+.hosted-shell-panel {
+    background: var(--hosted-panel);
+    border: 1px solid var(--hosted-border);
+    border-radius: 22px;
+    box-shadow: 0 18px 40px rgba(58, 42, 18, 0.09);
+    margin-bottom: 14px;
+}
+
+.hosted-shell-header-card {
+    padding: 22px;
+    background:
+        linear-gradient(135deg, rgba(255, 250, 243, 0.98), rgba(246, 236, 219, 0.96)),
+        var(--hosted-panel);
+}
+
+.hosted-shell-panel {
+    padding: 18px;
+}
+
+.hosted-shell-header-top,
+.hosted-shell-panel-header,
+.hosted-shell-toolbar,
+.hosted-shell-roadmap-grid,
+.hosted-shell-home-grid,
+.hosted-shell-two-column-grid {
+    display: grid;
+    gap: 16px;
+}
+
+.hosted-shell-header-top {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+}
+
+.hosted-shell-brand-block h1,
+.hosted-shell-panel-header h2,
+.hosted-shell-home-card h3,
+.hosted-shell-roadmap-card h3,
+.hosted-shell-detail-card h3 {
+    margin: 0;
+}
+
+.hosted-shell-kicker,
+.hosted-shell-card-kicker,
+.hosted-shell-identity-label {
+    margin: 0 0 6px;
+    color: var(--hosted-accent-dark);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    font-size: 0.72rem;
+    font-weight: 800;
+}
+
+.hosted-shell-copy,
+.hosted-shell-subtle,
+.hosted-shell-identity-detail,
+.hosted-shell-sync-detail,
+.hosted-shell-caption-block {
+    color: var(--hosted-muted);
+}
+
+.hosted-shell-identity-block {
+    min-width: 220px;
+    display: grid;
+    gap: 12px;
+    padding: 14px;
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.72);
+    border: 1px solid rgba(155, 93, 40, 0.18);
+}
+
+.hosted-shell-identity-block strong,
+.hosted-shell-summary-card strong,
+.hosted-shell-stat-grid strong,
+.hosted-shell-home-card h3,
+.hosted-shell-roadmap-card h3 {
+    display: block;
+}
+
+.hosted-shell-identity-detail {
+    margin: 4px 0 0;
+    font-size: 0.85rem;
+}
+
+.hosted-shell-nav-row,
+.hosted-shell-toolbar,
+.hosted-shell-toolbar-actions,
+.hosted-shell-pill-list,
+.hosted-shell-mode-switch {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+}
+
+.hosted-shell-nav-link,
+.hosted-shell-nav-placeholder {
+    display: inline-flex;
+    align-items: center;
+    min-height: 38px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    text-decoration: none;
+    font-weight: 700;
+    font-size: 0.88rem;
+}
+
+.hosted-shell-nav-link {
+    color: var(--hosted-accent-dark);
+    background: rgba(255, 255, 255, 0.84);
+    border: 1px solid rgba(155, 93, 40, 0.22);
+}
+
+.hosted-shell-nav-link-active {
+    background: linear-gradient(135deg, #9b5d28, #c27a39);
+    color: #fffaf4;
+    border-color: #9b5d28;
+}
+
+.hosted-shell-nav-placeholder {
+    color: var(--hosted-muted);
+    background: rgba(117, 101, 81, 0.08);
+    border: 1px dashed rgba(117, 101, 81, 0.3);
+}
+
+.hosted-shell-summary-grid,
+.hosted-shell-home-grid,
+.hosted-shell-roadmap-grid,
+.hosted-shell-two-column-grid {
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.hosted-shell-summary-card,
+.hosted-shell-home-card,
+.hosted-shell-roadmap-card,
+.hosted-shell-detail-card {
+    padding: 16px;
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.76);
+    border: 1px solid rgba(155, 93, 40, 0.14);
+}
+
+.hosted-shell-summary-card p,
+.hosted-shell-home-card p,
+.hosted-shell-roadmap-card p,
+.hosted-shell-detail-card p {
+    margin: 0;
+}
+
+.delphi4-sync-panel {
+    margin-top: 18px;
+}
+
+.delphi4-sync-panel-grid {
+    margin-top: 14px;
+}
+
+.delphi4-sync-actions {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 14px;
+}
+
+.delphi4-sync-path-list {
+    display: grid;
+    gap: 12px;
+    margin-top: 10px;
+}
+
+.delphi4-sync-path-list div {
+    display: grid;
+    gap: 4px;
+}
+
+.delphi4-sync-path-list span {
+    color: var(--hosted-muted);
+    word-break: break-word;
+}
+
+.hosted-shell-summary-card strong {
+    margin-top: 10px;
+    font-size: 1.55rem;
+    color: var(--hosted-accent-dark);
+}
+
+.hosted-shell-stat-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.hosted-shell-stat-grid span {
+    display: block;
+    color: var(--hosted-muted);
+    font-size: 0.82rem;
+}
+
+.hosted-shell-pill-list {
+    padding: 0;
+    list-style: none;
+}
+
+.hosted-shell-pill-list li,
+.hosted-shell-pill-list span {
+    display: inline-flex;
+    align-items: center;
+    min-height: 34px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.82);
+    border: 1px solid rgba(155, 93, 40, 0.14);
+    color: var(--hosted-text);
+    font-size: 0.84rem;
+}
+
+.hosted-shell-table-wrap {
+    overflow-x: auto;
+}
+
+.hosted-shell-table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 880px;
+}
+
+.hosted-shell-table th,
+.hosted-shell-table td {
+    padding: 10px 12px;
+    text-align: left;
+    border-bottom: 1px solid rgba(155, 93, 40, 0.12);
+}
+
+.hosted-shell-table th {
+    color: var(--hosted-accent-dark);
+    font-size: 0.78rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.hosted-shell-table tbody tr:hover {
+    background: rgba(155, 93, 40, 0.05);
+}
+
+.hosted-shell-empty-cell {
+    color: var(--hosted-muted);
+    text-align: center;
+}
+
+.hosted-shell-sync-badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 34px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: rgba(155, 93, 40, 0.12);
+    color: var(--hosted-accent-dark);
+    font-weight: 700;
+}
+
+.hosted-shell-error-card {
+    max-width: 760px;
+    margin: 56px auto 0;
+}
+
+.hosted-shell-stack {
+    display: grid;
+    gap: 16px;
+}
+
+.hosted-shell-note-card {
+    border-style: dashed;
+}
+
+.hosted-shell-text-list {
+    margin: 0;
+    padding-left: 18px;
+    color: var(--hosted-text);
+}
+
+.hosted-shell-text-list li + li {
+    margin-top: 8px;
+}
+
+.hosted-login-card {
+    max-width: 760px;
+    margin: 56px auto 0;
+}
+
+.hosted-login-form {
+    display: grid;
+    gap: 16px;
+}
+
+.hosted-login-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.hosted-shell-error-message {
+    display: grid;
+    gap: 6px;
+    margin-top: 18px;
+}
+
+@media (max-width: 900px) {
+    .hosted-shell-layout {
+        padding: 14px 12px 24px;
+    }
+
+    .hosted-shell-header-top {
+        grid-template-columns: 1fr;
+    }
+
+    .hosted-shell-table {
+        min-width: 720px;
+    }
+
+    .hosted-login-grid {
+        grid-template-columns: 1fr;
+    }
 }
 
 .delphi-header-meta {
@@ -362,6 +740,56 @@ h2 {
     display: grid;
     grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 10px;
+}
+
+.delphi-header-status-strip {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.delphi-header-status-item {
+    min-width: 0;
+    padding: 10px 12px;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(12, 28, 49, 0.62);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.delphi-header-status-item-good {
+    border-color: rgba(99, 210, 151, 0.35);
+}
+
+.delphi-header-status-item-warning {
+    border-color: rgba(240, 211, 155, 0.42);
+}
+
+.delphi-header-status-label,
+.delphi-header-status-value,
+.delphi-header-status-meta {
+    margin: 0;
+}
+
+.delphi-header-status-label {
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: #9fb3c8;
+}
+
+.delphi-header-status-value {
+    margin-top: 4px;
+    font-size: 0.94rem;
+    font-weight: 800;
+    color: #f8fbff;
+}
+
+.delphi-header-status-meta {
+    margin-top: 3px;
+    font-size: 0.74rem;
+    color: #b7c7d7;
 }
 
 .delphi-header-card .button-link {
@@ -4681,8 +5109,16 @@ tr:hover td {
         text-align: left;
     }
 
+    .delphi-header-meta-hosted {
+        justify-items: stretch;
+    }
+
     .delphi-header-actions {
         justify-items: start;
+    }
+
+    .delphi-header-hosted-auth-block {
+        min-width: 100%;
     }
 
     .trade-position-header {

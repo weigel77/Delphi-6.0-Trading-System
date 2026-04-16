@@ -233,6 +233,14 @@ class PerformanceDashboardTest(unittest.TestCase):
         self.assertTrue(payload["learning"]["profile_em_safety_distance"]["real_plus_simulated"]["include_simulated"])
         self.assertIn("safety_ratio_expectancy_curve", payload["charts"])
 
+    def test_performance_data_route_respects_explicitly_empty_filter_group(self):
+        response = self.client.get("/performance/data?profile__active=1")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["filters"]["profile"], [])
+        self.assertEqual(payload["records_filtered"], 0)
+
     def test_profile_em_safety_distance_payload_separates_real_only_from_real_plus_simulated(self):
         payload = build_dashboard_payload(
             [
@@ -308,7 +316,7 @@ class PerformanceDashboardTest(unittest.TestCase):
             filters={
                 "trade_mode": ["real"],
                 "system": ["apollo", "kairos", "aegis"],
-                "profile": ["legacy", "aggressive", "fortress", "standard", "prime"],
+                "profile": ["legacy", "aggressive", "fortress", "standard", "prime", "subprime"],
                 "result": ["win", "loss", "black-swan", "scratched"],
                 "macro_grade": ["none", "minor", "major"],
                 "structure_grade": ["good", "neutral", "poor"],
@@ -554,7 +562,7 @@ class PerformanceDashboardTest(unittest.TestCase):
             filters={
                 "trade_mode": ["real"],
                 "system": ["apollo", "kairos", "aegis"],
-                "profile": ["legacy", "aggressive", "fortress", "standard", "prime"],
+                "profile": ["legacy", "aggressive", "fortress", "standard", "prime", "subprime"],
                 "result": ["win", "loss", "black-swan", "scratched"],
                 "macro_grade": ["none", "minor", "major"],
                 "structure_grade": ["good", "neutral", "poor"],
@@ -816,7 +824,7 @@ class PerformanceDashboardTest(unittest.TestCase):
             filters={
                 "trade_mode": ["real"],
                 "system": ["apollo", "kairos"],
-                "profile": ["legacy", "aggressive", "fortress", "standard", "prime"],
+                "profile": ["legacy", "aggressive", "fortress", "standard", "prime", "subprime"],
                 "result": ["win", "loss", "black-swan", "scratched"],
                 "macro_grade": ["none", "minor", "major"],
                 "structure_grade": ["good", "neutral", "poor"],
@@ -926,7 +934,7 @@ class PerformanceDashboardTest(unittest.TestCase):
             filters={
                 "trade_mode": ["real"],
                 "system": ["apollo", "kairos", "aegis"],
-                "profile": ["legacy", "aggressive", "fortress", "standard", "prime"],
+                "profile": ["legacy", "aggressive", "fortress", "standard", "prime", "subprime"],
                 "result": ["win", "loss", "black-swan", "scratched"],
                 "macro_grade": ["none", "minor", "major"],
                 "structure_grade": ["good", "neutral", "poor"],
