@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from flask import Flask, abort, current_app, g, has_app_context, has_request_context, jsonify, redirect, render_template, request, send_file, session, url_for
 
-from config import AppConfig, get_app_config
+from config import AppConfig, HOSTED_APP_DISPLAY_NAME, HOSTED_APP_VERSION, get_app_config
 from services import (
     ApolloService,
     ExportService,
@@ -345,7 +345,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         supabase_context = host_infrastructure.supabase_context
         supabase_integration = host_infrastructure.supabase_integration
         if supabase_context is None or supabase_integration is None or not supabase_context.configured:
-            raise RuntimeError("Hosted Delphi 6.0 cannot start without configured Supabase infrastructure.")
+            raise RuntimeError(f"{HOSTED_APP_DISPLAY_NAME} cannot start without configured Supabase infrastructure.")
         auth_composer = HostedSupabaseAuthComposer(
             runtime_app_config,
             context=supabase_context,
@@ -600,7 +600,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             info_message=info_message,
             diagnostic_message=diagnostic_message,
             active_page="research",
-            page_browser_title="Research | Delphi 5.2 Hosted",
+            page_browser_title=f"Research | {HOSTED_APP_DISPLAY_NAME} Hosted",
             page_heading="Research",
             page_copy="Hosted Delphi research workspace using the shared Schwab-backed data path behind private access.",
             **build_hosted_template_context(identity),
@@ -652,8 +652,8 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
                 return render_template(
                     "hosted_login.html",
                     page_browser_title="Hosted Login",
-                    page_heading="Hosted Delphi 5.2 Sign In",
-                    page_copy="Sign in with your hosted Delphi credentials to access the browser shell.",
+                    page_heading=f"{HOSTED_APP_DISPLAY_NAME} Sign In",
+                    page_copy=f"Sign in with your hosted {HOSTED_APP_DISPLAY_NAME} credentials to access the browser shell.",
                     next_path=next_path,
                     form_email=email,
                     error_message=str(exc),
@@ -663,7 +663,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
                     "hosted_shell_access_error.html",
                     page_browser_title="Hosted Access Restricted",
                     page_heading="Hosted Access Restricted",
-                    page_copy="This hosted Delphi 5.2 shell is currently limited to the approved private-access allowlist.",
+                    page_copy=f"This hosted {HOSTED_APP_DISPLAY_NAME} shell is currently limited to the approved private-access allowlist.",
                     error_code="private_access_denied",
                     error_detail=str(exc),
                 )
@@ -687,7 +687,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
                         "hosted_shell_access_error.html",
                         page_browser_title="Hosted Access Restricted",
                         page_heading="Hosted Access Restricted",
-                        page_copy="This hosted Delphi 5.2 shell is currently limited to the approved private-access allowlist.",
+                        page_copy=f"This hosted {HOSTED_APP_DISPLAY_NAME} shell is currently limited to the approved private-access allowlist.",
                         error_code="private_access_denied",
                         error_detail=str(exc),
                     ),
@@ -700,8 +700,8 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             return render_template(
                 "hosted_login.html",
                 page_browser_title="Hosted Login",
-                page_heading="Hosted Delphi 5.2 Sign In",
-                page_copy="Sign in with your hosted Delphi credentials to access the browser shell.",
+                page_heading=f"{HOSTED_APP_DISPLAY_NAME} Sign In",
+                page_copy=f"Sign in with your hosted {HOSTED_APP_DISPLAY_NAME} credentials to access the browser shell.",
                 next_path=next_path,
                 form_email="",
                 error_message="",
@@ -891,8 +891,8 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             set_status_message(str(exc), level="warning")
         except SupabaseRequestError as exc:
             app.logger.warning("Delphi 4.3 sync failed due to Supabase error: %s", exc)
-            remember_hosted_delphi4_sync_result({"ok": False, "error": "Hosted Delphi 6.0 could not reach Supabase during the sync."})
-            set_status_message("Hosted Delphi 6.0 could not reach Supabase during the sync.", level="warning")
+            remember_hosted_delphi4_sync_result({"ok": False, "error": f"{HOSTED_APP_DISPLAY_NAME} could not reach Supabase during the sync."})
+            set_status_message(f"{HOSTED_APP_DISPLAY_NAME} could not reach Supabase during the sync.", level="warning")
         return redirect(url_for("hosted_shell_home"))
 
     @app.route("/hosted/performance", methods=["GET"])
@@ -2843,7 +2843,7 @@ def authorize_hosted_private_browser_request(app: Optional[Flask] = None) -> tup
                 "hosted_shell_access_error.html",
                 page_browser_title="Hosted Access Restricted",
                 page_heading="Hosted Access Restricted",
-                page_copy="This hosted Delphi 5.2 shell is currently limited to the approved private-access allowlist.",
+                page_copy=f"This {HOSTED_APP_DISPLAY_NAME.lower()} is currently limited to the approved private-access allowlist.",
                 error_code="private_access_denied",
                 error_detail=str(exc),
             ),
@@ -2894,7 +2894,7 @@ def build_hosted_schema_error_payload(surface: str, error: Exception | None = No
     required_tables = list(HOSTED_SURFACE_REQUIRED_TABLES.get(surface, ("journal_trades",)))
     missing_table = extract_missing_hosted_table_name(error) if error is not None else required_tables[0]
     detail = (
-        f"Hosted Delphi 6.0 cannot load {surface} because the Supabase public schema is not provisioned correctly. "
+        f"{HOSTED_APP_DISPLAY_NAME} cannot load {surface} because the Supabase public schema is not provisioned correctly. "
         f"Missing or inaccessible table: {missing_table}. Required tables for this surface: {', '.join(required_tables)}."
     )
     if error is None:
@@ -2920,7 +2920,7 @@ def build_hosted_storage_error_payload(surface: str, error: Exception, **extra: 
 
     required_tables = list(HOSTED_SURFACE_REQUIRED_TABLES.get(surface, ("journal_trades",)))
     detail = (
-        f"Hosted Delphi 6.0 could not access {surface} because Supabase returned an error while processing the request. "
+        f"{HOSTED_APP_DISPLAY_NAME} could not access {surface} because Supabase returned an error while processing the request. "
         f"Details: {error}"
     )
     current_app.logger.error("Hosted Supabase storage error on %s: %s", surface, error)
@@ -3271,7 +3271,7 @@ def get_hosted_supabase_table_gateway(app: Optional[Flask] = None):
     container = _resolve_flask_container(app)
     integration = container.extensions.get("supabase_integration")
     if integration is None:
-        raise RuntimeError("Hosted Delphi 6.0 sync requires Supabase integration.")
+        raise RuntimeError(f"{HOSTED_APP_DISPLAY_NAME} sync requires Supabase integration.")
     gateway = container.extensions.get("hosted_supabase_table_gateway")
     if gateway is None:
         gateway = integration.create_table_gateway()
@@ -3285,7 +3285,7 @@ def get_hosted_kairos_scenario_repository(app: Optional[Flask] = None) -> Supaba
     if repository is None:
         context = container.extensions.get("supabase_context")
         if context is None or not getattr(context, "configured", False):
-            raise RuntimeError("Hosted Delphi 6.0 sync requires a configured Supabase runtime context.")
+            raise RuntimeError(f"{HOSTED_APP_DISPLAY_NAME} sync requires a configured Supabase runtime context.")
         repository = SupabaseKairosScenarioRepository(
             context=context,
             gateway=get_hosted_supabase_table_gateway(container),
@@ -3300,7 +3300,7 @@ def get_hosted_delphi4_sync_status_repository(app: Optional[Flask] = None) -> Su
     if repository is None:
         context = container.extensions.get("supabase_context")
         if context is None or not getattr(context, "configured", False):
-            raise RuntimeError("Hosted Delphi 6.0 sync requires a configured Supabase runtime context.")
+            raise RuntimeError(f"{HOSTED_APP_DISPLAY_NAME} sync requires a configured Supabase runtime context.")
         repository = SupabaseHostedRuntimeStateRepository(
             context=context,
             gateway=get_hosted_supabase_table_gateway(container),
@@ -3899,7 +3899,7 @@ def get_trade_import_preview_repository(app: Flask) -> ImportPreviewRepository:
             integration = getattr(host_infrastructure, "supabase_integration", None)
             context = getattr(host_infrastructure, "supabase_context", None)
             if integration is None or context is None or not context.configured:
-                raise RuntimeError("Hosted Delphi 6.0 import previews require Supabase-backed runtime state.")
+                raise RuntimeError(f"{HOSTED_APP_DISPLAY_NAME} import previews require Supabase-backed runtime state.")
             repository = SupabaseImportPreviewRepository(
                 context=context,
                 gateway=integration.create_table_gateway(),
@@ -4011,7 +4011,7 @@ def coerce_apollo_trade_input(source: Any, trade_mode: Optional[str] = None) -> 
         "trade_mode": resolved_trade_mode,
         "system_name": "Apollo",
         "journal_name": JOURNAL_NAME_DEFAULT,
-        "system_version": "5.4",
+        "system_version": source.get("system_version") or HOSTED_APP_VERSION,
         "candidate_profile": candidate_profile,
         "status": "open",
         "trade_date": timestamp.split("T", 1)[0],
@@ -4041,6 +4041,13 @@ def coerce_apollo_trade_input(source: Any, trade_mode: Optional[str] = None) -> 
         "fallback_used": source.get("fallback_used") or "no",
         "fallback_rule_name": source.get("fallback_rule_name") or "",
         "short_delta": source.get("short_delta") or "",
+        "pass_type": source.get("pass_type") or "",
+        "premium_per_contract": source.get("premium_per_contract") or "",
+        "total_premium": source.get("total_premium") or "",
+        "max_theoretical_risk": source.get("max_theoretical_risk") or "",
+        "risk_efficiency": source.get("risk_efficiency") or "",
+        "credit_efficiency_pct": source.get("credit_efficiency_pct") or "",
+        "target_em": source.get("target_em") or "",
         "notes_entry": "Prefilled from Apollo candidate card.",
         "prefill_source": "apollo",
         "exit_datetime": "",
@@ -4064,7 +4071,7 @@ def coerce_kairos_trade_input(source: Any, trade_mode: Optional[str] = None) -> 
         "trade_mode": resolved_trade_mode,
         "system_name": "Kairos",
         "journal_name": source.get("journal_name") or JOURNAL_NAME_DEFAULT,
-        "system_version": source.get("system_version") or "5.4",
+        "system_version": source.get("system_version") or HOSTED_APP_VERSION,
         "candidate_profile": candidate_profile,
         "status": "open",
         "trade_date": timestamp.split("T", 1)[0],
@@ -4094,6 +4101,13 @@ def coerce_kairos_trade_input(source: Any, trade_mode: Optional[str] = None) -> 
         "fallback_used": source.get("fallback_used") or "no",
         "fallback_rule_name": source.get("fallback_rule_name") or "",
         "short_delta": source.get("short_delta") or "",
+        "pass_type": source.get("pass_type") or "",
+        "premium_per_contract": source.get("premium_per_contract") or "",
+        "total_premium": source.get("total_premium") or "",
+        "max_theoretical_risk": source.get("max_theoretical_risk") or "",
+        "risk_efficiency": source.get("risk_efficiency") or "",
+        "credit_efficiency_pct": source.get("credit_efficiency_pct") or "",
+        "target_em": source.get("target_em") or "",
         "notes_entry": source.get("notes_entry") or "Prefilled from Kairos candidate card.",
         "prefill_source": "kairos-candidate",
         "exit_datetime": "",
@@ -4754,7 +4768,7 @@ def build_apollo_candidate_prefill_fields(
     return {
         "system_name": "Apollo",
         "journal_name": JOURNAL_NAME_DEFAULT,
-        "system_version": "5.4",
+        "system_version": HOSTED_APP_VERSION,
         "candidate_profile": candidate_profile,
         "expiration_date": option_chain.get("expiration_date") or trade_candidates.get("expiration_date") or "",
         "underlying_symbol": option_chain.get("symbol_requested") or "SPX",

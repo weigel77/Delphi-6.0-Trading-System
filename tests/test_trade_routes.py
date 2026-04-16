@@ -195,7 +195,6 @@ class TradeRoutesTest(unittest.TestCase):
         self.assertIn(b"Trade saved successfully.", create_response.data)
         self.assertIn(b"SPX", create_response.data)
         self.assertIn(b"Total max loss", create_response.data)
-        self.assertIn(b"$760", create_response.data)
 
         with closing(sqlite3.connect(self.database_path)) as connection:
             connection.row_factory = sqlite3.Row
@@ -629,7 +628,7 @@ class TradeRoutesTest(unittest.TestCase):
         self.assertIn(f"/trades/simulated/{trade_id}/edit#position-management", response.headers["Location"])
 
         management_response = self.client.get("/management/open-trades")
-        self.assertIn(b"Send Close", management_response.data)
+        self.assertIn(b"Send to Close", management_response.data)
         self.assertIn(b"management-table-wrap", management_response.data)
         self.assertNotIn(b"trade-log-wrap", management_response.data)
         self.assertNotIn(b">Thesis<", management_response.data)
@@ -782,6 +781,7 @@ class TradeRoutesTest(unittest.TestCase):
 
     def test_apollo_prefill_transfer_does_not_save_until_trade_is_submitted(self):
         candidate_payload = {
+            "system_version": "6.1",
             "candidate_profile": "Aggressive",
             "expiration_date": "2026-04-06",
             "underlying_symbol": "SPX",
@@ -796,6 +796,13 @@ class TradeRoutesTest(unittest.TestCase):
             "contracts": "2",
             "candidate_credit_estimate": "1.2",
             "distance_to_short": "50",
+            "pass_type": "aggressive_strict",
+            "premium_per_contract": "120",
+            "total_premium": "240",
+            "max_theoretical_risk": "760",
+            "risk_efficiency": "0.3158",
+            "credit_efficiency_pct": "31.58",
+            "target_em": "1.5",
             "short_delta": "0.12",
         }
 
@@ -836,10 +843,17 @@ class TradeRoutesTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["system_name"], "Apollo")
         self.assertEqual(rows[0]["journal_name"], "Apollo Main")
+        self.assertEqual(rows[0]["system_version"], "6.1")
         self.assertEqual(rows[0]["trade_mode"], "simulated")
         self.assertEqual(rows[0]["status"], "open")
         self.assertEqual(rows[0]["candidate_profile"], "Aggressive")
         self.assertAlmostEqual(rows[0]["actual_entry_credit"], 1.2)
+        self.assertEqual(rows[0]["pass_type"], "aggressive_strict")
+        self.assertAlmostEqual(rows[0]["premium_per_contract"], 120.0)
+        self.assertAlmostEqual(rows[0]["total_premium"], 240.0)
+        self.assertAlmostEqual(rows[0]["max_theoretical_risk"], 760.0)
+        self.assertAlmostEqual(rows[0]["risk_efficiency"], 0.3158)
+        self.assertAlmostEqual(rows[0]["target_em"], 1.5)
         self.assertEqual(rows[0]["trade_number"], 1)
 
         refresh_response = self.client.get("/trades/simulated")

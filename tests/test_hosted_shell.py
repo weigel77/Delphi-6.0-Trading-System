@@ -237,7 +237,7 @@ class HostedShellTest(unittest.TestCase):
             response = app.test_client().get("/hosted")
 
             self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Delphi 6.0", response.data)
+        self.assertIn(b"Delphi 6.1", response.data)
         self.assertIn(b"/hosted/research", response.data)
         self.assertIn(b"/hosted/performance", response.data)
         self.assertIn(b"/hosted/journal?trade_mode=real", response.data)
@@ -328,7 +328,7 @@ class HostedShellTest(unittest.TestCase):
             response = app.test_client().get("/hosted/journal?trade_mode=simulated")
 
             self.assertEqual(response.status_code, 200)
-            self.assertIn(b'Hosted Delphi 6.0 journal mirrors the live Supabase trade store and supports draft review, editing, and deleting directly in hosted mode.', response.data)
+            self.assertIn(b'Hosted Delphi 6.1 journal mirrors the live Supabase trade store and supports draft review, editing, and deleting directly in hosted mode.', response.data)
             self.assertIn(b'/hosted/journal?trade_mode=real', response.data)
             self.assertIn(b'/hosted/journal?trade_mode=simulated', response.data)
             self.assertIn(b'/hosted/journal/simulated/7/edit', response.data)
@@ -352,7 +352,7 @@ class HostedShellTest(unittest.TestCase):
                     "target_mode": "real",
                     "candidate_profile": "Standard",
                     "system_name": "Apollo",
-                    "system_version": "5.4",
+                    "system_version": "6.1",
                     "trade_date": "2026-04-12",
                     "entry_datetime": "2026-04-12T09:35",
                     "expiration_date": "2026-04-13",
@@ -370,6 +370,12 @@ class HostedShellTest(unittest.TestCase):
                     "candidate_credit_estimate": "1.40",
                     "actual_entry_credit": "1.40",
                     "distance_to_short": "20.8",
+                    "pass_type": "standard_strict",
+                    "premium_per_contract": "140",
+                    "total_premium": "140",
+                    "max_theoretical_risk": "360",
+                    "risk_efficiency": "0.3889",
+                    "target_em": "1.8",
                     "short_delta": "0.14",
                     "notes_entry": "Prefilled from Apollo candidate card.",
                 },
@@ -384,7 +390,10 @@ class HostedShellTest(unittest.TestCase):
             self.assertEqual(draft_response.status_code, 200)
             self.assertIn(b'Jump to Draft Form', draft_response.data)
             self.assertIn(b'Apollo candidate data is loaded into this draft.', draft_response.data)
-            self.assertIn(b'value="5.4"', draft_response.data)
+            self.assertIn(b'value="6.1"', draft_response.data)
+            self.assertIn(b'value="standard_strict"', draft_response.data)
+            self.assertIn(b'value="140"', draft_response.data)
+            self.assertIn(b'value="360"', draft_response.data)
 
     def test_hosted_kairos_prefill_redirects_into_hosted_journal_draft(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -399,7 +408,7 @@ class HostedShellTest(unittest.TestCase):
                     "target_mode": "real",
                     "candidate_profile": "Subprime",
                     "journal_name": "Horme",
-                    "system_version": "5.4",
+                    "system_version": "6.1",
                     "expiration_date": "2026-04-13",
                     "underlying_symbol": "SPX",
                     "spx_at_entry": "6129.20",
@@ -418,6 +427,12 @@ class HostedShellTest(unittest.TestCase):
                     "distance_to_short": "14.2",
                     "actual_distance_to_short": "14.2",
                     "actual_em_multiple": "1.55",
+                    "pass_type": "kairos_candidate",
+                    "premium_per_contract": "140",
+                    "total_premium": "140",
+                    "max_theoretical_risk": "360",
+                    "risk_efficiency": "0.3889",
+                    "target_em": "1.55",
                     "short_delta": "0.14",
                     "notes_entry": "Prefilled from Kairos candidate card.",
                 },
@@ -432,7 +447,10 @@ class HostedShellTest(unittest.TestCase):
             self.assertEqual(draft_response.status_code, 200)
             self.assertIn(b'Jump to Draft Form', draft_response.data)
             self.assertIn(b'Kairos candidate data is loaded into this draft.', draft_response.data)
-            self.assertIn(b'value="5.4"', draft_response.data)
+            self.assertIn(b'value="6.1"', draft_response.data)
+            self.assertIn(b'value="kairos_candidate"', draft_response.data)
+            self.assertIn(b'value="140"', draft_response.data)
+            self.assertIn(b'value="360"', draft_response.data)
 
     def test_hosted_journal_edit_page_posts_changes_through_hosted_store(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -560,7 +578,7 @@ class HostedShellTest(unittest.TestCase):
                     "trade_mode": "real",
                     "system_name": "Kairos",
                     "journal_name": "Hosted Real",
-                    "system_version": "5.4",
+                    "system_version": "6.1",
                     "candidate_profile": "Subprime",
                     "status": "open",
                     "trade_date": "2026-04-11",
@@ -609,7 +627,7 @@ class HostedShellTest(unittest.TestCase):
                     "trade_mode": "real",
                     "system_name": "Apollo",
                     "journal_name": "Hosted Real",
-                    "system_version": "5.4",
+                    "system_version": "6.1",
                     "candidate_profile": "Standard",
                     "status": "open",
                     "trade_date": "2026-04-11",
@@ -691,7 +709,7 @@ class HostedShellTest(unittest.TestCase):
             response = app.test_client().get("/hosted/manage-trades")
 
             self.assertEqual(response.status_code, 200)
-            self.assertIn(b'Hosted Delphi 6.0 pulls the same live open-trade evaluation data', response.data)
+            self.assertIn(b'Hosted Delphi 6.1 pulls the same live open-trade evaluation data', response.data)
             self.assertIn(b'Watch', response.data)
             self.assertIn(b'Hold', response.data)
             self.assertIn(b'Send Real Status Update', response.data)
@@ -714,7 +732,7 @@ class HostedShellTest(unittest.TestCase):
             response = app.test_client().get("/hosted/performance")
 
             self.assertEqual(response.status_code, 503)
-            self.assertIn(b'Hosted Delphi 6.0 cannot load performance', response.data)
+            self.assertIn(b'Delphi 6.1 cannot load performance', response.data)
             self.assertIn(b'journal_trades', response.data)
 
     def test_hosted_journal_page_returns_admin_visible_error_when_supabase_trade_table_is_missing(self):
@@ -726,7 +744,7 @@ class HostedShellTest(unittest.TestCase):
             response = app.test_client().get("/hosted/journal?trade_mode=real")
 
             self.assertEqual(response.status_code, 503)
-            self.assertIn(b'Hosted Delphi 6.0 cannot load journal', response.data)
+            self.assertIn(b'Delphi 6.1 cannot load journal', response.data)
             self.assertIn(b'journal_trade_close_events', response.data)
 
     def test_hosted_manage_trades_page_returns_admin_visible_error_when_supabase_trade_table_is_missing(self):
@@ -741,7 +759,7 @@ class HostedShellTest(unittest.TestCase):
 
             self.assertEqual(response.status_code, 503)
             self.assertEqual(manager.calls, [])
-            self.assertIn(b'Hosted Delphi 6.0 cannot load manage-trades', response.data)
+            self.assertIn(b'Delphi 6.1 cannot load manage-trades', response.data)
             self.assertIn(b'active_trades', response.data)
 
     def test_hosted_apollo_page_renders_last_snapshot(self):
