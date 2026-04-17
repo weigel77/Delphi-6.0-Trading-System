@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>{{ page_browser_title }} | {{ app_identity.display_name }}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
 <body class="delphi-portal-body delphi-portal-body-desktop">
@@ -15,18 +18,19 @@
             <p class="delphi-portal-kicker">Structure. Risk. Execution.</p>
             <h1 class="delphi-portal-wordmark">DELPHI</h1>
             <h2 class="delphi-portal-title">SPX Tactical Command System</h2>
-            <p class="delphi-portal-copy">Structured market intelligence for disciplined options execution.</p>
+            <p class="delphi-portal-copy">Structured intelligence for disciplined SPX execution.</p>
             <div class="delphi-portal-statusline">
-                <span>Desktop Delphi Portal</span>
-                <span>{{ app_identity.page_kicker }} | System Online</span>
+                <span class="delphi-portal-status-pill delphi-portal-status-pill-accent">Desktop Delphi Portal</span>
+                <span class="delphi-portal-status-pill delphi-portal-status-pill-online">System Online</span>
+                <span class="delphi-portal-status-pill delphi-portal-status-pill-muted">{{ app_identity.page_kicker }}</span>
             </div>
         </section>
 
         <section class="delphi-portal-card delphi-portal-card-desktop">
             <div class="delphi-portal-card-header">
-                <p class="delphi-portal-card-kicker">{{ app_identity.version_label }}</p>
+                <p class="delphi-portal-card-kicker">{{ app_identity.page_kicker }}</p>
                 <h2>Desktop Access</h2>
-                <p>Enter the full Delphi command surface from the premium desktop portal.</p>
+                <p>Authenticate into the full Delphi command surface with live hosted routing and system continuity.</p>
             </div>
 
             <form method="post" action="{{ login_action_url }}" class="delphi-portal-form" data-login-form>
@@ -49,8 +53,8 @@
                 {% endif %}
                 <button type="submit" class="delphi-portal-submit" data-login-submit>SIGN IN</button>
                 <div class="delphi-portal-footer">
-                    <span>{{ app_identity.page_kicker }}</span>
-                    <span>System Online</span>
+                    <span class="delphi-portal-status-pill delphi-portal-status-pill-muted">{{ app_identity.page_kicker }}</span>
+                    <span class="delphi-portal-status-pill delphi-portal-status-pill-online">System Online</span>
                 </div>
                 <a class="delphi-portal-branch-link" href="{{ alternate_login_url }}">Switch to {{ alternate_branch|title }} Preview</a>
             </form>

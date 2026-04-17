@@ -6107,8 +6107,18 @@ tr:hover td {
     min-height: 100vh;
     overflow-x: hidden;
     position: relative;
+    --delphi-display-font: "Space Grotesk", "Segoe UI", sans-serif;
+    --delphi-ui-font: "Inter", "Segoe UI", sans-serif;
+    --delphi-gold: #f0c977;
+    --delphi-gold-strong: #d79a41;
+    --delphi-teal: #8ed5de;
+    --delphi-teal-strong: #66bfcc;
+    --delphi-panel-border: rgba(221, 184, 103, 0.42);
+    --delphi-panel-sheen: rgba(255, 235, 188, 0.16);
+    --delphi-panel-shadow: 0 34px 88px rgba(0, 0, 0, 0.48);
     background: #04070b url("./delphi-space-bg.png") center center / cover no-repeat fixed;
     color: #f5ebd1;
+    font-family: var(--delphi-ui-font);
 }
 
 .delphi-portal-body::before {
@@ -6221,25 +6231,25 @@ tr:hover td {
 }
 
 .delphi-portal-shell-desktop {
-    grid-template-columns: minmax(0, 1.2fr) minmax(360px, 440px);
-    gap: 56px;
-    width: min(1220px, calc(100% - 72px));
+    grid-template-columns: minmax(0, 1.28fr) minmax(388px, 468px);
+    gap: 72px;
+    width: min(1280px, calc(100% - 88px));
     margin: 0 auto;
-    padding: 56px 0;
+    padding: 64px 0 56px;
 }
 
 .delphi-portal-shell-mobile {
     width: min(100%, 420px);
     margin: 0 auto;
-    padding: 36px 20px 48px;
-    gap: 28px;
+    padding: 26px 20px 44px;
+    gap: 20px;
 }
 
 .delphi-portal-brand {
     display: grid;
     justify-items: center;
     text-align: center;
-    gap: 10px;
+    gap: 0;
 }
 
 .delphi-portal-hero-wrap {
@@ -6247,31 +6257,33 @@ tr:hover td {
     display: grid;
     place-items: center;
     isolation: isolate;
+    width: min(100%, 940px);
+    margin: 0 0 18px;
 }
 
 .delphi-portal-hero-wrap::before {
     content: "";
     position: absolute;
-    inset: 18% 22%;
+    inset: 16% 18%;
     z-index: -1;
     border-radius: 50%;
     background: radial-gradient(circle, rgba(245, 200, 78, 0.2) 0%, rgba(245, 200, 78, 0.08) 42%, rgba(245, 200, 78, 0) 72%);
-    filter: blur(22px);
-    opacity: 0.46;
+    filter: blur(30px);
+    opacity: 0.52;
     animation: delphiPortalHeroGlow 7.6s ease-in-out infinite;
 }
 
 .delphi-portal-hero-wrap::after {
     content: "";
     position: absolute;
-    left: 12%;
-    right: 12%;
-    top: 49%;
-    height: 2px;
+    left: 11%;
+    right: 11%;
+    top: 50%;
+    height: 3px;
     background: linear-gradient(90deg, rgba(245, 200, 78, 0) 0%, rgba(255, 244, 204, 0.48) 48%, rgba(245, 200, 78, 0) 100%);
-    opacity: 0.22;
-    filter: blur(0.4px);
-    transform: translateX(-14%) scaleX(0.82);
+    opacity: 0.24;
+    filter: blur(0.65px);
+    transform: translateX(-14%) scaleX(0.84);
     animation: delphiPortalHeroSweep 9.5s ease-in-out infinite;
 }
 
@@ -6281,22 +6293,22 @@ tr:hover td {
 }
 
 .delphi-portal-hero {
-    width: min(100%, 560px);
+    width: clamp(620px, 54vw, 940px);
     height: auto;
-    margin-bottom: 10px;
-    filter: drop-shadow(0 18px 44px rgba(0, 0, 0, 0.45));
+    margin-bottom: 0;
+    filter: drop-shadow(0 22px 52px rgba(0, 0, 0, 0.52));
     animation: delphiPortalHeroFloat 10s ease-in-out infinite;
     will-change: transform, filter;
 }
 
 .delphi-portal-hero-mobile {
-    width: min(100%, 320px);
-    margin-bottom: 6px;
+    width: min(calc(100vw - 28px), 440px);
 }
 
 .delphi-portal-shell-desktop .delphi-portal-brand {
     justify-items: start;
     text-align: left;
+    align-content: center;
 }
 
 .delphi-portal-shell-desktop .delphi-portal-hero {
@@ -6305,6 +6317,18 @@ tr:hover td {
 
 .delphi-portal-shell-desktop .delphi-portal-hero-wrap {
     justify-self: start;
+    margin: -12px 0 10px -48px;
+}
+
+.delphi-portal-brand-mobile {
+    justify-items: center;
+    text-align: center;
+    padding-top: 2px;
+}
+
+.delphi-portal-brand-mobile .delphi-portal-hero-wrap {
+    width: 100%;
+    margin: 0 auto 12px;
 }
 
 .delphi-portal-emblem {
@@ -6383,36 +6407,40 @@ tr:hover td {
 .delphi-portal-kicker,
 .delphi-portal-card-kicker {
     margin: 0;
-    font-size: 0.82rem;
-    letter-spacing: 0.24em;
+    font-family: var(--delphi-ui-font);
+    font-size: 0.74rem;
+    font-weight: 600;
+    letter-spacing: 0.28em;
     text-transform: uppercase;
-    color: #95d9e8;
+    color: rgba(142, 213, 222, 0.9);
 }
 
 .delphi-portal-wordmark {
-    margin: 0;
-    color: #ecc97d;
-    font-size: clamp(3.8rem, 9vw, 5.6rem);
-    line-height: 0.94;
-    letter-spacing: 0.16em;
-    font-weight: 700;
-    text-shadow: 0 0 24px rgba(236, 201, 125, 0.22);
+    margin: 0 0 10px;
+    font-family: var(--delphi-display-font);
+    color: #efcf89;
+    font-size: clamp(4.5rem, 8vw, 6.9rem);
+    line-height: 0.9;
+    letter-spacing: 0.1em;
+    font-weight: 800;
+    text-shadow: 0 0 18px rgba(239, 207, 137, 0.14);
 }
 
 .delphi-portal-title {
-    margin: 0;
+    margin: 0 0 12px;
+    font-family: var(--delphi-ui-font);
     color: #f3f0e8;
-    font-size: clamp(1.2rem, 2.2vw, 2rem);
-    font-weight: 500;
-    letter-spacing: 0.08em;
+    font-size: clamp(1.05rem, 2vw, 1.55rem);
+    font-weight: 600;
+    letter-spacing: 0.065em;
     text-transform: uppercase;
 }
 
 .delphi-portal-copy {
-    max-width: 560px;
-    margin: 2px 0 0;
-    color: rgba(239, 239, 234, 0.84);
-    font-size: 1rem;
+    max-width: 520px;
+    margin: 0 0 18px;
+    color: rgba(235, 238, 242, 0.84);
+    font-size: 0.98rem;
     line-height: 1.6;
 }
 
@@ -6420,36 +6448,61 @@ tr:hover td {
 .delphi-portal-footer {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
     flex-wrap: wrap;
+    font-family: var(--delphi-ui-font);
     color: rgba(149, 217, 232, 0.9);
-    font-size: 0.86rem;
+    font-size: 0.78rem;
 }
 
-.delphi-portal-statusline span:last-child,
-.delphi-portal-footer span:last-child {
-    color: #8ac56d;
+.delphi-portal-status-pill {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    padding: 0 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(143, 182, 191, 0.18);
+    background: rgba(7, 16, 24, 0.42);
+    color: rgba(229, 233, 237, 0.74);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.delphi-portal-status-pill-accent {
+    color: var(--delphi-teal);
+    border-color: rgba(102, 191, 204, 0.28);
+    background: rgba(8, 22, 30, 0.56);
+}
+
+.delphi-portal-status-pill-online {
+    color: #93d083;
+    border-color: rgba(147, 208, 131, 0.22);
+}
+
+.delphi-portal-status-pill-muted {
+    color: rgba(229, 233, 237, 0.64);
 }
 
 .delphi-portal-card {
     position: relative;
-    border-radius: 28px;
-    border: 1px solid rgba(223, 186, 100, 0.44);
-    background: linear-gradient(180deg, rgba(8, 16, 24, 0.76) 0%, rgba(8, 16, 24, 0.9) 100%);
+    border-radius: 30px;
+    border: 1px solid var(--delphi-panel-border);
+    background: linear-gradient(180deg, rgba(5, 12, 19, 0.84) 0%, rgba(8, 15, 22, 0.94) 100%);
     box-shadow:
-        0 30px 80px rgba(0, 0, 0, 0.46),
-        inset 0 1px 0 rgba(250, 231, 181, 0.18),
-        0 0 0 1px rgba(94, 191, 215, 0.12);
-    backdrop-filter: blur(12px);
+        var(--delphi-panel-shadow),
+        inset 0 1px 0 var(--delphi-panel-sheen),
+        0 0 0 1px rgba(94, 191, 215, 0.08),
+        0 0 26px rgba(215, 154, 65, 0.08);
+    backdrop-filter: blur(18px);
     transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
 }
 
 .delphi-portal-card-desktop {
-    padding: 28px 28px 22px;
+    padding: 32px 30px 24px;
 }
 
 .delphi-portal-card-mobile {
-    padding: 24px 18px 18px;
+    padding: 26px 18px 18px;
 }
 
 .delphi-portal-card::before {
@@ -6457,35 +6510,47 @@ tr:hover td {
     position: absolute;
     inset: 0;
     border-radius: inherit;
-    background: linear-gradient(135deg, rgba(241, 208, 135, 0.08), transparent 36%, rgba(112, 206, 226, 0.08) 100%);
+    background: linear-gradient(135deg, rgba(241, 208, 135, 0.08), transparent 34%, rgba(112, 206, 226, 0.06) 100%);
+    pointer-events: none;
+}
+
+.delphi-portal-card::after {
+    content: "";
+    position: absolute;
+    inset: 1px;
+    border-radius: inherit;
+    border: 1px solid rgba(255, 230, 176, 0.06);
     pointer-events: none;
 }
 
 .delphi-portal-card-header {
     position: relative;
     display: grid;
-    gap: 8px;
-    margin-bottom: 18px;
+    gap: 10px;
+    margin-bottom: 22px;
 }
 
 .delphi-portal-card-header h2 {
     margin: 0;
+    font-family: var(--delphi-display-font);
     color: #f8f0dd;
-    font-size: 1.4rem;
-    letter-spacing: 0.04em;
+    font-size: 1.62rem;
+    letter-spacing: 0.05em;
+    font-weight: 700;
     text-transform: uppercase;
 }
 
 .delphi-portal-card-header p {
     margin: 0;
-    color: rgba(236, 234, 226, 0.74);
-    line-height: 1.55;
+    font-family: var(--delphi-ui-font);
+    color: rgba(236, 234, 226, 0.78);
+    line-height: 1.62;
 }
 
 .delphi-portal-form {
     position: relative;
     display: grid;
-    gap: 16px;
+    gap: 18px;
     transition: transform 180ms ease, opacity 180ms ease;
 }
 
@@ -6495,34 +6560,44 @@ tr:hover td {
 
 .delphi-portal-field {
     display: grid;
-    gap: 8px;
+    gap: 9px;
 }
 
 .delphi-portal-field span {
-    color: rgba(235, 214, 167, 0.88);
-    font-size: 0.84rem;
-    letter-spacing: 0.08em;
+    font-family: var(--delphi-ui-font);
+    color: rgba(235, 214, 167, 0.9);
+    font-size: 0.76rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
 }
 
 .delphi-portal-field input {
     width: 100%;
-    min-height: 54px;
-    padding: 0 16px;
-    border-radius: 14px;
-    border: 1px solid rgba(222, 183, 100, 0.36);
-    background: rgba(8, 15, 22, 0.72);
+    min-height: 58px;
+    padding: 0 18px;
+    border-radius: 16px;
+    border: 1px solid rgba(222, 183, 100, 0.24);
+    background: linear-gradient(180deg, rgba(7, 14, 21, 0.92) 0%, rgba(10, 18, 27, 0.98) 100%);
     color: #f7f1e4;
-    box-shadow: inset 0 1px 0 rgba(244, 220, 164, 0.08), 0 0 0 1px rgba(95, 189, 213, 0.08);
+    font-family: var(--delphi-ui-font);
+    font-size: 0.96rem;
+    box-shadow: inset 0 1px 0 rgba(244, 220, 164, 0.06), inset 0 -8px 16px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(95, 189, 213, 0.06);
+    transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
 }
 
 .delphi-portal-field input::placeholder {
-    color: rgba(216, 211, 194, 0.48);
+    color: rgba(216, 211, 194, 0.42);
+}
+
+.delphi-portal-field input:hover {
+    border-color: rgba(222, 183, 100, 0.32);
 }
 
 .delphi-portal-field input:focus-visible {
-    outline: 2px solid rgba(120, 208, 226, 0.56);
-    outline-offset: 2px;
+    outline: none;
+    border-color: rgba(102, 191, 204, 0.48);
+    box-shadow: inset 0 1px 0 rgba(244, 220, 164, 0.08), inset 0 -8px 16px rgba(0, 0, 0, 0.22), 0 0 0 3px rgba(102, 191, 204, 0.14), 0 10px 22px rgba(0, 0, 0, 0.16);
 }
 
 .delphi-portal-password-wrap {
@@ -6530,20 +6605,26 @@ tr:hover td {
 }
 
 .delphi-portal-password-wrap input {
-    padding-right: 58px;
+    padding-right: 62px;
 }
 
 .delphi-portal-password-toggle {
     position: absolute;
-    right: 8px;
+    right: 10px;
     top: 50%;
     transform: translateY(-50%);
-    width: 42px;
-    height: 42px;
-    border-radius: 12px;
-    border: 1px solid rgba(222, 183, 100, 0.2);
-    background: rgba(12, 20, 28, 0.78);
+    width: 40px;
+    height: 40px;
+    border-radius: 13px;
+    border: 1px solid rgba(222, 183, 100, 0.18);
+    background: rgba(12, 20, 28, 0.92);
     padding: 0;
+    transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.delphi-portal-password-toggle:hover {
+    border-color: rgba(222, 183, 100, 0.28);
+    background: rgba(15, 24, 34, 0.96);
 }
 
 .delphi-portal-eye {
@@ -6580,19 +6661,28 @@ tr:hover td {
 }
 
 .delphi-portal-submit {
-    min-height: 58px;
-    border-radius: 14px;
-    background: linear-gradient(180deg, #f1cb77 0%, #d89c3f 100%);
+    min-height: 60px;
+    border-radius: 16px;
+    border: 1px solid rgba(255, 224, 151, 0.24);
+    background: linear-gradient(180deg, #f1cb77 0%, #ddab56 52%, #cc8a35 100%);
     color: #20150a;
-    font-size: 1.12rem;
-    letter-spacing: 0.12em;
+    font-family: var(--delphi-display-font);
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
-    box-shadow: 0 16px 28px rgba(183, 126, 43, 0.28), inset 0 1px 0 rgba(255, 242, 210, 0.8);
+    box-shadow: 0 18px 30px rgba(183, 126, 43, 0.28), inset 0 1px 0 rgba(255, 242, 210, 0.74), 0 0 16px rgba(215, 154, 65, 0.08);
     transition: transform 180ms ease, box-shadow 180ms ease, filter 180ms ease;
 }
 
 .delphi-portal-submit:hover {
-    background: linear-gradient(180deg, #f4d58d 0%, #ddab56 100%);
+    background: linear-gradient(180deg, #f5d690 0%, #e2b35e 54%, #d2913b 100%);
+    box-shadow: 0 20px 34px rgba(183, 126, 43, 0.34), inset 0 1px 0 rgba(255, 242, 210, 0.82), 0 0 18px rgba(215, 154, 65, 0.12);
+    transform: translateY(-1px);
+}
+
+.delphi-portal-submit:active {
+    transform: translateY(1px) scale(0.995);
 }
 
 .delphi-portal-submit:disabled {
@@ -6601,8 +6691,10 @@ tr:hover td {
 
 .delphi-portal-branch-link {
     justify-self: center;
+    font-family: var(--delphi-ui-font);
     color: rgba(149, 217, 232, 0.78);
-    font-size: 0.8rem;
+    font-size: 0.78rem;
+    letter-spacing: 0.04em;
     text-decoration: none;
 }
 
@@ -6611,18 +6703,18 @@ tr:hover td {
 }
 
 .delphi-portal-body-mobile .delphi-portal-wordmark {
-    font-size: clamp(3rem, 18vw, 4.3rem);
-    letter-spacing: 0.12em;
+    font-size: clamp(3.8rem, 17vw, 5.4rem);
+    letter-spacing: 0.09em;
 }
 
 .delphi-portal-body-mobile .delphi-portal-title {
-    font-size: 1rem;
-    letter-spacing: 0.1em;
+    font-size: 0.98rem;
+    letter-spacing: 0.07em;
 }
 
 .delphi-portal-body-mobile .delphi-portal-copy {
-    font-size: 0.92rem;
-    max-width: 320px;
+    font-size: 0.9rem;
+    max-width: 340px;
 }
 
 .delphi-portal-body-mobile {
@@ -6656,7 +6748,11 @@ tr:hover td {
 }
 
 .delphi-portal-authenticating .delphi-portal-hero-wrap::before {
-    opacity: 0.58;
+    opacity: 0.68;
+}
+
+.delphi-portal-authenticating .delphi-portal-hero {
+    filter: drop-shadow(0 24px 56px rgba(0, 0, 0, 0.54)) brightness(1.04);
 }
 
 @keyframes delphiPortalGlow {
@@ -6729,7 +6825,9 @@ tr:hover td {
 
     .delphi-portal-card,
     .delphi-portal-form,
-    .delphi-portal-submit {
+    .delphi-portal-submit,
+    .delphi-portal-field input,
+    .delphi-portal-password-toggle {
         transition: none;
     }
 }
@@ -6739,13 +6837,17 @@ tr:hover td {
         grid-template-columns: 1fr;
         justify-items: center;
         width: min(100%, calc(100% - 40px));
-        gap: 28px;
+        gap: 30px;
         padding: 40px 0 48px;
     }
 
     .delphi-portal-shell-desktop .delphi-portal-brand {
         justify-items: center;
         text-align: center;
+    }
+
+    .delphi-portal-shell-desktop .delphi-portal-hero-wrap {
+        margin: 0 0 12px;
     }
 
     .delphi-portal-card-desktop {
@@ -6757,6 +6859,15 @@ tr:hover td {
     .delphi-portal-shell-mobile {
         padding-left: 16px;
         padding-right: 16px;
+    }
+
+    .delphi-portal-statusline,
+    .delphi-portal-footer {
+        justify-content: center;
+    }
+
+    .delphi-portal-card-header h2 {
+        font-size: 1.42rem;
     }
 
     .delphi-portal-card-mobile {
