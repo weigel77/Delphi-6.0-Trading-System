@@ -7,26 +7,10 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
 <body class="delphi-portal-body delphi-portal-body-desktop">
-    <div class="delphi-portal-atmosphere" aria-hidden="true">
-        <div class="delphi-portal-grid"></div>
-        <div class="delphi-portal-orbit delphi-portal-orbit-a"></div>
-        <div class="delphi-portal-orbit delphi-portal-orbit-b"></div>
-        <div class="delphi-portal-wave delphi-portal-wave-a"></div>
-        <div class="delphi-portal-wave delphi-portal-wave-b"></div>
-        <div class="delphi-portal-scanline"></div>
-        <div class="delphi-portal-particles">
-            <span></span><span></span><span></span><span></span><span></span><span></span>
-        </div>
-    </div>
     <main class="delphi-portal-shell delphi-portal-shell-desktop">
         <section class="delphi-portal-brand">
-            <div class="delphi-portal-emblem" aria-hidden="true">
-                <span class="delphi-portal-emblem-ring"></span>
-                <span class="delphi-portal-emblem-outer"></span>
-                <span class="delphi-portal-emblem-triangle delphi-portal-emblem-triangle-top"></span>
-                <span class="delphi-portal-emblem-triangle delphi-portal-emblem-triangle-bottom"></span>
-                <span class="delphi-portal-emblem-eye"></span>
-                <span class="delphi-portal-emblem-core"></span>
+            <div class="delphi-portal-hero-wrap" aria-hidden="true">
+                <img class="delphi-portal-hero" src="{{ url_for('static', filename='delphi-pyramid.png') }}" alt="">
             </div>
             <p class="delphi-portal-kicker">Structure. Risk. Execution.</p>
             <h1 class="delphi-portal-wordmark">DELPHI</h1>
@@ -45,7 +29,7 @@
                 <p>Enter the full Delphi command surface from the premium desktop portal.</p>
             </div>
 
-            <form method="post" action="{{ login_action_url }}" class="delphi-portal-form">
+            <form method="post" action="{{ login_action_url }}" class="delphi-portal-form" data-login-form>
                 <input type="hidden" name="next" value="{{ next_path }}">
                 <label class="delphi-portal-field" for="hosted-email">
                     <span>Email</span>
@@ -63,7 +47,7 @@
                 {% if error_message %}
                     <div class="message message-warning hosted-shell-error-message">{{ error_message }}</div>
                 {% endif %}
-                <button type="submit" class="delphi-portal-submit">SIGN IN</button>
+                <button type="submit" class="delphi-portal-submit" data-login-submit>SIGN IN</button>
                 <div class="delphi-portal-footer">
                     <span>{{ app_identity.page_kicker }}</span>
                     <span>System Online</span>
@@ -76,14 +60,37 @@
         (() => {
             const toggle = document.querySelector('[data-password-toggle]');
             const input = document.getElementById('hosted-password');
-            if (!toggle || !input) {
+            const form = document.querySelector('[data-login-form]');
+            const submitButton = document.querySelector('[data-login-submit]');
+            const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+            let isSubmitting = false;
+
+            if (toggle && input) {
+                toggle.addEventListener('click', () => {
+                    const reveal = input.type === 'password';
+                    input.type = reveal ? 'text' : 'password';
+                    toggle.setAttribute('aria-label', reveal ? 'Hide password' : 'Show password');
+                    toggle.classList.toggle('delphi-portal-password-toggle-active', reveal);
+                });
+            }
+
+            if (!form || !submitButton) {
                 return;
             }
-            toggle.addEventListener('click', () => {
-                const reveal = input.type === 'password';
-                input.type = reveal ? 'text' : 'password';
-                toggle.setAttribute('aria-label', reveal ? 'Hide password' : 'Show password');
-                toggle.classList.toggle('delphi-portal-password-toggle-active', reveal);
+
+            form.addEventListener('submit', (event) => {
+                if (isSubmitting || reduceMotion.matches) {
+                    return;
+                }
+                event.preventDefault();
+                isSubmitting = true;
+                document.body.classList.add('delphi-portal-authenticating');
+                form.classList.add('delphi-portal-form-pending');
+                submitButton.disabled = true;
+                submitButton.setAttribute('aria-busy', 'true');
+                window.setTimeout(() => {
+                    HTMLFormElement.prototype.submit.call(form);
+                }, 240);
             });
         })();
     </script>

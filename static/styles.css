@@ -6106,11 +6106,20 @@ tr:hover td {
     margin: 0;
     min-height: 100vh;
     overflow-x: hidden;
-    background:
-        radial-gradient(circle at top, rgba(217, 169, 82, 0.18), transparent 24%),
-        radial-gradient(circle at 20% 20%, rgba(54, 114, 132, 0.18), transparent 28%),
-        linear-gradient(180deg, #071119 0%, #03070c 48%, #07121a 100%);
+    position: relative;
+    background: #04070b url("./delphi-space-bg.png") center center / cover no-repeat fixed;
     color: #f5ebd1;
+}
+
+.delphi-portal-body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background:
+        linear-gradient(180deg, rgba(3, 6, 10, 0.24) 0%, rgba(3, 6, 10, 0.52) 42%, rgba(3, 6, 10, 0.78) 100%),
+        radial-gradient(circle at 50% 22%, rgba(246, 188, 52, 0.14), transparent 24%),
+        radial-gradient(circle at 18% 18%, rgba(85, 179, 204, 0.1), transparent 22%);
 }
 
 .delphi-portal-atmosphere {
@@ -6233,9 +6242,69 @@ tr:hover td {
     gap: 10px;
 }
 
+.delphi-portal-hero-wrap {
+    position: relative;
+    display: grid;
+    place-items: center;
+    isolation: isolate;
+}
+
+.delphi-portal-hero-wrap::before {
+    content: "";
+    position: absolute;
+    inset: 18% 22%;
+    z-index: -1;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(245, 200, 78, 0.2) 0%, rgba(245, 200, 78, 0.08) 42%, rgba(245, 200, 78, 0) 72%);
+    filter: blur(22px);
+    opacity: 0.46;
+    animation: delphiPortalHeroGlow 7.6s ease-in-out infinite;
+}
+
+.delphi-portal-hero-wrap::after {
+    content: "";
+    position: absolute;
+    left: 12%;
+    right: 12%;
+    top: 49%;
+    height: 2px;
+    background: linear-gradient(90deg, rgba(245, 200, 78, 0) 0%, rgba(255, 244, 204, 0.48) 48%, rgba(245, 200, 78, 0) 100%);
+    opacity: 0.22;
+    filter: blur(0.4px);
+    transform: translateX(-14%) scaleX(0.82);
+    animation: delphiPortalHeroSweep 9.5s ease-in-out infinite;
+}
+
+.delphi-portal-hero-wrap-mobile::after {
+    left: 10%;
+    right: 10%;
+}
+
+.delphi-portal-hero {
+    width: min(100%, 560px);
+    height: auto;
+    margin-bottom: 10px;
+    filter: drop-shadow(0 18px 44px rgba(0, 0, 0, 0.45));
+    animation: delphiPortalHeroFloat 10s ease-in-out infinite;
+    will-change: transform, filter;
+}
+
+.delphi-portal-hero-mobile {
+    width: min(100%, 320px);
+    margin-bottom: 6px;
+}
+
 .delphi-portal-shell-desktop .delphi-portal-brand {
     justify-items: start;
     text-align: left;
+}
+
+.delphi-portal-shell-desktop .delphi-portal-hero {
+    justify-self: start;
+}
+
+.delphi-portal-shell-desktop .delphi-portal-hero-wrap {
+    justify-self: start;
 }
 
 .delphi-portal-emblem {
@@ -6366,12 +6435,13 @@ tr:hover td {
     position: relative;
     border-radius: 28px;
     border: 1px solid rgba(223, 186, 100, 0.44);
-    background: linear-gradient(180deg, rgba(8, 16, 24, 0.72) 0%, rgba(8, 16, 24, 0.86) 100%);
+    background: linear-gradient(180deg, rgba(8, 16, 24, 0.76) 0%, rgba(8, 16, 24, 0.9) 100%);
     box-shadow:
         0 30px 80px rgba(0, 0, 0, 0.46),
         inset 0 1px 0 rgba(250, 231, 181, 0.18),
         0 0 0 1px rgba(94, 191, 215, 0.12);
     backdrop-filter: blur(12px);
+    transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
 }
 
 .delphi-portal-card-desktop {
@@ -6416,6 +6486,11 @@ tr:hover td {
     position: relative;
     display: grid;
     gap: 16px;
+    transition: transform 180ms ease, opacity 180ms ease;
+}
+
+.delphi-portal-form-pending {
+    pointer-events: none;
 }
 
 .delphi-portal-field {
@@ -6513,10 +6588,15 @@ tr:hover td {
     letter-spacing: 0.12em;
     text-transform: uppercase;
     box-shadow: 0 16px 28px rgba(183, 126, 43, 0.28), inset 0 1px 0 rgba(255, 242, 210, 0.8);
+    transition: transform 180ms ease, box-shadow 180ms ease, filter 180ms ease;
 }
 
 .delphi-portal-submit:hover {
     background: linear-gradient(180deg, #f4d58d 0%, #ddab56 100%);
+}
+
+.delphi-portal-submit:disabled {
+    cursor: wait;
 }
 
 .delphi-portal-branch-link {
@@ -6545,9 +6625,38 @@ tr:hover td {
     max-width: 320px;
 }
 
+.delphi-portal-body-mobile {
+    background-attachment: scroll;
+}
+
 .delphi-portal-statusline-mobile,
 .delphi-portal-footer-mobile {
     justify-content: center;
+}
+
+.delphi-portal-authenticating .delphi-portal-card {
+    transform: scale(1.01);
+    border-color: rgba(241, 203, 119, 0.62);
+    box-shadow:
+        0 34px 90px rgba(0, 0, 0, 0.5),
+        inset 0 1px 0 rgba(250, 231, 181, 0.22),
+        0 0 0 1px rgba(120, 208, 226, 0.16),
+        0 0 36px rgba(241, 203, 119, 0.14);
+    animation: delphiPortalLoginPulse 220ms ease-out 1;
+}
+
+.delphi-portal-authenticating .delphi-portal-form {
+    opacity: 0.98;
+    transform: translateY(-1px);
+}
+
+.delphi-portal-authenticating .delphi-portal-submit {
+    filter: brightness(1.04);
+    box-shadow: 0 18px 34px rgba(183, 126, 43, 0.34), inset 0 1px 0 rgba(255, 242, 210, 0.88);
+}
+
+.delphi-portal-authenticating .delphi-portal-hero-wrap::before {
+    opacity: 0.58;
 }
 
 @keyframes delphiPortalGlow {
@@ -6559,6 +6668,69 @@ tr:hover td {
     50% {
         opacity: 0.52;
         transform: translateY(39vh);
+    }
+}
+
+@keyframes delphiPortalHeroFloat {
+    0%,
+    100% {
+        transform: translateY(0);
+        filter: drop-shadow(0 18px 44px rgba(0, 0, 0, 0.45));
+    }
+    50% {
+        transform: translateY(-3px);
+        filter: drop-shadow(0 20px 50px rgba(0, 0, 0, 0.5));
+    }
+}
+
+@keyframes delphiPortalHeroGlow {
+    0%,
+    100% {
+        opacity: 0.38;
+        transform: scale(0.985);
+    }
+    50% {
+        opacity: 0.54;
+        transform: scale(1.02);
+    }
+}
+
+@keyframes delphiPortalHeroSweep {
+    0%,
+    100% {
+        opacity: 0.12;
+        transform: translateX(-16%) scaleX(0.8);
+    }
+    50% {
+        opacity: 0.28;
+        transform: translateX(16%) scaleX(1);
+    }
+}
+
+@keyframes delphiPortalLoginPulse {
+    0% {
+        transform: scale(1);
+    }
+    55% {
+        transform: scale(1.012);
+    }
+    100% {
+        transform: scale(1.01);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .delphi-portal-hero,
+    .delphi-portal-hero-wrap::before,
+    .delphi-portal-hero-wrap::after,
+    .delphi-portal-authenticating .delphi-portal-card {
+        animation: none !important;
+    }
+
+    .delphi-portal-card,
+    .delphi-portal-form,
+    .delphi-portal-submit {
+        transition: none;
     }
 }
 
