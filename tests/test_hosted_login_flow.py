@@ -50,6 +50,14 @@ class _AuthResponse:
 
 
 class HostedLoginFlowTest(unittest.TestCase):
+    RAW_JS_FRAGMENTS = (
+        b"const toggle",
+        b"addEventListener(",
+        b"HTMLFormElement.prototype.submit",
+        b"querySelector(",
+        b"window.matchMedia(",
+    )
+
     def _create_hosted_app(self, temp_dir: str):
         return create_app(
             {
@@ -210,13 +218,15 @@ class HostedLoginFlowTest(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             self.assertIn(b"DELPHI", response.data)
-            self.assertIn(b"SPX TACTICAL COMMAND SYSTEM", response.data)
-            self.assertIn(b"STRUCTURE. RISK. EXECUTION.", response.data)
-            self.assertIn(b"Desktop Access", response.data)
+            self.assertIn(b"Desktop hosted login", response.data)
+            self.assertIn(b"type=\"email\"", response.data)
+            self.assertIn(b"type=\"password\"", response.data)
+            self.assertIn(b"Login", response.data)
             self.assertIn(b"Delphi 6.3.5", response.data)
-            self.assertIn(b"Structured intelligence for disciplined SPX execution.", response.data)
+            self.assertIn(b'action="/hosted/login/desktop"', response.data)
             self.assertNotIn(b"delphi-pyramid.png", response.data)
-            self.assertNotIn(b"delphi-portal-hero-layer-desktop", response.data)
+            for fragment in self.RAW_JS_FRAGMENTS:
+                self.assertNotIn(fragment, response.data)
 
     def test_hosted_mobile_login_page_renders_delphi_6_3_5_portal(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -226,13 +236,27 @@ class HostedLoginFlowTest(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             self.assertIn(b"DELPHI", response.data)
-            self.assertIn(b"SPX TACTICAL COMMAND SYSTEM", response.data)
-            self.assertIn(b"Mobile Access", response.data)
+            self.assertIn(b"Mobile hosted login", response.data)
+            self.assertIn(b"type=\"email\"", response.data)
+            self.assertIn(b"type=\"password\"", response.data)
+            self.assertIn(b"Login", response.data)
             self.assertIn(b"Delphi 6.3.5", response.data)
-            self.assertIn(b"STRUCTURE. RISK. EXECUTION.", response.data)
-            self.assertIn(b"Structured intelligence for disciplined SPX execution.", response.data)
+            self.assertIn(b'action="/hosted/login/mobile"', response.data)
             self.assertNotIn(b"delphi-pyramid.png", response.data)
-            self.assertNotIn(b"delphi-portal-hero-layer-mobile", response.data)
+            for fragment in self.RAW_JS_FRAGMENTS:
+                self.assertNotIn(fragment, response.data)
+
+    def test_hosted_login_pages_do_not_render_raw_javascript_fragments(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = self._create_hosted_app(temp_dir)
+            client = app.test_client()
+
+            for route in ("/hosted/login/desktop", "/hosted/login/mobile"):
+                response = client.get(route)
+
+                self.assertEqual(response.status_code, 200)
+                for fragment in self.RAW_JS_FRAGMENTS:
+                    self.assertNotIn(fragment, response.data)
 
     def test_hosted_login_route_denies_non_allowlisted_identity(self):
         with tempfile.TemporaryDirectory() as temp_dir:
