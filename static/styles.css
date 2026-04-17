@@ -6228,6 +6228,7 @@ tr:hover td {
     min-height: 100vh;
     display: grid;
     align-items: center;
+    overflow: visible;
 }
 
 .delphi-portal-shell-desktop {
@@ -6245,7 +6246,16 @@ tr:hover td {
     gap: 16px;
 }
 
+.delphi-portal-hero-layer {
+    position: absolute;
+    pointer-events: none;
+    z-index: 0;
+    overflow: visible;
+}
+
 .delphi-portal-brand {
+    position: relative;
+    z-index: 1;
     display: grid;
     justify-items: center;
     text-align: center;
@@ -6257,8 +6267,9 @@ tr:hover td {
     display: grid;
     place-items: center;
     isolation: isolate;
-    width: 500px;
-    margin: 0 0 14px;
+    width: auto;
+    margin: 0;
+    max-width: none;
 }
 
 .delphi-portal-hero-wrap::before {
@@ -6276,59 +6287,67 @@ tr:hover td {
 .delphi-portal-hero-wrap::after {
     content: "";
     position: absolute;
-    left: 8%;
-    right: 8%;
+    left: 5%;
+    right: 5%;
     top: 50.5%;
     height: 2px;
     background: linear-gradient(90deg, rgba(245, 200, 78, 0) 0%, rgba(255, 244, 204, 0.48) 48%, rgba(245, 200, 78, 0) 100%);
     opacity: 0.18;
     filter: blur(0.45px);
-    transform: translateX(-6%) scaleX(0.96);
+    transform: translateX(-2%) scaleX(0.99);
     animation: delphiPortalHeroSweep 9.5s ease-in-out infinite;
 }
 
 .delphi-portal-hero-wrap-mobile::after {
-    left: 6%;
-    right: 6%;
+    left: 7%;
+    right: 7%;
 }
 
 .delphi-portal-hero {
-    width: 500px;
+    display: block;
+    width: 100%;
     height: auto;
     margin-bottom: 0;
     filter: drop-shadow(0 18px 42px rgba(0, 0, 0, 0.54));
     animation: delphiPortalHeroFloat 10s ease-in-out infinite;
     will-change: transform, filter;
+    max-width: none;
 }
 
-.delphi-portal-hero-mobile {
-    width: 250px;
+.delphi-portal-hero-wrap-desktop {
+    width: 620px;
+}
+
+.delphi-portal-hero-wrap-mobile {
+    width: 300px;
 }
 
 .delphi-portal-shell-desktop .delphi-portal-brand {
     justify-items: start;
     text-align: left;
     align-content: center;
+    padding-top: 248px;
 }
 
-.delphi-portal-shell-desktop .delphi-portal-hero {
-    justify-self: start;
+.delphi-portal-hero-layer-desktop {
+    top: 8px;
+    left: -82px;
 }
 
 .delphi-portal-shell-desktop .delphi-portal-hero-wrap {
     justify-self: start;
-    margin: -28px 0 6px -34px;
 }
 
 .delphi-portal-brand-mobile {
     justify-items: center;
     text-align: center;
-    padding-top: 0;
+    padding-top: 212px;
 }
 
-.delphi-portal-brand-mobile .delphi-portal-hero-wrap {
-    width: 250px;
-    margin: 0 auto 6px;
+.delphi-portal-hero-layer-mobile {
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
 }
 
 .delphi-portal-emblem {
@@ -6485,6 +6504,7 @@ tr:hover td {
 
 .delphi-portal-card {
     position: relative;
+    z-index: 2;
     border-radius: 30px;
     border: 1px solid var(--delphi-panel-border);
     background: linear-gradient(180deg, rgba(4, 10, 17, 0.9) 0%, rgba(7, 13, 20, 0.97) 100%);
@@ -6853,15 +6873,21 @@ tr:hover td {
     .delphi-portal-shell-desktop .delphi-portal-brand {
         justify-items: center;
         text-align: center;
+        padding-top: 234px;
+    }
+
+    .delphi-portal-hero-layer-desktop {
+        top: 0;
+        left: 50%;
+        transform: translateX(-50%);
     }
 
     .delphi-portal-shell-desktop .delphi-portal-hero-wrap {
-        margin: 0 0 12px;
+        justify-self: center;
     }
 
-    .delphi-portal-shell-desktop .delphi-portal-hero,
-    .delphi-portal-shell-desktop .delphi-portal-hero-wrap {
-        width: 460px;
+    .delphi-portal-hero-wrap-desktop {
+        width: 620px;
     }
 
     .delphi-portal-card-desktop {
@@ -6875,10 +6901,16 @@ tr:hover td {
         padding-right: 16px;
     }
 
-    .delphi-portal-hero-wrap,
-    .delphi-portal-brand-mobile .delphi-portal-hero-wrap,
-    .delphi-portal-hero-mobile {
-        width: 240px;
+    .delphi-portal-brand-mobile {
+        padding-top: 206px;
+    }
+
+    .delphi-portal-hero-layer-mobile {
+        top: 10px;
+    }
+
+    .delphi-portal-hero-wrap-mobile {
+        width: 300px;
     }
 
     .delphi-portal-statusline,
