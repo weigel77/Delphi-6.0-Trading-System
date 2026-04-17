@@ -12,7 +12,7 @@
             <div class="delphi-launch-mark"></div>
             <p class="delphi-launch-kicker">{{ app_identity.page_kicker }}</p>
             <h1>Selecting Your Command Portal</h1>
-            <p>{% if authenticated %}Delphi 6.3.1 is preserving your active branch and routing you into the right command surface.{% else %}Delphi 6.3.1 is detecting the right login portal for this device before sign-in.{% endif %}</p>
+            <p>{% if authenticated %}{{ app_identity.display_name }} is preserving your active branch and routing you into the right command surface.{% else %}{{ app_identity.display_name }} is detecting the right login portal for this device before sign-in.{% endif %}</p>
             <div class="delphi-launch-spinner" aria-hidden="true"></div>
             <div class="delphi-launch-links">
                 <a href="{{ desktop_target }}">Continue to Desktop</a>

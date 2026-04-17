@@ -175,9 +175,32 @@ class HostedLoginFlowTest(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             self.assertIn(b"Selecting Your Command Portal", response.data)
+            self.assertIn(b"Delphi 6.3.4 is detecting the right login portal for this device before sign-in.", response.data)
             self.assertIn(b'data-desktop-target="/hosted/login/desktop?next=/hosted/apollo"', response.data)
             self.assertIn(b'data-mobile-target="/hosted/login/mobile?next=/hosted/apollo"', response.data)
             self.assertIn(b'data-explicit-view="mobile"', response.data)
+
+    def test_hosted_launch_page_uses_current_hosted_identity_for_authenticated_users(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = self._create_hosted_app(temp_dir)
+            app.extensions["request_identity_resolver"] = _CookieIdentityResolver(
+                {
+                    "bill-token": RequestIdentity(
+                        user_id="user-1",
+                        email="bill@example.com",
+                        display_name="Bill",
+                        authenticated=True,
+                        auth_source="supabase-hosted",
+                    )
+                }
+            )
+
+            client = app.test_client()
+            client.set_cookie("delphi_hosted_access_token", "bill-token")
+            response = client.get("/hosted/launch")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(b"Delphi 6.3.4 is preserving your active branch and routing you into the right command surface.", response.data)
 
     def test_hosted_desktop_login_page_renders_delphi_6_3_4_portal(self):
         with tempfile.TemporaryDirectory() as temp_dir:
