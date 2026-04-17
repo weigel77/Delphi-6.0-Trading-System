@@ -179,7 +179,7 @@ class HostedLoginFlowTest(unittest.TestCase):
             self.assertIn(b'data-mobile-target="/hosted/login/mobile?next=/hosted/apollo"', response.data)
             self.assertIn(b'data-explicit-view="mobile"', response.data)
 
-    def test_hosted_desktop_login_page_renders_delphi_6_3_3_portal(self):
+    def test_hosted_desktop_login_page_renders_delphi_6_3_4_portal(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             app = self._create_hosted_app(temp_dir)
 
@@ -187,13 +187,13 @@ class HostedLoginFlowTest(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             self.assertIn(b"DELPHI", response.data)
-            self.assertIn(b"SPX Tactical Command System", response.data)
-            self.assertIn(b"Structure. Risk. Execution.", response.data)
+            self.assertIn(b"SPX TACTICAL COMMAND SYSTEM", response.data)
+            self.assertIn(b"STRUCTURE. RISK. EXECUTION.", response.data)
             self.assertIn(b"Desktop Access", response.data)
-            self.assertIn(b"Delphi 6.3.3", response.data)
+            self.assertIn(b"Delphi 6.3.4", response.data)
             self.assertIn(b"Structured intelligence for disciplined SPX execution.", response.data)
 
-    def test_hosted_mobile_login_page_renders_delphi_6_3_3_portal(self):
+    def test_hosted_mobile_login_page_renders_delphi_6_3_4_portal(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             app = self._create_hosted_app(temp_dir)
 
@@ -201,9 +201,10 @@ class HostedLoginFlowTest(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             self.assertIn(b"DELPHI", response.data)
-            self.assertIn(b"SPX Tactical Command System", response.data)
+            self.assertIn(b"SPX TACTICAL COMMAND SYSTEM", response.data)
             self.assertIn(b"Mobile Access", response.data)
-            self.assertIn(b"Delphi 6.3.3", response.data)
+            self.assertIn(b"Delphi 6.3.4", response.data)
+            self.assertIn(b"STRUCTURE. RISK. EXECUTION.", response.data)
             self.assertIn(b"Structured intelligence for disciplined SPX execution.", response.data)
 
     def test_hosted_login_route_denies_non_allowlisted_identity(self):
