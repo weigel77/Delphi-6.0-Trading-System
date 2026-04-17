@@ -11,11 +11,6 @@
 </head>
 <body class="delphi-portal-body delphi-portal-body-mobile">
     <main class="delphi-portal-shell delphi-portal-shell-mobile">
-        <div class="delphi-portal-hero-layer delphi-portal-hero-layer-mobile" aria-hidden="true">
-            <div class="delphi-portal-hero-wrap delphi-portal-hero-wrap-mobile">
-                <img class="delphi-portal-hero delphi-portal-hero-mobile" src="{{ url_for('static', filename='delphi-pyramid.png') }}" alt="">
-            </div>
-        </div>
         <section class="delphi-portal-brand delphi-portal-brand-mobile">
             <p class="delphi-portal-kicker">STRUCTURE. RISK. EXECUTION.</p>
             <h1 class="delphi-portal-wordmark">DELPHI</h1>
@@ -35,7 +30,7 @@
                 <p>Authenticate into the phone-first Delphi command surface with the same hosted credentials and live session continuity.</p>
             </div>
 
-            <form method="post" action="{{ login_action_url }}" class="delphi-portal-form delphi-portal-form-mobile" data-login-form>
+            <form method="post" action="{{ login_action_url }}" class="delphi-portal-form delphi-portal-form-mobile">
                 <input type="hidden" name="next" value="{{ next_path }}">
                 <label class="delphi-portal-field" for="hosted-mobile-email">
                     <span>Email</span>
@@ -43,17 +38,12 @@
                 </label>
                 <label class="delphi-portal-field" for="hosted-mobile-password">
                     <span>Password</span>
-                    <div class="delphi-portal-password-wrap">
-                        <input id="hosted-mobile-password" name="password" type="password" autocomplete="current-password" placeholder="Enter password" required>
-                        <button type="button" class="delphi-portal-password-toggle" data-password-toggle aria-label="Show password">
-                            <span class="delphi-portal-eye" aria-hidden="true"></span>
-                        </button>
-                    </div>
+                    <input id="hosted-mobile-password" name="password" type="password" autocomplete="current-password" placeholder="Enter password" required>
                 </label>
                 {% if error_message %}
                     <div class="message message-warning hosted-shell-error-message">{{ error_message }}</div>
                 {% endif %}
-                <button type="submit" class="delphi-portal-submit" data-login-submit>SIGN IN</button>
+                <button type="submit" class="delphi-portal-submit">SIGN IN</button>
                 <div class="delphi-portal-footer delphi-portal-footer-mobile">
                     <span class="delphi-portal-status-pill delphi-portal-status-pill-muted">{{ app_identity.page_kicker }}</span>
                     <span class="delphi-portal-status-pill delphi-portal-status-pill-online">System Online</span>
@@ -62,43 +52,5 @@
             </form>
         </section>
     </main>
-    <script>
-        (() => {
-            const toggle = document.querySelector('[data-password-toggle]');
-            const input = document.getElementById('hosted-mobile-password');
-            const form = document.querySelector('[data-login-form]');
-            const submitButton = document.querySelector('[data-login-submit]');
-            const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-            let isSubmitting = false;
-
-            if (toggle && input) {
-                toggle.addEventListener('click', () => {
-                    const reveal = input.type === 'password';
-                    input.type = reveal ? 'text' : 'password';
-                    toggle.setAttribute('aria-label', reveal ? 'Hide password' : 'Show password');
-                    toggle.classList.toggle('delphi-portal-password-toggle-active', reveal);
-                });
-            }
-
-            if (!form || !submitButton) {
-                return;
-            }
-
-            form.addEventListener('submit', (event) => {
-                if (isSubmitting || reduceMotion.matches) {
-                    return;
-                }
-                event.preventDefault();
-                isSubmitting = true;
-                document.body.classList.add('delphi-portal-authenticating');
-                form.classList.add('delphi-portal-form-pending');
-                submitButton.disabled = true;
-                submitButton.setAttribute('aria-busy', 'true');
-                window.setTimeout(() => {
-                    HTMLFormElement.prototype.submit.call(form);
-                }, 240);
-            });
-        })();
-    </script>
 </body>
 </html>

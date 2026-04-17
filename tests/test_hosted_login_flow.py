@@ -215,7 +215,8 @@ class HostedLoginFlowTest(unittest.TestCase):
             self.assertIn(b"Desktop Access", response.data)
             self.assertIn(b"Delphi 6.3.5", response.data)
             self.assertIn(b"Structured intelligence for disciplined SPX execution.", response.data)
-            self.assertIn(b"delphi-portal-hero-layer-desktop", response.data)
+            self.assertNotIn(b"delphi-pyramid.png", response.data)
+            self.assertNotIn(b"delphi-portal-hero-layer-desktop", response.data)
 
     def test_hosted_mobile_login_page_renders_delphi_6_3_5_portal(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -230,7 +231,8 @@ class HostedLoginFlowTest(unittest.TestCase):
             self.assertIn(b"Delphi 6.3.5", response.data)
             self.assertIn(b"STRUCTURE. RISK. EXECUTION.", response.data)
             self.assertIn(b"Structured intelligence for disciplined SPX execution.", response.data)
-            self.assertIn(b"delphi-portal-hero-layer-mobile", response.data)
+            self.assertNotIn(b"delphi-pyramid.png", response.data)
+            self.assertNotIn(b"delphi-portal-hero-layer-mobile", response.data)
 
     def test_hosted_login_route_denies_non_allowlisted_identity(self):
         with tempfile.TemporaryDirectory() as temp_dir:
