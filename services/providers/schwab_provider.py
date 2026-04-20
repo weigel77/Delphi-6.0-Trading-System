@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import inspect
 import json
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, List
@@ -13,6 +14,7 @@ import requests
 from config import AppConfig
 
 from ..calculations import calculate_percent_change, calculate_point_change
+from ..market_calendar_service import MarketCalendarService
 from ..schwab_auth_service import SchwabAuthService
 from .base_provider import (
     BaseMarketDataProvider,
@@ -55,6 +57,8 @@ class SchwabProvider(BaseMarketDataProvider):
         "^GSPC": ("$SPX",),
         "SPX": ("$SPX",),
     }
+    REGULAR_SESSION_START = time(8, 30)
+    REGULAR_SESSION_END = time(15, 0)
 
     def __init__(
         self,
@@ -65,6 +69,7 @@ class SchwabProvider(BaseMarketDataProvider):
         super().__init__(display_timezone=display_timezone)
         self.config = config
         self.auth_service = auth_service or SchwabAuthService(config)
+        self.market_calendar_service = MarketCalendarService(config)
         self.last_option_chain_diagnostics: Dict[str, Any] = {}
 
     def get_metadata(self) -> Dict[str, Any]:
@@ -226,7 +231,8 @@ class SchwabProvider(BaseMarketDataProvider):
     def get_intraday_candles_for_date(self, symbol: str, target_date: date, interval_minutes: int = 5) -> pd.DataFrame:
         """Fetch intraday candles for the requested trading date."""
         endpoint = f"{self.config.schwab_base_url}/pricehistory"
-        session_window = self._get_session_window_for_date(target_date)
+        caller_context = self._describe_intraday_request_caller()
+        session_window = self._get_session_window_for_date(target_date, caller_context=caller_context)
 
         last_failure: ProviderError | None = None
         for schwab_symbol in self._get_intraday_symbol_candidates(symbol):
@@ -237,9 +243,12 @@ class SchwabProvider(BaseMarketDataProvider):
                 end_at=session_window["end_utc"],
             )
             LOGGER.info(
-                "Schwab intraday request | symbol=%s | endpoint=%s | params=%s",
+                "Schwab intraday request | symbol=%s | endpoint=%s | requested_session_date=%s | resolved_session_date=%s | caller=%s | params=%s",
                 schwab_symbol,
                 endpoint,
+                session_window["requested_session_date"].isoformat(),
+                session_window["session_date"].isoformat(),
+                caller_context["caller"],
                 params,
             )
 
@@ -247,10 +256,25 @@ class SchwabProvider(BaseMarketDataProvider):
 
             if response.status_code >= 400:
                 safe_message = self._extract_safe_error_message(response)
+                if "before startdate" in safe_message.lower() or "before startDate" in safe_message:
+                    LOGGER.error(
+                        "Schwab intraday invalid date range reached upstream | symbol=%s | caller=%s | requested_session_date=%s | resolved_session_date=%s | start_utc=%s | end_utc=%s | params=%s | body=%s",
+                        schwab_symbol,
+                        caller_context["chain"],
+                        session_window["requested_session_date"].isoformat(),
+                        session_window["session_date"].isoformat(),
+                        session_window["start_utc"].isoformat(),
+                        session_window["end_utc"].isoformat(),
+                        params,
+                        self._safe_response_text(response),
+                    )
                 LOGGER.warning(
-                    "Schwab intraday request failed | symbol=%s | endpoint=%s | params=%s | status=%s | body=%s",
+                    "Schwab intraday request failed | symbol=%s | endpoint=%s | caller=%s | requested_session_date=%s | resolved_session_date=%s | params=%s | status=%s | body=%s",
                     schwab_symbol,
                     endpoint,
+                    caller_context["chain"],
+                    session_window["requested_session_date"].isoformat(),
+                    session_window["session_date"].isoformat(),
                     params,
                     response.status_code,
                     self._safe_response_text(response),
@@ -779,20 +803,104 @@ class SchwabProvider(BaseMarketDataProvider):
         """Return today's regular-session window in the display timezone and UTC."""
         return self._get_session_window_for_date(datetime.now(self.display_timezone).date())
 
-    def _get_session_window_for_date(self, session_date: date) -> Dict[str, Any]:
+    def _get_session_window_for_date(self, session_date: date, caller_context: Dict[str, str] | None = None) -> Dict[str, Any]:
         """Return a regular-session window for the requested date."""
-        session_start_local = datetime.combine(session_date, time(8, 30), tzinfo=self.display_timezone)
-        session_end_local = datetime.combine(session_date, time(15, 0), tzinfo=self.display_timezone)
         local_now = datetime.now(self.display_timezone)
-        if session_date == local_now.date():
+        caller_context = caller_context or self._describe_intraday_request_caller()
+        resolved_session_date, clamp_reason = self._resolve_intraday_session_date(session_date, local_now)
+        session_start_local = datetime.combine(resolved_session_date, self.REGULAR_SESSION_START, tzinfo=self.display_timezone)
+        session_end_local = datetime.combine(resolved_session_date, self.REGULAR_SESSION_END, tzinfo=self.display_timezone)
+
+        if resolved_session_date == local_now.date() and self.market_calendar_service.is_tradable_market_day(resolved_session_date):
             session_end_local = min(local_now, session_end_local)
-            if session_end_local <= session_start_local:
-                session_end_local = session_start_local
+
+        if clamp_reason:
+            LOGGER.warning(
+                "Schwab intraday session clamped | caller=%s | requested_session_date=%s | resolved_session_date=%s | local_now=%s | reason=%s",
+                caller_context["chain"],
+                session_date.isoformat(),
+                resolved_session_date.isoformat(),
+                local_now.isoformat(),
+                clamp_reason,
+            )
+
+        if session_end_local < session_start_local:
+            LOGGER.warning(
+                "Schwab intraday range normalized | caller=%s | requested_session_date=%s | resolved_session_date=%s | start_local=%s | end_local=%s",
+                caller_context["chain"],
+                session_date.isoformat(),
+                resolved_session_date.isoformat(),
+                session_start_local.isoformat(),
+                session_end_local.isoformat(),
+            )
+            session_end_local = session_start_local
 
         return {
-            "session_date": session_date,
+            "requested_session_date": session_date,
+            "session_date": resolved_session_date,
             "start_utc": session_start_local.astimezone(timezone.utc),
             "end_utc": session_end_local.astimezone(timezone.utc),
+            "caller": caller_context["caller"],
+            "caller_chain": caller_context["chain"],
+            "clamp_reason": clamp_reason,
+        }
+
+    def _resolve_intraday_session_date(self, requested_session_date: date, local_now: datetime) -> tuple[date, str | None]:
+        latest_session_date = self._get_latest_available_intraday_session_date(local_now)
+        resolved_session_date = requested_session_date
+        reasons: list[str] = []
+
+        if requested_session_date > latest_session_date:
+            resolved_session_date = latest_session_date
+            reasons.append(f"requested session was beyond the latest available intraday session {latest_session_date.isoformat()}")
+
+        if not self.market_calendar_service.is_tradable_market_day(resolved_session_date):
+            holiday_name = self.market_calendar_service.get_holiday_name(resolved_session_date)
+            prior_tradable_session = self._get_previous_tradable_market_day(resolved_session_date)
+            closure_reason = holiday_name or ("weekend" if resolved_session_date.weekday() >= 5 else "exchange-closed")
+            reasons.append(f"requested session {resolved_session_date.isoformat()} was {closure_reason}; using {prior_tradable_session.isoformat()}")
+            resolved_session_date = prior_tradable_session
+
+        reason_text = "; ".join(reasons) if reasons else None
+        return resolved_session_date, reason_text
+
+    def _get_latest_available_intraday_session_date(self, local_now: datetime) -> date:
+        candidate = local_now.date()
+        if not self.market_calendar_service.is_tradable_market_day(candidate):
+            return self._get_previous_tradable_market_day(candidate)
+        if local_now.time() < self.REGULAR_SESSION_START:
+            return self._get_previous_tradable_market_day(candidate)
+        return candidate
+
+    def _get_previous_tradable_market_day(self, anchor_date: date) -> date:
+        candidate = anchor_date - timedelta(days=1)
+        while not self.market_calendar_service.is_tradable_market_day(candidate):
+            candidate -= timedelta(days=1)
+        return candidate
+
+    def _describe_intraday_request_caller(self) -> Dict[str, str]:
+        frames: list[str] = []
+        for frame in inspect.stack()[2:]:
+            normalized_path = frame.filename.replace("\\", "/")
+            if normalized_path.endswith("/services/providers/schwab_provider.py"):
+                continue
+            if "/site-packages/" in normalized_path:
+                continue
+            if "Delphi-5.0-Web-Dev/" in normalized_path:
+                normalized_path = normalized_path.split("Delphi-5.0-Web-Dev/", 1)[1]
+            descriptor = f"{normalized_path}:{frame.lineno}:{frame.function}"
+            frames.append(descriptor)
+
+        caller = next((item for item in frames if not item.startswith("services/market_data.py:")), frames[0] if frames else "unknown")
+        chain_items: list[str] = []
+        if caller != "unknown":
+            chain_items.append(caller)
+        facade = next((item for item in frames if item.startswith("services/market_data.py:")), None)
+        if facade is not None:
+            chain_items.append(facade)
+        return {
+            "caller": caller,
+            "chain": " -> ".join(chain_items) if chain_items else "unknown",
         }
 
     @staticmethod

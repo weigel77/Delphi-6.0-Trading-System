@@ -197,14 +197,22 @@ class PerformanceDashboardTest(unittest.TestCase):
         self.assertIn(b"System", response.data)
         self.assertIn(b"Trade Mode", response.data)
         self.assertIn(b"performance-line-popup", response.data)
-        self.assertIn(b"Delphi 4.3 Learning Metrics", response.data)
+        self.assertIn(b"Performance Learning Metrics", response.data)
         self.assertIn(b"id=\"credit-efficiency-system-panel\"", response.data)
         self.assertIn(b"id=\"credit-efficiency-profile-panel\"", response.data)
         self.assertIn(b"id=\"credit-efficiency-vix-panel\"", response.data)
-        self.assertIn(b"Best EM Safety Distance by Profile", response.data)
-        self.assertIn(b"id=\"profile-em-safety-distance-panel\"", response.data)
-        self.assertIn(b"id=\"profile-em-safety-real-only\"", response.data)
-        self.assertIn(b"id=\"profile-em-safety-real-plus-simulated\"", response.data)
+        self.assertIn(b"EM Performance by Profile", response.data)
+        self.assertIn(b"id=\"profile-em-performance-panel\"", response.data)
+        self.assertIn(b"Distance Efficiency Score", response.data)
+        self.assertIn(b"id=\"distance-efficiency-panel\"", response.data)
+        self.assertIn(b"Time of Entry Edge", response.data)
+        self.assertIn(b"id=\"time-of-entry-edge-panel\"", response.data)
+        self.assertIn(b"Exit Efficiency", response.data)
+        self.assertIn(b"id=\"exit-efficiency-panel\"", response.data)
+        self.assertIn(b"VIX Regime Performance", response.data)
+        self.assertIn(b"id=\"vix-regime-performance-panel\"", response.data)
+        self.assertIn(b"Expected Move Deviation / Breach Analysis", response.data)
+        self.assertIn(b"id=\"expected-move-breach-panel\"", response.data)
         self.assertIn(b"Safety Ratio Curve Summary", response.data)
         self.assertIn(b"id=\"safety-ratio-expectancy-chart\"", response.data)
         self.assertIn(b"id=\"safety-ratio-bucket-summary\"", response.data)
@@ -288,10 +296,13 @@ class PerformanceDashboardTest(unittest.TestCase):
         self.assertIn("em_policy", payload["learning"])
         self.assertIn("apollo", payload["learning"]["em_policy"])
         self.assertIn("kairos", payload["learning"]["em_policy"])
-        self.assertIn("profile_em_safety_distance", payload["learning"])
-        self.assertEqual(payload["learning"]["profile_em_safety_distance"]["default_view"], "real_only")
-        self.assertFalse(payload["learning"]["profile_em_safety_distance"]["real_only"]["include_simulated"])
-        self.assertTrue(payload["learning"]["profile_em_safety_distance"]["real_plus_simulated"]["include_simulated"])
+        self.assertIn("profile_em_performance", payload["learning"])
+        self.assertIn("distance_efficiency", payload["learning"])
+        self.assertIn("time_of_entry_edge", payload["learning"])
+        self.assertIn("exit_efficiency", payload["learning"])
+        self.assertIn("vix_regime_performance", payload["learning"])
+        self.assertIn("expected_move_breach_analysis", payload["learning"])
+        self.assertGreaterEqual(len(payload["learning"]["data_limitations"]), 1)
         self.assertIn("safety_ratio_expectancy_curve", payload["charts"])
 
     def test_performance_data_route_respects_explicitly_empty_filter_group(self):
@@ -302,7 +313,7 @@ class PerformanceDashboardTest(unittest.TestCase):
         self.assertEqual(payload["filters"]["profile"], [])
         self.assertEqual(payload["records_filtered"], 0)
 
-    def test_profile_em_safety_distance_payload_separates_real_only_from_real_plus_simulated(self):
+    def test_profile_em_performance_uses_profile_specific_intervals(self):
         payload = build_dashboard_payload(
             [
                 build_performance_record(
@@ -343,7 +354,7 @@ class PerformanceDashboardTest(unittest.TestCase):
                     {
                         "id": 63,
                         "trade_number": 63,
-                        "trade_mode": "simulated",
+                        "trade_mode": "real",
                         "system_name": "Apollo",
                         "candidate_profile": "Fortress",
                         "status": "closed",
@@ -360,7 +371,7 @@ class PerformanceDashboardTest(unittest.TestCase):
                     {
                         "id": 64,
                         "trade_number": 64,
-                        "trade_mode": "simulated",
+                        "trade_mode": "real",
                         "system_name": "Apollo",
                         "candidate_profile": "Fortress",
                         "status": "closed",
@@ -384,22 +395,15 @@ class PerformanceDashboardTest(unittest.TestCase):
             },
         )
 
-        em_distance = payload["learning"]["profile_em_safety_distance"]
-        real_profiles = {item["profile"]: item for item in em_distance["real_only"]["profiles"]}
-        combined_profiles = {item["profile"]: item for item in em_distance["real_plus_simulated"]["profiles"]}
-        standard_high_vix = next(item for item in real_profiles["Standard"]["regimes"] if item["key"] == "vix_ge_19")
-        fortress_high_vix = next(item for item in combined_profiles["Fortress"]["regimes"] if item["key"] == "vix_ge_19")
+        profile_em = {item["profile"]: item for item in payload["learning"]["profile_em_performance"]["profiles"]}
 
-        self.assertEqual(em_distance["default_view"], "real_only")
-        self.assertIn("Standard", real_profiles)
-        self.assertNotIn("Fortress", real_profiles)
-        self.assertEqual(standard_high_vix["recommended_range"], "1.8-2.0x EM")
-        self.assertEqual(standard_high_vix["supporting_trade_count"], 2)
-        self.assertEqual(standard_high_vix["status"], "ready")
-        self.assertIn("Fortress", combined_profiles)
-        self.assertEqual(fortress_high_vix["recommended_range"], "2.2+x EM")
-        self.assertEqual(fortress_high_vix["supporting_trade_count"], 2)
-        self.assertEqual(fortress_high_vix["status"], "ready")
+        self.assertIn("Standard", profile_em)
+        self.assertIn("Fortress", profile_em)
+        self.assertEqual(profile_em["Standard"]["qualified_trade_count"], 2)
+        self.assertEqual(profile_em["Fortress"]["qualified_trade_count"], 2)
+        self.assertNotEqual(profile_em["Standard"]["interval_range"], profile_em["Fortress"]["interval_range"])
+        self.assertEqual(profile_em["Standard"]["buckets"][0]["trade_count"], 2)
+        self.assertEqual(profile_em["Fortress"]["buckets"][0]["trade_count"], 2)
 
     def test_performance_filters_change_metric_outputs_correctly(self):
         response = self.client.get("/performance/data?system=apollo&result=win&result=loss&result=black-swan&trade_mode=real&trade_mode=simulated&profile=legacy&profile=aggressive&profile=fortress&profile=standard&macro_grade=none&macro_grade=minor&macro_grade=major&structure_grade=good&structure_grade=neutral&structure_grade=poor")

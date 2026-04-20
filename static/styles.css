@@ -10,33 +10,26 @@
     --error-bg: #fff0f0;
     --error-border: #e8b4b8;
     --error-text: #8a1c28;
-        overflow: hidden;
     --shadow: 0 20px 45px rgba(18, 49, 78, 0.08);
 }
 
 * {
-        position: absolute;
-        display: block;
+    box-sizing: border-box;
+}
 
 body {
     margin: 0;
-        animation: none;
-        will-change: filter;
+    font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(180deg, #eef4fb 0%, var(--background) 100%);
     font-size: 0.86rem;
     color: var(--text);
     line-height: 1.32;
 }
 
-        height: 360px;
-        animation: delphiPortalHeroFloat 10s ease-in-out infinite;
-        will-change: transform, filter;
 td {
     font-size: 0.86rem;
 }
 
-        height: 194px;
-        animation: delphiPortalHeroFloat 10s ease-in-out infinite;
-        will-change: transform, filter;
 @media (max-width: 1320px) {
     .apollo-gate-one-grid {
         grid-template-columns: 1fr;
@@ -57,23 +50,23 @@ td {
     }
 
     .apollo-macro-grid,
-        top: 4px;
-        left: -34px;
+    .apollo-control-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 }
 
 .page-shell {
     max-width: 1720px;
-        padding-top: 220px;
+    margin: 0 auto;
     padding: 12px 14px 18px;
 }
 
 .hero-card,
-        padding-top: 172px;
+.panel {
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 12px;
-        top: 18px;
+    padding: 10px 12px;
     box-shadow: var(--shadow);
     margin-bottom: 10px;
 }
@@ -82,12 +75,12 @@ td {
     text-transform: uppercase;
     letter-spacing: 0.08em;
     font-weight: 700;
-    .delphi-portal-authenticating .delphi-portal-hero-wrap {
+    font-size: 0.82rem;
     color: var(--accent);
     margin: 0 0 8px;
 }
 
-        .delphi-portal-hero-wrap,
+h1,
 h2 {
     margin-top: 0;
 }
@@ -97,7 +90,7 @@ h2 {
 .summary-label {
     color: var(--muted);
 }
-            padding-top: 214px;
+
 .hero-layout {
     display: grid;
     gap: 6px;
@@ -107,11 +100,10 @@ h2 {
     display: grid;
     gap: 6px;
 }
-            height: 360px;
 
 .hero-card h1 {
     margin: 0;
-            padding-top: 168px;
+    font-size: 1.45rem;
 }
 
 .hero-copy {
@@ -120,7 +112,6 @@ h2 {
     font-size: 0.84rem;
     line-height: 1.28;
 }
-            height: 194px;
 
 .hero-kicker {
     margin: 0 0 4px;
@@ -4550,10 +4541,26 @@ tr:hover td {
     color: var(--muted);
 }
 
+.performance-safety-table-wide {
+    align-content: start;
+}
+
+.performance-safety-row-wide {
+    grid-template-columns: minmax(110px, 1.35fr) minmax(46px, 0.55fr) minmax(72px, 0.75fr) minmax(82px, 0.85fr) minmax(82px, 0.85fr) minmax(126px, 1fr);
+}
+
+.performance-safety-row-7 {
+    grid-template-columns: minmax(110px, 1.3fr) minmax(44px, 0.5fr) minmax(72px, 0.72fr) minmax(72px, 0.72fr) minmax(82px, 0.82fr) minmax(82px, 0.82fr) minmax(126px, 1fr);
+}
+
 .performance-guidance-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
+}
+
+.performance-guidance-grid-single-stack {
+    grid-template-columns: minmax(0, 1fr);
 }
 
 .performance-guidance-card {
@@ -4954,26 +4961,41 @@ tr:hover td {
 
 .delphi-mobile-body {
     margin: 0;
+    --delphi-mobile-nav-offset: calc(106px + env(safe-area-inset-bottom));
     background: linear-gradient(180deg, #051018 0%, #07151d 36%, #f2f7fb 36%, #f2f7fb 100%);
     color: #0d2231;
 }
 
 .delphi-mobile-shell {
     display: grid;
-    gap: 16px;
-    padding: max(18px, env(safe-area-inset-top)) 16px calc(108px + env(safe-area-inset-bottom));
+    gap: 12px;
+    padding: max(14px, env(safe-area-inset-top)) 16px calc(var(--delphi-mobile-nav-offset) + 14px);
+}
+
+.delphi-mobile-shell-apollo {
+    gap: 12px;
 }
 
 .delphi-mobile-header {
     display: flex;
     justify-content: space-between;
-    gap: 14px;
+    gap: 12px;
     align-items: end;
-    padding: 16px;
-    border-radius: 24px;
+    padding: 12px 14px;
+    border-radius: 20px;
     background: linear-gradient(135deg, rgba(7, 24, 38, 0.94) 0%, rgba(9, 37, 51, 0.96) 100%);
     color: #eef8ff;
-    box-shadow: 0 18px 48px rgba(5, 16, 24, 0.18);
+    box-shadow: 0 14px 34px rgba(5, 16, 24, 0.16);
+}
+
+.delphi-mobile-header-home {
+    align-items: start;
+}
+
+.delphi-mobile-header-copy {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
 }
 
 .delphi-mobile-header h1,
@@ -4983,16 +5005,87 @@ tr:hover td {
 }
 
 .delphi-mobile-header p {
-    margin: 6px 0 0;
-    color: rgba(231, 242, 252, 0.8);
+    margin: 4px 0 0;
+    color: rgba(241, 248, 255, 0.92);
+    font-size: 0.84rem;
+    line-height: 1.35;
+}
+
+.delphi-mobile-header .delphi-mobile-kicker {
+    color: #9feaf0;
+}
+
+.delphi-mobile-header h1 {
+    color: #ffffff;
+}
+
+.delphi-mobile-header-market-stamps {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 2px;
+}
+
+.delphi-mobile-header-market-stamp {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+    padding: 8px 10px;
+    border-radius: 14px;
+    border: 1px solid rgba(159, 182, 201, 0.28);
+    background: linear-gradient(180deg, #ffffff 0%, #f5f9fc 100%);
+    box-shadow: 0 8px 18px rgba(4, 21, 34, 0.12);
+}
+
+.delphi-mobile-header-market-stamp span {
+    color: #466173;
+    font-size: 0.66rem;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.delphi-mobile-header-market-stamp strong {
+    color: #0f2432;
+    font-size: 0.92rem;
+    line-height: 1.15;
+}
+
+.delphi-mobile-header-market-stamp small {
+    color: #31516a;
+    font-size: 0.72rem;
+    line-height: 1.2;
+}
+
+.delphi-mobile-header-market-stamp-positive {
+    border-color: rgba(106, 190, 124, 0.32);
+    background: linear-gradient(180deg, #ffffff 0%, #eefaf0 100%);
+}
+
+.delphi-mobile-header-market-stamp-positive small {
+    color: #1f7a42;
+}
+
+.delphi-mobile-header-market-stamp-negative {
+    border-color: rgba(224, 133, 116, 0.34);
+    background: linear-gradient(180deg, #ffffff 0%, #fff1ed 100%);
+}
+
+.delphi-mobile-header-market-stamp-negative small {
+    color: #a24b33;
+}
+
+.delphi-mobile-header-market-stamp-neutral {
+    border-color: rgba(159, 182, 201, 0.28);
+    background: linear-gradient(180deg, #ffffff 0%, #f4f8fb 100%);
 }
 
 .delphi-mobile-header-badge {
     display: grid;
-    gap: 4px;
-    min-width: 118px;
-    padding: 12px;
-    border-radius: 18px;
+    gap: 3px;
+    min-width: 104px;
+    padding: 10px;
+    border-radius: 16px;
     background: rgba(255, 255, 255, 0.08);
     text-align: right;
 }
@@ -5005,12 +5098,12 @@ tr:hover td {
 }
 
 .delphi-mobile-header-badge strong {
-    font-size: 0.92rem;
+    font-size: 0.84rem;
 }
 
 .delphi-mobile-section {
     display: grid;
-    gap: 12px;
+    gap: 10px;
 }
 
 .delphi-mobile-section-heading {
@@ -5018,6 +5111,18 @@ tr:hover td {
     justify-content: space-between;
     gap: 12px;
     align-items: center;
+}
+
+.delphi-mobile-section-heading h2 {
+    color: #0f2432;
+}
+
+.delphi-mobile-section-heading-on-dark h2 {
+    color: #ffffff;
+}
+
+.delphi-mobile-section-heading-on-dark .delphi-mobile-section-kicker {
+    color: #b7edf1;
 }
 
 .delphi-mobile-market-grid,
@@ -5039,11 +5144,11 @@ tr:hover td {
 
 .delphi-mobile-card,
 .delphi-mobile-form-section {
-    border-radius: 22px;
+    border-radius: 20px;
     background: #ffffff;
     border: 1px solid rgba(122, 151, 176, 0.18);
-    padding: 16px;
-    box-shadow: 0 16px 32px rgba(12, 36, 56, 0.08);
+    padding: 14px;
+    box-shadow: 0 12px 26px rgba(12, 36, 56, 0.07);
 }
 
 .delphi-mobile-market-card,
@@ -5081,12 +5186,73 @@ tr:hover td {
     grid-column: 1 / -1;
 }
 
+.delphi-mobile-market-grid-stamps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.delphi-mobile-market-stamp {
+    gap: 4px;
+    padding: 12px;
+    border-radius: 18px;
+}
+
+.delphi-mobile-market-stamp strong {
+    font-size: 1rem;
+}
+
+.delphi-mobile-market-stamp small {
+    font-size: 0.74rem;
+}
+
+.delphi-mobile-market-stamp-positive {
+    border-color: rgba(76, 168, 98, 0.22);
+    background: linear-gradient(180deg, #f8fff9 0%, #eefaf0 100%);
+}
+
+.delphi-mobile-market-stamp-positive strong,
+.delphi-mobile-market-stamp-positive small:last-child {
+    color: #21723d;
+}
+
+.delphi-mobile-market-stamp-negative {
+    border-color: rgba(204, 94, 71, 0.22);
+    background: linear-gradient(180deg, #fffaf8 0%, #fff0eb 100%);
+}
+
+.delphi-mobile-market-stamp-negative strong,
+.delphi-mobile-market-stamp-negative small:last-child {
+    color: #a44732;
+}
+
+.delphi-mobile-market-stamp-neutral {
+    border-color: rgba(122, 151, 176, 0.18);
+    background: linear-gradient(180deg, #fbfdff 0%, #f2f7fb 100%);
+}
+
+.delphi-mobile-market-grid-compact {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.delphi-mobile-market-card-compact {
+    padding: 12px;
+    border-radius: 18px;
+    min-height: 0;
+}
+
+.delphi-mobile-market-card-compact strong {
+    font-size: 0.96rem;
+}
+
+.delphi-mobile-market-card-compact small {
+    font-size: 0.72rem;
+}
+
 .delphi-mobile-summary-split,
 .delphi-mobile-card-list,
 .delphi-mobile-detail-stack,
 .delphi-mobile-form {
     display: grid;
-    gap: 12px;
+    gap: 10px;
 }
 
 .delphi-mobile-inline-stats,
@@ -5116,6 +5282,192 @@ tr:hover td {
 
 .delphi-mobile-card-topline strong {
     font-size: 0.92rem;
+}
+
+.delphi-mobile-apollo-card.apollo-candidate-card {
+    padding: 12px;
+    gap: 10px;
+    border-radius: 20px;
+}
+
+.delphi-mobile-trade-board-card {
+    gap: 10px;
+}
+
+.delphi-mobile-trade-board-topline {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 8px;
+    align-items: center;
+}
+
+.delphi-mobile-trade-board-topline strong,
+.delphi-mobile-trade-board-topline span,
+.delphi-mobile-trade-board-topline em {
+    font-style: normal;
+    margin: 0;
+}
+
+.delphi-mobile-trade-board-topline strong {
+    font-size: 0.88rem;
+}
+
+.delphi-mobile-trade-board-topline span {
+    color: #294860;
+    font-size: 0.8rem;
+    font-weight: 700;
+}
+
+.delphi-mobile-trade-board-topline em {
+    justify-self: end;
+    padding: 5px 8px;
+    border-radius: 999px;
+    background: rgba(7, 24, 38, 0.08);
+    color: #17384f;
+    font-size: 0.72rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.delphi-mobile-trade-board-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px 10px;
+}
+
+.delphi-mobile-trade-board-grid div {
+    display: grid;
+    gap: 4px;
+}
+
+.delphi-mobile-trade-board-grid span {
+    color: #4d667e;
+    font-size: 0.67rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 800;
+}
+
+.delphi-mobile-trade-board-grid strong {
+    color: #102a3c;
+    font-size: 0.84rem;
+    line-height: 1.25;
+}
+
+.delphi-mobile-next-trigger-wrap {
+    grid-column: 1 / -1;
+}
+
+.delphi-mobile-next-trigger {
+    display: block;
+    width: 100%;
+    min-height: 48px;
+    padding: 11px 12px;
+    border-radius: 14px;
+    border: 1px solid rgba(122, 151, 176, 0.22);
+    background: linear-gradient(180deg, #ffffff 0%, #f6fafe 100%);
+    color: #10293d;
+    line-height: 1.4;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.96);
+}
+
+.delphi-mobile-status-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 8px;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-style: normal;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.delphi-mobile-status-chip-calm {
+    background: #e8f2fb;
+    color: #29597c;
+}
+
+.delphi-mobile-status-chip-watch {
+    background: #fff3dc;
+    color: #935d00;
+}
+
+.delphi-mobile-status-chip-warning {
+    background: #ffe8d9;
+    color: #ac5626;
+}
+
+.delphi-mobile-status-chip-critical {
+    background: #fde2de;
+    color: #aa3a31;
+}
+
+.delphi-mobile-trade-board-actions {
+    display: grid;
+}
+
+.delphi-mobile-close-button {
+    width: 100%;
+    min-height: 42px;
+    border-radius: 14px;
+    font-size: 0.84rem;
+}
+
+.delphi-mobile-empty-state-card {
+    gap: 6px;
+}
+
+.delphi-mobile-empty-state-card p,
+.delphi-mobile-empty-state-card small {
+    margin: 0;
+}
+
+.delphi-mobile-empty-state-card small {
+    color: #5c7288;
+}
+
+.delphi-mobile-workspace-card {
+    gap: 10px;
+    background: rgba(255, 255, 255, 0.88);
+}
+
+.delphi-mobile-workspace-links {
+    grid-template-columns: 1fr;
+}
+
+.delphi-mobile-apollo-card .apollo-candidate-header {
+    align-items: center;
+}
+
+.delphi-mobile-apollo-card .apollo-candidate-score {
+    font-size: 0.72rem;
+}
+
+.delphi-mobile-apollo-card h3 {
+    font-size: 1rem;
+}
+
+.delphi-mobile-inline-stats-compact span {
+    padding: 5px 9px;
+    font-size: 0.72rem;
+}
+
+.delphi-mobile-card-notes-compact {
+    padding: 12px 14px;
+}
+
+.delphi-mobile-note-list {
+    display: grid;
+    gap: 8px;
+}
+
+.delphi-mobile-note-list p {
+    margin: 0;
+    color: #27465d;
+    font-size: 0.84rem;
+    line-height: 1.45;
 }
 
 .delphi-mobile-run-actions {
@@ -5179,7 +5531,7 @@ tr:hover td {
 
 .delphi-mobile-form-sticky-actions {
     position: sticky;
-    bottom: calc(82px + env(safe-area-inset-bottom));
+    bottom: calc(var(--delphi-mobile-nav-offset) - 8px);
     display: grid;
     gap: 10px;
     padding: 14px;
@@ -5197,13 +5549,13 @@ tr:hover td {
     position: fixed;
     left: 12px;
     right: 12px;
-    bottom: max(12px, env(safe-area-inset-bottom));
+    bottom: max(8px, env(safe-area-inset-bottom));
     z-index: 20;
     display: grid;
     grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 8px;
-    padding: 10px;
-    border-radius: 24px;
+    padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
+    border-radius: 22px;
     background: rgba(7, 23, 35, 0.92);
     box-shadow: 0 22px 42px rgba(5, 16, 24, 0.28);
     backdrop-filter: blur(18px);
@@ -5212,13 +5564,18 @@ tr:hover td {
 .delphi-mobile-bottom-nav a {
     display: grid;
     place-items: center;
-    min-height: 52px;
+    min-height: 48px;
     border-radius: 16px;
-    color: rgba(226, 240, 250, 0.74);
+    color: #f4fbff;
     text-decoration: none;
-    font-size: 0.74rem;
+    font-size: 0.7rem;
     font-weight: 800;
     letter-spacing: 0.04em;
+}
+
+.delphi-mobile-bottom-nav a span {
+    line-height: 1.1;
+    text-align: center;
 }
 
 .delphi-mobile-bottom-nav-active {
@@ -5234,6 +5591,201 @@ tr:hover td {
 .delphi-mobile-filter-chip-active {
     background: linear-gradient(135deg, #0db1b7 0%, #1596c2 100%);
     color: #f6fbff;
+}
+
+.delphi-mobile-performance-filter-form {
+    display: grid;
+    gap: 12px;
+}
+
+.delphi-mobile-performance-filter-group {
+    display: grid;
+    gap: 8px;
+}
+
+.delphi-mobile-performance-filter-group > span {
+    color: #3c596f;
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.delphi-mobile-performance-filter-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.delphi-mobile-performance-filter-row .delphi-mobile-filter-chip {
+    text-decoration: none;
+    min-height: 36px;
+    padding-inline: 12px;
+}
+
+.delphi-mobile-performance-hero-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.delphi-mobile-performance-gauge-card {
+    display: grid;
+    gap: 10px;
+}
+
+.delphi-mobile-speedometer {
+    position: relative;
+    display: grid;
+    place-items: center;
+    min-height: 154px;
+}
+
+.delphi-mobile-speedometer-ring {
+    width: 128px;
+    height: 128px;
+    border-radius: 50%;
+    background: conic-gradient(from 210deg, var(--gauge-color, #1f6feb) 0deg, var(--gauge-color, #1f6feb) calc(var(--ratio) * 240deg), #d8e4ee calc(var(--ratio) * 240deg), #d8e4ee 240deg, transparent 240deg);
+    mask: radial-gradient(circle at center, transparent 58%, #000 59%);
+    -webkit-mask: radial-gradient(circle at center, transparent 58%, #000 59%);
+}
+
+.delphi-mobile-speedometer-center {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    align-content: center;
+    gap: 4px;
+}
+
+.delphi-mobile-speedometer-center strong {
+    color: #0f2432;
+    font-size: 1.1rem;
+}
+
+.delphi-mobile-speedometer-center span {
+    color: #557189;
+    font-size: 0.74rem;
+    font-weight: 700;
+}
+
+.delphi-mobile-performance-spotlight {
+    display: grid;
+    gap: 6px;
+}
+
+.delphi-mobile-performance-spotlight strong {
+    color: #0f2432;
+    font-size: 1.5rem;
+}
+
+.delphi-mobile-performance-value-positive {
+    color: #1f8f5f;
+}
+
+.delphi-mobile-performance-value-negative {
+    color: #c24141;
+}
+
+.delphi-mobile-performance-spotlight span {
+    color: #577088;
+    font-size: 0.8rem;
+}
+
+.delphi-mobile-performance-equity-card {
+    display: grid;
+    gap: 10px;
+}
+
+.delphi-mobile-equity-chart {
+    width: 100%;
+    height: auto;
+    color: #1f6feb;
+    border-radius: 18px;
+    background: linear-gradient(180deg, #f8fbfe 0%, #eef4f9 100%);
+    border: 1px solid rgba(122, 151, 176, 0.18);
+}
+
+.delphi-mobile-equity-baseline {
+    stroke: #d5dfeb;
+    stroke-width: 1.5;
+}
+
+.delphi-mobile-equity-area {
+    fill: rgba(31, 111, 235, 0.12);
+}
+
+.delphi-mobile-performance-footnote {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    color: #577088;
+    font-size: 0.74rem;
+    font-weight: 700;
+}
+
+.delphi-mobile-performance-metric-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.delphi-mobile-performance-metric-card {
+    display: grid;
+    gap: 6px;
+}
+
+.delphi-mobile-performance-metric-card span {
+    color: #577088;
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.delphi-mobile-performance-metric-card strong {
+    color: #10293d;
+    font-size: 1.02rem;
+}
+
+.delphi-mobile-performance-runtime-note {
+    color: #5c7288;
+    font-size: 0.78rem;
+}
+
+@media (max-width: 420px) {
+    .delphi-mobile-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .delphi-mobile-trade-board-topline {
+        grid-template-columns: 1fr auto;
+    }
+
+    .delphi-mobile-trade-board-topline span {
+        grid-column: 1 / -1;
+    }
+
+    .delphi-mobile-trade-board-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .delphi-mobile-performance-filter-row {
+        gap: 6px;
+    }
+
+    .delphi-mobile-performance-filter-row .delphi-mobile-filter-chip {
+        min-height: 34px;
+        padding-inline: 10px;
+        font-size: 0.72rem;
+    }
+
+    .delphi-mobile-performance-hero-grid,
+    .delphi-mobile-performance-metric-grid {
+        grid-template-columns: 1fr;
+    }
 }
 
 @keyframes delphiSpin {
@@ -5306,6 +5858,14 @@ tr:hover td {
 
     .delphi-mobile-header-badge {
         text-align: left;
+    }
+
+    .delphi-mobile-market-grid-compact {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .delphi-mobile-market-grid-compact .delphi-mobile-market-card:last-child {
+        grid-column: 1 / -1;
     }
 }
     .performance-safety-row {
@@ -6072,6 +6632,196 @@ tr:hover td {
         grid-template-columns: 1fr;
     }
 
+
+/* Performance page polish overrides */
+.performance-chart-panel,
+.performance-learning-card,
+.performance-guidance-card,
+.performance-profile-em-card,
+.performance-trade-mode-card,
+.performance-audit-section,
+.performance-audit-count,
+.performance-collapsible-panel {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+}
+
+.performance-chart-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    align-items: stretch;
+}
+
+.performance-learning-overview {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    align-items: stretch;
+}
+
+.performance-learning-grid-small {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    align-items: stretch;
+}
+
+.performance-learning-grid-large {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    align-items: stretch;
+}
+
+.performance-learning-grid-small .performance-chart-panel,
+.performance-learning-grid-large .performance-chart-panel {
+    min-height: 0;
+    height: 100%;
+}
+
+.performance-chart-canvas,
+.performance-profile-em-panel,
+.performance-profile-em-list,
+.performance-guidance-grid,
+.performance-safety-curve-layout,
+.performance-audit-panel {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+.performance-safety-curve-layout {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+}
+
+.performance-guidance-grid-single-stack {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.performance-table-wrap {
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+    border: 1px solid rgba(31, 111, 235, 0.12);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.9);
+}
+
+.performance-table-wrap-wide,
+.performance-table-wrap-compact {
+    width: 100%;
+    max-width: 100%;
+}
+
+.performance-data-table {
+    width: 100%;
+    max-width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    border-spacing: 0;
+}
+
+.performance-data-table th,
+.performance-data-table td {
+    padding: 9px 10px;
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+    word-wrap: break-word;
+    word-break: break-word;
+}
+
+.performance-data-table thead th {
+    background: rgba(31, 111, 235, 0.08);
+    color: var(--muted);
+    font-size: 0.7rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.performance-data-table tbody tr + tr td {
+    border-top: 1px solid rgba(31, 111, 235, 0.1);
+}
+
+.performance-data-table td .performance-confidence-badge {
+    max-width: 100%;
+}
+
+@media (max-width: 1320px) {
+    .performance-learning-overview,
+    .performance-learning-grid-small {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 980px) {
+    .performance-chart-grid,
+    .performance-learning-overview,
+    .performance-learning-grid-small,
+    .performance-learning-grid-large,
+    .performance-safety-curve-layout {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .performance-chart-panel-wide {
+        grid-column: auto;
+    }
+}
+
+@media (max-width: 720px) {
+    .performance-data-table,
+    .performance-data-table thead,
+    .performance-data-table tbody,
+    .performance-data-table tr,
+    .performance-data-table th,
+    .performance-data-table td {
+        display: block;
+        width: 100%;
+    }
+
+    .performance-data-table thead {
+        display: none;
+    }
+
+    .performance-data-table tbody tr {
+        display: grid;
+        gap: 6px;
+        padding: 10px 12px;
+    }
+
+    .performance-data-table tbody tr + tr {
+        border-top: 1px solid rgba(31, 111, 235, 0.1);
+    }
+
+    .performance-data-table tbody tr + tr td {
+        border-top: 0;
+    }
+
+    .performance-data-table td {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 0;
+    }
+
+    .performance-data-table td::before {
+        content: attr(data-label);
+        flex: 0 0 42%;
+        color: var(--muted);
+        font-size: 0.7rem;
+        font-weight: 800;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+    }
+
+    .performance-data-table td > * {
+        margin-left: auto;
+        max-width: 58%;
+        text-align: right;
+    }
+}
     .apollo-top-grid-gate-one,
     .apollo-gate-one-accordions,
     .apollo-macro-grid,
@@ -6116,6 +6866,115 @@ tr:hover td {
     min-height: 100vh;
     overflow-x: hidden;
     position: relative;
+
+/* Performance visual repair overrides */
+.performance-learning-panel,
+.performance-chart-panel,
+.performance-guidance-card,
+.performance-profile-em-card,
+.performance-table-wrap {
+    min-width: 0;
+}
+
+.performance-shell,
+.performance-learning-panel,
+.performance-chart-grid,
+.performance-learning-overview,
+.performance-learning-grid {
+    max-width: 100%;
+    overflow-x: clip;
+}
+
+.performance-learning-grid-large {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+}
+
+.performance-learning-grid-large .performance-chart-panel-feature,
+.performance-learning-grid-large .performance-chart-panel-full {
+    grid-column: auto;
+}
+
+.performance-guidance-grid,
+.performance-guidance-grid-single-stack {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.performance-panel-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+}
+
+.performance-panel-header > * {
+    min-width: 0;
+}
+
+.performance-panel-header .subtle,
+.performance-panel-header h2,
+.performance-panel-header h3 {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.performance-line-chart-wrap,
+.performance-gauge,
+.performance-donut-wrap {
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.performance-line-chart-svg,
+.performance-gauge-svg,
+.performance-donut-svg {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+}
+
+.performance-data-table {
+    font-size: 0.76rem;
+}
+
+.performance-data-table th,
+.performance-data-table td {
+    padding: 7px 8px;
+    line-height: 1.2;
+}
+
+.performance-confidence-badge,
+.performance-data-table td .performance-confidence-badge {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: center;
+}
+
+@media (max-width: 1180px) {
+    .performance-profile-em-list {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+@media (max-width: 720px) {
+    .performance-data-table td {
+        display: grid;
+        grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+        align-items: start;
+        gap: 8px;
+    }
+
+    .performance-data-table td::before {
+        flex: initial;
+    }
+
+    .performance-data-table td > * {
+        margin-left: 0;
+        max-width: 100%;
+        text-align: right;
+    }
+}
     --delphi-display-font: "Space Grotesk", sans-serif;
     --delphi-ui-font: "Inter", sans-serif;
     --delphi-gold: #f3ca73;
@@ -6808,5 +7667,287 @@ tr:hover td {
     .delphi-portal-statusline,
     .delphi-portal-footer {
         justify-content: center;
+    }
+}
+
+/* Performance page repair overrides */
+.performance-chart-panel,
+.performance-learning-card,
+.performance-guidance-card,
+.performance-profile-em-card,
+.performance-trade-mode-card,
+.performance-audit-section,
+.performance-audit-count,
+.performance-collapsible-panel,
+.performance-table-wrap {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    overflow: hidden;
+}
+
+.performance-shell,
+.performance-learning-panel,
+.performance-chart-grid,
+.performance-learning-overview,
+.performance-learning-grid {
+    max-width: 100%;
+    overflow-x: clip;
+}
+
+.performance-kpi-strip {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    align-items: stretch;
+}
+
+.performance-filter-ribbon {
+    align-items: stretch;
+}
+
+.performance-filter-group {
+    flex: 1 1 220px;
+    min-width: 0;
+}
+
+.performance-chart-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    align-items: stretch;
+}
+
+.performance-learning-overview {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    align-items: stretch;
+}
+
+.performance-learning-grid-small {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    align-items: stretch;
+}
+
+.performance-learning-grid-large {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+    align-items: stretch;
+}
+
+.performance-learning-grid-small .performance-chart-panel,
+.performance-learning-grid-large .performance-chart-panel {
+    min-height: 0;
+    height: 100%;
+}
+
+.performance-learning-grid-large .performance-chart-panel-feature,
+.performance-learning-grid-large .performance-chart-panel-full {
+    grid-column: auto;
+}
+
+.performance-chart-canvas,
+.performance-profile-em-panel,
+.performance-profile-em-list,
+.performance-guidance-grid,
+.performance-safety-curve-layout,
+.performance-audit-panel,
+.performance-line-chart-wrap,
+.performance-gauge,
+.performance-donut-wrap {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    overflow: hidden;
+}
+
+.performance-safety-curve-layout {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+}
+
+.performance-guidance-grid,
+.performance-guidance-grid-single-stack {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.performance-panel-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+}
+
+.performance-panel-header-stacked {
+    align-items: stretch;
+}
+
+.performance-panel-header > * {
+    min-width: 0;
+}
+
+.performance-panel-header .subtle,
+.performance-panel-header h2,
+.performance-panel-header h3 {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.performance-line-chart-svg,
+.performance-gauge-svg,
+.performance-donut-svg {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+}
+
+.performance-table-wrap {
+    border: 1px solid rgba(31, 111, 235, 0.12);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.9);
+}
+
+.performance-table-wrap-wide,
+.performance-table-wrap-compact {
+    width: 100%;
+    max-width: 100%;
+}
+
+.performance-data-table {
+    width: 100%;
+    max-width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    border-spacing: 0;
+    font-size: 0.76rem;
+}
+
+.performance-data-table th,
+.performance-data-table td {
+    padding: 7px 8px;
+    text-align: left;
+    vertical-align: top;
+    line-height: 1.2;
+    overflow-wrap: anywhere;
+    word-wrap: break-word;
+    word-break: break-word;
+}
+
+.performance-data-table thead th {
+    background: rgba(31, 111, 235, 0.08);
+    color: var(--muted);
+    font-size: 0.7rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.performance-data-table tbody tr + tr td {
+    border-top: 1px solid rgba(31, 111, 235, 0.1);
+}
+
+.performance-confidence-badge,
+.performance-data-table td .performance-confidence-badge {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: center;
+}
+
+@media (max-width: 1320px) {
+    .performance-kpi-strip {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .performance-learning-overview,
+    .performance-learning-grid-small {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 1180px) {
+    .performance-profile-em-list {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+@media (max-width: 980px) {
+    .performance-chart-grid,
+    .performance-learning-overview,
+    .performance-learning-grid-small,
+    .performance-learning-grid-large,
+    .performance-safety-curve-layout {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .performance-chart-panel-wide {
+        grid-column: auto;
+    }
+}
+
+@media (max-width: 720px) {
+    .performance-kpi-strip,
+    .performance-chart-grid,
+    .performance-donut-wrap {
+        grid-template-columns: 1fr;
+    }
+
+    .performance-filter-ribbon {
+        flex-direction: column;
+    }
+
+    .performance-trade-mode-stats,
+    .performance-audit-summary {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .performance-data-table,
+    .performance-data-table thead,
+    .performance-data-table tbody,
+    .performance-data-table tr,
+    .performance-data-table th,
+    .performance-data-table td {
+        display: block;
+        width: 100%;
+    }
+
+    .performance-data-table thead {
+        display: none;
+    }
+
+    .performance-data-table tbody tr {
+        display: grid;
+        gap: 6px;
+        padding: 10px 12px;
+    }
+
+    .performance-data-table tbody tr + tr {
+        border-top: 1px solid rgba(31, 111, 235, 0.1);
+    }
+
+    .performance-data-table tbody tr + tr td {
+        border-top: 0;
+    }
+
+    .performance-data-table td {
+        display: grid;
+        grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+        align-items: start;
+        gap: 8px;
+        padding: 0;
+    }
+
+    .performance-data-table td::before {
+        content: attr(data-label);
+        color: var(--muted);
+        font-size: 0.7rem;
+        font-weight: 800;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+    }
+
+    .performance-data-table td > * {
+        margin-left: 0;
+        max-width: 100%;
+        text-align: right;
     }
 }

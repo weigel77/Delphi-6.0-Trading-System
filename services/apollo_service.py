@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from time import perf_counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time
 from typing import Any, Dict, List
 from zoneinfo import ZoneInfo
@@ -38,6 +40,7 @@ class ApolloService:
 
     def run_precheck(self, *, force_refresh: bool = False) -> Dict[str, Any]:
         """Execute the first-stage Apollo workflow."""
+        started_at = perf_counter()
         checked_at = datetime.now(self.display_timezone)
         reasons: List[str] = []
         calendar_context = self.market_calendar_service.get_next_market_day_context(checked_at)
@@ -62,19 +65,26 @@ class ApolloService:
             if force_refresh and hasattr(self.market_data_service, "get_fresh_latest_snapshot")
             else self.market_data_service.get_latest_snapshot
         )
-        try:
-            spx_data = latest_snapshot_reader("^GSPC", query_type="apollo_latest_spx")
-            reasons.append("Live SPX data retrieved successfully.")
-        except MarketDataError as exc:
-            reasons.append(f"Unable to retrieve live SPX data: {exc}")
+        snapshot_started_at = perf_counter()
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            spx_future = executor.submit(latest_snapshot_reader, "^GSPC", query_type="apollo_latest_spx")
+            vix_future = executor.submit(latest_snapshot_reader, "^VIX", query_type="apollo_latest_vix")
+            try:
+                spx_data = spx_future.result()
+                reasons.append("Live SPX data retrieved successfully.")
+            except MarketDataError as exc:
+                reasons.append(f"Unable to retrieve live SPX data: {exc}")
 
-        try:
-            vix_data = latest_snapshot_reader("^VIX", query_type="apollo_latest_vix")
-            reasons.append("Live VIX data retrieved successfully.")
-        except MarketDataError as exc:
-            reasons.append(f"Unable to retrieve live VIX data: {exc}")
+            try:
+                vix_data = vix_future.result()
+                reasons.append("Live VIX data retrieved successfully.")
+            except MarketDataError as exc:
+                reasons.append(f"Unable to retrieve live VIX data: {exc}")
+        snapshot_seconds = perf_counter() - snapshot_started_at
 
+        macro_started_at = perf_counter()
         macro_status = self.macro_service.get_macro_status(calendar_context["next_market_day"])
+        macro_seconds = perf_counter() - macro_started_at
         if not macro_status.get("available", True):
             reasons.append("Macro calendar check unavailable.")
         elif macro_status.get("fallback_used"):
@@ -108,13 +118,22 @@ class ApolloService:
             "provider_name",
             self.market_data_service.get_provider_metadata().get("live_provider_name", "Unknown Provider"),
         )
-        structure = self.structure_service.analyze_same_day_spx_structure()
-        option_chain = self.options_chain_service.get_spx_option_chain_summary(calendar_context["next_market_day"])
+        structure_started_at = perf_counter()
+        option_chain_started_at = perf_counter()
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            structure_future = executor.submit(self.structure_service.analyze_same_day_spx_structure)
+            option_chain_future = executor.submit(self.options_chain_service.get_spx_option_chain_summary, calendar_context["next_market_day"])
+            structure = structure_future.result()
+            structure_seconds = perf_counter() - structure_started_at
+            option_chain = option_chain_future.result()
+            option_chain_seconds = perf_counter() - option_chain_started_at
+        candidate_started_at = perf_counter()
         trade_candidates = self.candidate_service.build_trade_candidates(
             option_chain=option_chain,
             structure=structure,
             macro=macro_status,
         )
+        candidate_seconds = perf_counter() - candidate_started_at
         if structure.get("available"):
             reasons.append(
                 f"Apollo final structure grade: {structure.get('grade', 'Neutral')} using {structure.get('source_used', 'SPX')}."
@@ -141,6 +160,21 @@ class ApolloService:
         else:
             reasons.append("Apollo did not find a qualifying Gate 3 trade candidate.")
 
+        total_seconds = perf_counter() - started_at
+        performance = {
+            "total_seconds": round(total_seconds, 4),
+            "schwab_wait_seconds": round(snapshot_seconds + structure_seconds + option_chain_seconds, 4),
+            "delphi_internal_seconds": round(max(total_seconds - (snapshot_seconds + structure_seconds + option_chain_seconds), 0.0), 4),
+            "schwab_wait_percent": round(((snapshot_seconds + structure_seconds + option_chain_seconds) / total_seconds) * 100.0, 2) if total_seconds > 0 else 0.0,
+            "delphi_internal_percent": round((max(total_seconds - (snapshot_seconds + structure_seconds + option_chain_seconds), 0.0) / total_seconds) * 100.0, 2) if total_seconds > 0 else 0.0,
+            "phases": {
+                "snapshot_seconds": round(snapshot_seconds, 4),
+                "macro_seconds": round(macro_seconds, 4),
+                "structure_seconds": round(structure_seconds, 4),
+                "option_chain_seconds": round(option_chain_seconds, 4),
+                "candidate_build_seconds": round(candidate_seconds, 4),
+            },
+        }
         return {
             "title": "Apollo Gate 1 -- SPX Structure",
             "provider_name": provider_name,
@@ -154,6 +188,28 @@ class ApolloService:
             "local_datetime": checked_at,
             "apollo_status": apollo_status,
             "reasons": reasons,
+            "performance": performance,
+        }
+
+    def build_management_context(self) -> Dict[str, Any]:
+        started_at = perf_counter()
+        try:
+            structure = self.structure_service.analyze_same_day_spx_structure()
+        except Exception:
+            structure = {}
+        total_seconds = perf_counter() - started_at
+        return {
+            "current_structure_grade": str(structure.get("final_grade") or structure.get("grade") or "Not available"),
+            "current_macro_grade": "Not available",
+            "precheck": {},
+            "performance": {
+                "total_seconds": round(total_seconds, 4),
+                "schwab_wait_seconds": round(total_seconds, 4),
+                "delphi_internal_seconds": 0.0,
+                "schwab_wait_percent": 100.0 if total_seconds > 0 else 0.0,
+                "delphi_internal_percent": 0.0,
+                "phases": {"structure_seconds": round(total_seconds, 4)},
+            },
         }
 
     def _resolve_option_chain_provider(self):

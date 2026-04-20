@@ -59,6 +59,21 @@ class StubApolloService:
             "macro": {"grade": self.current_macro},
         }
 
+    def build_management_context(self):
+        return {
+            "current_structure_grade": self.current_structure,
+            "current_macro_grade": self.current_macro,
+            "precheck": {},
+            "performance": {
+                "total_seconds": 0.01,
+                "schwab_wait_seconds": 0.01,
+                "delphi_internal_seconds": 0.0,
+                "schwab_wait_percent": 100.0,
+                "delphi_internal_percent": 0.0,
+                "phases": {"structure_seconds": 0.01},
+            },
+        }
+
 
 class StubOptionsChainService:
     def __init__(self):
@@ -68,8 +83,8 @@ class StubOptionsChainService:
                     {"strike": 6765.0, "bid": 5.8, "ask": 6.2, "mark": 6.0},
                     {"strike": 6725.0, "mark": 0.55},
                     {"strike": 6735.0, "mark": 1.15},
-                    {"strike": 6750.0, "mark": 4.9},
-                    {"strike": 6740.0, "mark": 1.2},
+                    {"strike": 6750.0, "bid": 4.8, "ask": 5.0, "mark": 4.9},
+                    {"strike": 6740.0, "bid": 1.1, "ask": 1.3, "mark": 1.2},
                     {"strike": 6760.0, "mark": 6.2},
                 ],
                 "calls": [
@@ -140,7 +155,7 @@ class OpenTradeManagerTest(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def _seed_trades(self):
-        self.trade_store.create_trade(
+        self.apollo_trade_id = self.trade_store.create_trade(
             {
                 "trade_mode": "real",
                 "system_name": "Apollo",
@@ -171,7 +186,7 @@ class OpenTradeManagerTest(unittest.TestCase):
                 "notes_entry": "Apollo rationale",
             }
         )
-        self.trade_store.create_trade(
+        self.kairos_trade_id = self.trade_store.create_trade(
             {
                 "trade_mode": "real",
                 "system_name": "Kairos",
@@ -203,7 +218,7 @@ class OpenTradeManagerTest(unittest.TestCase):
                 "notes_entry": "Kairos rationale",
             }
         )
-        self.trade_store.create_trade(
+        self.simulated_apollo_trade_id = self.trade_store.create_trade(
             {
                 "trade_mode": "simulated",
                 "system_name": "Apollo",
@@ -454,13 +469,45 @@ class OpenTradeManagerTest(unittest.TestCase):
         payload = self.manager.evaluate_open_trades(send_alerts=False)
         trade = next(item for item in payload["records"] if item["system_name"] == "Apollo")
 
-        expected_current_pl = round((1.8 - 3.7) * 2 * 100, 2)
-        expected_pl_after_close = round((1.8 - 3.7) * 2 * 100, 2)
+        expected_current_pl = round((1.8 - 3.9) * 2 * 100, 2)
+        expected_pl_after_close = round((1.8 - 3.9) * 2 * 100, 2)
         expected_remaining_risk = round(1640.0 - expected_current_pl, 2)
 
         self.assertAlmostEqual(trade["current_pl"], expected_current_pl)
         self.assertAlmostEqual(trade["pl_after_close"], expected_pl_after_close)
         self.assertAlmostEqual(trade["remaining_risk"], expected_remaining_risk)
+
+    def test_remaining_pl_uses_close_history_and_next_trigger_uses_price_ladder(self):
+        self.trade_store.reduce_trade(
+            self.apollo_trade_id,
+            {
+                "contracts_closed": 1,
+                "actual_exit_value": 0.55,
+                "event_datetime": "2026-04-10T10:45",
+                "close_reason": "Trimmed first ladder step",
+            },
+        )
+        self.market_data_service.current_spx = 6764.0
+
+        payload = self.manager.evaluate_open_trades(send_alerts=False)
+        trade = next(item for item in payload["records"] if int(item["trade_id"]) == int(self.apollo_trade_id))
+
+        self.assertEqual(trade["contracts"], 1)
+        self.assertEqual(trade["closed_contracts"], 1)
+        self.assertAlmostEqual(trade["realized_close_cost"], 55.0)
+        self.assertAlmostEqual(trade["current_total_close_cost"], 390.0)
+        self.assertAlmostEqual(trade["unrealized_pnl"], 305.0)
+        self.assertIn("close 1 contracts", trade["next_trigger"])
+        self.assertIn("short-strike breach", trade["next_trigger"])
+
+    def test_management_payload_includes_performance_breakdown(self):
+        payload = self.manager.evaluate_open_trades(send_alerts=False)
+
+        self.assertIn("performance", payload)
+        self.assertIn("total_seconds", payload["performance"])
+        self.assertIn("schwab_wait_seconds", payload["performance"])
+        self.assertIn("delphi_internal_seconds", payload["performance"])
+        self.assertIn("shared_context_seconds", payload["performance"]["phases"])
 
 
 if __name__ == "__main__":

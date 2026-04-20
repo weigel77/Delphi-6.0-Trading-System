@@ -116,13 +116,6 @@
                 </div>
             </section>
 
-            {% if apollo_result and hosted_mode and apollo_result.hosted_result_heading %}
-                <section class="panel">
-                    <div class="message message-{{ apollo_result.hosted_result_tone|default('info') }} message-inline">
-                        <strong>{{ apollo_result.hosted_result_heading }}</strong> {{ apollo_result.hosted_plain_english }}
-                    </div>
-                </section>
-            {% endif %}
         {% endif %}
 
         {% if result %}
@@ -641,14 +634,14 @@
 
                                     {% if candidate.available %}
                                         <div class="actions apollo-candidate-actions">
-                                            <form method="post" action="{% if hosted_mode %}{{ hosted_apollo_prefill_url }}{% else %}{{ url_for('apollo_prefill_candidate') }}{% endif %}" class="apollo-transfer-form" onsubmit="this.querySelectorAll('button').forEach((button) => { button.disabled = true; });">
+                                            <form method="post" action="{% if hosted_mode %}{{ hosted_apollo_prefill_url }}{% else %}{{ url_for('apollo_prefill_candidate') }}{% endif %}" class="apollo-transfer-form" data-disable-submit-buttons>
                                                 <input type="hidden" name="target_mode" value="real">
                                                 {% for key, value in candidate.prefill_fields.items() %}
                                                     <input type="hidden" name="{{ key }}" value="{{ value }}">
                                                 {% endfor %}
                                                 <button type="submit">Send to Real Trades</button>
                                             </form>
-                                            <form method="post" action="{% if hosted_mode %}{{ hosted_apollo_prefill_url }}{% else %}{{ url_for('apollo_prefill_candidate') }}{% endif %}" class="apollo-transfer-form" onsubmit="this.querySelectorAll('button').forEach((button) => { button.disabled = true; });">
+                                            <form method="post" action="{% if hosted_mode %}{{ hosted_apollo_prefill_url }}{% else %}{{ url_for('apollo_prefill_candidate') }}{% endif %}" class="apollo-transfer-form" data-disable-submit-buttons>
                                                 <input type="hidden" name="target_mode" value="simulated">
                                                 {% for key, value in candidate.prefill_fields.items() %}
                                                     <input type="hidden" name="{{ key }}" value="{{ value }}">
@@ -866,191 +859,6 @@
         {% endif %}
     </main>
 
-    <script>
-        const querySelect = document.getElementById('query_type');
-        const singleDateGroup = document.getElementById('single-date-group');
-        const startDateGroup = document.getElementById('start-date-group');
-        const endDateGroup = document.getElementById('end-date-group');
-
-        function syncDateFields() {
-            if (!querySelect || !singleDateGroup || !startDateGroup || !endDateGroup) {
-                return;
-            }
-
-            const selectedOption = querySelect.options[querySelect.selectedIndex];
-            const dateMode = selectedOption.dataset.dateMode;
-
-            singleDateGroup.style.display = dateMode === 'single' ? 'flex' : 'none';
-            startDateGroup.style.display = dateMode === 'range' ? 'flex' : 'none';
-            endDateGroup.style.display = dateMode === 'range' ? 'flex' : 'none';
-        }
-
-        if (querySelect) {
-            querySelect.addEventListener('change', syncDateFields);
-        }
-        syncDateFields();
-
-        function renderApolloCharts() {
-            const chartShells = document.querySelectorAll('[data-apollo-chart]');
-            chartShells.forEach((shell) => {
-                const canvas = shell.querySelector('.apollo-chart-canvas');
-                if (!canvas) {
-                    return;
-                }
-
-                const payload = JSON.parse(shell.dataset.apolloChart || '{}');
-                if (!payload.available || !Array.isArray(payload.points) || payload.points.length === 0) {
-                    canvas.innerHTML = '<p class="subtle">Chart data is unavailable.</p>';
-                    return;
-                }
-
-                const width = 1240;
-                const height = 420;
-                const padding = { top: 18, right: 64, bottom: 34, left: 54 };
-                const plotWidth = width - padding.left - padding.right;
-                const plotHeight = height - padding.top - padding.bottom;
-                const allPrices = [];
-
-                payload.points.forEach((point) => {
-                    allPrices.push(point.high, point.low, point.close, point.open);
-                    if (point.ema8 !== null) {
-                        allPrices.push(point.ema8);
-                    }
-                    if (point.ema21 !== null) {
-                        allPrices.push(point.ema21);
-                    }
-                });
-
-                const minPrice = Math.min(...allPrices);
-                const maxPrice = Math.max(...allPrices);
-                const pricePadding = Math.max((maxPrice - minPrice) * 0.08, 2);
-                const chartMin = minPrice - pricePadding;
-                const chartMax = maxPrice + pricePadding;
-                const candleWidth = Math.max(Math.min(plotWidth / payload.points.length * 0.58, 10), 4);
-
-                const xForIndex = (index) => padding.left + (plotWidth * (index + 0.5)) / payload.points.length;
-                const yForPrice = (price) => padding.top + ((chartMax - price) / (chartMax - chartMin || 1)) * plotHeight;
-                const createSvgElement = (tag) => document.createElementNS('http://www.w3.org/2000/svg', tag);
-
-                const svg = createSvgElement('svg');
-                svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-                svg.setAttribute('class', 'apollo-chart-svg');
-
-                const background = createSvgElement('rect');
-                background.setAttribute('x', '0');
-                background.setAttribute('y', '0');
-                background.setAttribute('width', String(width));
-                background.setAttribute('height', String(height));
-                background.setAttribute('rx', '14');
-                background.setAttribute('fill', '#f9fbff');
-                svg.appendChild(background);
-
-                for (let step = 0; step <= 4; step += 1) {
-                    const price = chartMin + ((chartMax - chartMin) * step) / 4;
-                    const y = yForPrice(price);
-                    const grid = createSvgElement('line');
-                    grid.setAttribute('x1', String(padding.left));
-                    grid.setAttribute('x2', String(width - padding.right));
-                    grid.setAttribute('y1', String(y));
-                    grid.setAttribute('y2', String(y));
-                    grid.setAttribute('stroke', '#dbe3ef');
-                    grid.setAttribute('stroke-dasharray', '4 4');
-                    svg.appendChild(grid);
-
-                    const label = createSvgElement('text');
-                    label.setAttribute('x', String(width - padding.right + 8));
-                    label.setAttribute('y', String(y + 4));
-                    label.setAttribute('fill', '#5b6f88');
-                    label.setAttribute('font-size', '12');
-                    label.textContent = price.toFixed(2);
-                    svg.appendChild(label);
-                }
-
-                payload.points.forEach((point, index) => {
-                    const x = xForIndex(index);
-                    const candleColor = point.close >= point.open ? '#146c43' : '#8a1c28';
-
-                    const wick = createSvgElement('line');
-                    wick.setAttribute('x1', String(x));
-                    wick.setAttribute('x2', String(x));
-                    wick.setAttribute('y1', String(yForPrice(point.high)));
-                    wick.setAttribute('y2', String(yForPrice(point.low)));
-                    wick.setAttribute('stroke', candleColor);
-                    wick.setAttribute('stroke-width', '1.4');
-                    svg.appendChild(wick);
-
-                    const body = createSvgElement('rect');
-                    const bodyTop = yForPrice(Math.max(point.open, point.close));
-                    const bodyBottom = yForPrice(Math.min(point.open, point.close));
-                    body.setAttribute('x', String(x - candleWidth / 2));
-                    body.setAttribute('y', String(bodyTop));
-                    body.setAttribute('width', String(candleWidth));
-                    body.setAttribute('height', String(Math.max(bodyBottom - bodyTop, 1.5)));
-                    body.setAttribute('fill', candleColor);
-                    body.setAttribute('opacity', '0.85');
-                    svg.appendChild(body);
-                });
-
-                const overlaySpecs = [
-                    { key: 'ema8', color: '#8b5cf6', width: 1.8 },
-                    { key: 'ema21', color: '#f59e0b', width: 1.8 },
-                ];
-
-                overlaySpecs.forEach((overlay) => {
-                    const pathPoints = payload.points
-                        .map((point, index) => point[overlay.key] === null ? null : `${xForIndex(index)},${yForPrice(point[overlay.key])}`)
-                        .filter(Boolean);
-                    if (!pathPoints.length) {
-                        return;
-                    }
-                    const polyline = createSvgElement('polyline');
-                    polyline.setAttribute('points', pathPoints.join(' '));
-                    polyline.setAttribute('fill', 'none');
-                    polyline.setAttribute('stroke', overlay.color);
-                    polyline.setAttribute('stroke-width', String(overlay.width));
-                    polyline.setAttribute('stroke-linejoin', 'round');
-                    polyline.setAttribute('stroke-linecap', 'round');
-                    svg.appendChild(polyline);
-                });
-
-                const priceLine = createSvgElement('line');
-                priceLine.setAttribute('x1', String(padding.left));
-                priceLine.setAttribute('x2', String(width - padding.right));
-                priceLine.setAttribute('y1', String(yForPrice(payload.current_price)));
-                priceLine.setAttribute('y2', String(yForPrice(payload.current_price)));
-                priceLine.setAttribute('stroke', '#111827');
-                priceLine.setAttribute('stroke-dasharray', '6 5');
-                priceLine.setAttribute('stroke-width', '1.3');
-                svg.appendChild(priceLine);
-
-                const priceLabel = createSvgElement('text');
-                priceLabel.setAttribute('x', String(width - padding.right + 8));
-                priceLabel.setAttribute('y', String(yForPrice(payload.current_price) - 6));
-                priceLabel.setAttribute('fill', '#111827');
-                priceLabel.setAttribute('font-size', '12');
-                priceLabel.textContent = `Last ${payload.current_price.toFixed(2)}`;
-                svg.appendChild(priceLabel);
-
-                const labelIndexes = [0, Math.floor(payload.points.length / 2), payload.points.length - 1]
-                    .filter((value, position, array) => array.indexOf(value) === position);
-                labelIndexes.forEach((index) => {
-                    const point = payload.points[index];
-                    const label = createSvgElement('text');
-                    label.setAttribute('x', String(xForIndex(index)));
-                    label.setAttribute('y', String(height - 10));
-                    label.setAttribute('fill', '#5b6f88');
-                    label.setAttribute('font-size', '12');
-                    label.setAttribute('text-anchor', index === 0 ? 'start' : (index === payload.points.length - 1 ? 'end' : 'middle'));
-                    label.textContent = point.label;
-                    svg.appendChild(label);
-                });
-
-                canvas.innerHTML = '';
-                canvas.appendChild(svg);
-            });
-        }
-
-        renderApolloCharts();
-    </script>
+    <script src="{{ url_for('static', filename='apollo_page.js') }}" defer></script>
 </body>
 </html>

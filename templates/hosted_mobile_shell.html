@@ -12,20 +12,38 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
 <body class="delphi-mobile-body">
-    {% set market_cards = menu_status.cards if menu_status and menu_status.cards else [] %}
-    {% set spx_card = market_cards[0] if market_cards|length > 0 else None %}
-    {% set vix_card = market_cards[1] if market_cards|length > 1 else None %}
-    {% set connection_card = market_cards[2] if market_cards|length > 2 else None %}
     {% set totals = mobile_home_performance.metrics.totals if mobile_home_performance.metrics is defined and mobile_home_performance.metrics.totals is defined else {} %}
     {% set win_rate = mobile_home_performance.metrics.win_rate if mobile_home_performance.metrics is defined and mobile_home_performance.metrics.win_rate is defined else {} %}
     {% set net_pnl = mobile_home_performance.metrics.net_pnl if mobile_home_performance.metrics is defined and mobile_home_performance.metrics.net_pnl is defined else {} %}
     {% set expectancy = mobile_home_performance.metrics.expectancy if mobile_home_performance.metrics is defined and mobile_home_performance.metrics.expectancy is defined else {} %}
+    {% set performance_filters = mobile_home_performance.filters if mobile_home_performance.filters is defined else {} %}
+    {% set filter_groups = mobile_home_performance.filter_groups if mobile_home_performance.filter_groups is defined else {} %}
+    {% set performance_learning = mobile_home_performance.learning if mobile_home_performance.learning is defined else {} %}
+    {% set performance_overview = performance_learning.overview if performance_learning.overview is defined else {} %}
+    {% set performance_charts = mobile_home_performance.charts if mobile_home_performance.charts is defined else {} %}
+    {% set equity_curve = performance_charts.equity_curve if performance_charts.equity_curve is defined else {} %}
+    {% set equity_points = equity_curve.points if equity_curve.points is defined else [] %}
+    {% set equity_min = equity_curve.min if equity_curve.min is defined else 0 %}
+    {% set equity_max = equity_curve.max if equity_curve.max is defined else 0 %}
+    {% set equity_range = (equity_max - equity_min) if (equity_max - equity_min) != 0 else 1 %}
     <main class="delphi-mobile-shell">
-        <header class="delphi-mobile-header">
-            <div>
+        <header class="delphi-mobile-header{% if active_tab == 'home' %} delphi-mobile-header-home{% endif %}">
+            <div class="delphi-mobile-header-copy">
                 <p class="delphi-mobile-kicker">{{ app_identity.page_kicker }}</p>
                 <h1>{{ page_heading }}</h1>
                 <p>{{ page_copy }}</p>
+                {% if active_tab == 'home' and mobile_market_stamps %}
+                    <div class="delphi-mobile-header-market-stamps" aria-label="Live market snapshot">
+                        {% for stamp in mobile_market_stamps %}
+                            <article class="delphi-mobile-header-market-stamp delphi-mobile-header-market-stamp-{{ stamp.trend }}">
+                                <span>{{ stamp.label }}</span>
+                                <strong>{{ stamp.value }}</strong>
+                                <small>{{ stamp.point_change }}</small>
+                                <small>{{ stamp.percent_change }}</small>
+                            </article>
+                        {% endfor %}
+                    </div>
+                {% endif %}
             </div>
             <div class="delphi-mobile-header-badge">
                 <span>{{ app_identity.version_label }}</span>
@@ -41,248 +59,85 @@
         {% endif %}
 
         {% if active_tab == 'home' %}
-            <section class="delphi-mobile-section delphi-mobile-market-section">
-                <div class="delphi-mobile-section-heading">
+            <section class="delphi-mobile-section delphi-mobile-section-priority">
+                <div class="delphi-mobile-section-heading delphi-mobile-section-heading-on-dark">
                     <div>
-                        <p class="delphi-mobile-section-kicker">Market</p>
-                        <h2>Command Snapshot</h2>
+                        <p class="delphi-mobile-section-kicker">Active</p>
+                        <h2>Open Trades</h2>
                     </div>
-                    <span class="delphi-mobile-pill">{{ connection_card.value if connection_card else 'Standby' }}</span>
-                </div>
-                <div class="delphi-mobile-market-grid">
-                    <article class="delphi-mobile-card delphi-mobile-market-card">
-                        <span>SPX</span>
-                        <strong>{{ spx_card.value if spx_card else '—' }}</strong>
-                        <small>{{ spx_card.change if spx_card and spx_card.change else 'Change unavailable' }}</small>
-                    </article>
-                    <article class="delphi-mobile-card delphi-mobile-market-card">
-                        <span>VIX</span>
-                        <strong>{{ vix_card.value if vix_card else '—' }}</strong>
-                        <small>{{ vix_card.change if vix_card and vix_card.change else 'Change unavailable' }}</small>
-                    </article>
-                    <article class="delphi-mobile-card delphi-mobile-market-card delphi-mobile-market-card-wide">
-                        <span>Market Status</span>
-                        <strong>{{ connection_card.value if connection_card else 'Unknown' }}</strong>
-                        <small>{{ connection_card.meta if connection_card else 'Schwab' }}</small>
-                    </article>
-                </div>
-            </section>
-
-            <section class="delphi-mobile-section">
-                <div class="delphi-mobile-section-heading">
-                    <div>
-                        <p class="delphi-mobile-section-kicker">Actions</p>
-                        <h2>Primary Controls</h2>
-                    </div>
-                </div>
-                <div class="delphi-mobile-action-grid">
-                    <form method="post" action="{{ url_for('hosted_mobile_run_action', engine='apollo') }}">
-                        <input type="hidden" name="next" value="{{ mobile_routes.home }}">
-                        <button type="submit">Run Apollo</button>
-                    </form>
-                    <form method="post" action="{{ url_for('hosted_mobile_run_action', engine='kairos') }}">
-                        <input type="hidden" name="next" value="{{ mobile_routes.home }}">
-                        <button type="submit">Run Kairos</button>
-                    </form>
-                    <a class="button-link" href="{{ mobile_routes.journal }}">Journal</a>
-                    <a class="button-link" href="{{ mobile_routes.trades }}">Open Trades</a>
-                </div>
-            </section>
-
-            <section class="delphi-mobile-section delphi-mobile-summary-split">
-                <article class="delphi-mobile-card">
-                    <div class="delphi-mobile-section-heading">
-                        <div>
-                            <p class="delphi-mobile-section-kicker">Today</p>
-                            <h2>Open Snapshot</h2>
-                        </div>
-                    </div>
-                    <div class="delphi-mobile-stat-grid">
-                        <div><span>Open Positions</span><strong>{{ mobile_open_trades.open_trade_count }}</strong></div>
-                        <div><span>Alerts Sent</span><strong>{{ mobile_open_trades.alerts_sent }}</strong></div>
-                        <div><span>Net P/L</span><strong>{{ net_pnl.value if net_pnl.value is defined else '—' }}</strong></div>
-                        <div><span>Win Rate</span><strong>{{ win_rate.value if win_rate.value is defined else '—' }}%</strong></div>
-                    </div>
-                </article>
-                <article class="delphi-mobile-card">
-                    <div class="delphi-mobile-section-heading">
-                        <div>
-                            <p class="delphi-mobile-section-kicker">Performance</p>
-                            <h2>Compact Summary</h2>
-                        </div>
-                    </div>
-                    <div class="delphi-mobile-performance-strip">
-                        <div><span>Total Trades</span><strong>{{ totals.total_trades if totals.total_trades is defined else mobile_home_performance.records_filtered }}</strong></div>
-                        <div><span>Expectancy</span><strong>{{ expectancy.value if expectancy.value is defined else '—' }}</strong></div>
-                        <div><span>Filtered</span><strong>{{ mobile_home_performance.records_filtered }}</strong></div>
-                    </div>
-                </article>
-            </section>
-
-            <section class="delphi-mobile-section">
-                <div class="delphi-mobile-section-heading">
-                    <div>
-                        <p class="delphi-mobile-section-kicker">Recent</p>
-                        <h2>Activity</h2>
-                    </div>
+                    <span class="delphi-mobile-pill">{{ mobile_open_trades.open_trade_count }} Open</span>
                 </div>
                 <div class="delphi-mobile-card-list">
-                    {% for trade in mobile_recent_activity %}
-                        <article class="delphi-mobile-card delphi-mobile-activity-card">
-                            <div class="delphi-mobile-card-topline">
-                                <strong>Trade #{{ trade.trade_number }}</strong>
-                                <span>{{ trade.trade_mode|title }}</span>
+                    {% for trade in mobile_open_trade_cards %}
+                        {% set trade_id = trade.trade_id if trade.trade_id is defined else trade.id %}
+                        {% set trade_mode = (trade.trade_mode or 'real')|lower %}
+                        <article class="delphi-mobile-card delphi-mobile-trade-board-card apollo-candidate-card apollo-candidate-card-{{ trade.mobile_profile_tint }}">
+                            <div class="delphi-mobile-trade-board-topline">
+                                <strong>Trade #{{ trade.trade_number or trade_id }}</strong>
+                                <span>{{ trade.system_name or trade.system or 'Delphi' }} · {{ trade.mobile_profile_label }}</span>
+                                <em>{{ trade.mobile_trade_mode_label }}</em>
                             </div>
-                            <h3>{{ trade.system_name }} · {{ trade.candidate_profile }}</h3>
-                            <p>{{ trade.strike_pair }}</p>
-                            <div class="delphi-mobile-inline-stats">
-                                <span>{{ trade.status }}</span>
-                                <span>{{ trade.gross_pnl }}</span>
-                            </div>
-                        </article>
-                    {% else %}
-                        <article class="delphi-mobile-card"><p>No recent activity is available yet.</p></article>
-                    {% endfor %}
-                </div>
-            </section>
-        {% elif active_tab == 'runs' %}
-            <section class="delphi-mobile-section">
-                <div class="delphi-mobile-section-heading">
-                    <div>
-                        <p class="delphi-mobile-section-kicker">Runs</p>
-                        <h2>Apollo / Kairos</h2>
-                    </div>
-                    <div class="delphi-mobile-chip-row">
-                        <a class="delphi-mobile-chip" href="#apollo-run-card">Apollo</a>
-                        <a class="delphi-mobile-chip" href="#kairos-run-card">Kairos</a>
-                    </div>
-                </div>
-                <div class="delphi-mobile-card-list">
-                    {% for run in mobile_run_cards %}
-                        <article class="delphi-mobile-card delphi-mobile-run-card" id="{{ run.key }}-run-card">
-                            <div class="delphi-mobile-card-topline">
-                                <strong>{{ run.title }}</strong>
-                                <span>{{ run.timestamp }}</span>
-                            </div>
-                            <h3>{{ run.best_trade_summary }}</h3>
-                            <p>{{ run.plain_english }}</p>
-                            <div class="delphi-mobile-inline-stats">
-                                <span>Structure: {{ run.structure }}</span>
-                                <span>Status: {{ run.macro_status }}</span>
-                                <span>Candidates: {{ run.candidate_count }}</span>
-                            </div>
-                            <div class="delphi-mobile-run-actions">
-                                <form method="post" action="{{ run.run_action_url }}">
-                                    <input type="hidden" name="next" value="{{ mobile_routes.runs }}">
-                                    <button type="submit">Run Again</button>
-                                </form>
-                                <a class="button-link button-link-secondary" href="{{ run.detail_url }}">View Details</a>
-                            </div>
-                            <details class="delphi-mobile-details">
-                                <summary>Latest candidate details</summary>
-                                <div class="delphi-mobile-detail-stack">
-                                    {% for candidate in run.candidates %}
-                                        <article class="delphi-mobile-detail-card">
-                                            <div class="delphi-mobile-card-topline">
-                                                <strong>{{ candidate.mode_label or candidate.slot_label or 'Candidate' }}</strong>
-                                                <span>{{ candidate.net_credit or candidate.strike_label or '—' }}</span>
-                                            </div>
-                                            <p>{{ candidate.short_strike ~ ' / ' ~ candidate.long_strike if candidate.short_strike is defined else candidate.strike_label or 'No strikes available' }}</p>
-                                            <div class="delphi-mobile-inline-stats">
-                                                <span>{{ candidate.em_multiple or candidate.distance_to_short or '—' }}</span>
-                                                <span>{{ candidate.black_swan_loss or candidate.message or '—' }}</span>
-                                            </div>
-                                            {% if candidate.prefill_fields %}
-                                                <div class="delphi-mobile-run-actions delphi-mobile-run-actions-journal">
-                                                    <form method="post" action="{{ run.prefill_action_url }}">
-                                                        <input type="hidden" name="target_mode" value="real">
-                                                        {{ hidden_fields(candidate.prefill_fields) }}
-                                                        <button type="submit">Send to Journal (Real)</button>
-                                                    </form>
-                                                    <form method="post" action="{{ run.prefill_action_url }}">
-                                                        <input type="hidden" name="target_mode" value="simulated">
-                                                        {{ hidden_fields(candidate.prefill_fields) }}
-                                                        <button type="submit" class="secondary">Send to Journal (Sim)</button>
-                                                    </form>
-                                                </div>
-                                                <p class="delphi-mobile-form-note">Journal handoff opens the existing hosted draft flow so backend trade logic stays unchanged.</p>
-                                            {% endif %}
-                                        </article>
-                                    {% else %}
-                                        <p>No run candidates are available yet.</p>
-                                    {% endfor %}
+                            <div class="delphi-mobile-trade-board-grid">
+                                <div>
+                                    <span>Status</span>
+                                    <strong><i class="delphi-mobile-status-chip delphi-mobile-status-chip-{{ trade.mobile_status_tone }}">{{ trade.mobile_status_label }}</i></strong>
                                 </div>
-                            </details>
-                        </article>
-                    {% endfor %}
-                </div>
-            </section>
-        {% elif active_tab == 'trades' %}
-            <section class="delphi-mobile-section">
-                <div class="delphi-mobile-section-heading">
-                    <div>
-                        <p class="delphi-mobile-section-kicker">Trades</p>
-                        <h2>Open Positions</h2>
-                    </div>
-                    <span class="delphi-mobile-pill">{{ mobile_open_trades.records_filtered }} Active</span>
-                </div>
-                <div class="delphi-mobile-card-list">
-                    {% for item in mobile_open_trades.records %}
-                        {% set trade_mode = (item.trade_mode or 'real')|lower %}
-                        {% set trade_id = item.trade_id if item.trade_id is defined else item.id %}
-                        <article class="delphi-mobile-card delphi-mobile-trade-card">
-                            <div class="delphi-mobile-card-topline">
-                                <strong>Trade #{{ item.trade_number or trade_id }}</strong>
-                                <span>{{ item.status }}</span>
-                            </div>
-                            <h3>{{ item.system_name or item.system or 'Delphi' }} · {{ item.profile_label or item.candidate_profile or item.profile or 'Standard' }}</h3>
-                            <p>{{ item.strike_pair or ((item.short_strike or '—') ~ ' / ' ~ (item.long_strike or '—')) }} · {{ item.expiration_date or item.expiration_date_display or '—' }}</p>
-                            <div class="delphi-mobile-inline-stats">
-                                <span>{{ item.trade_mode }}</span>
-                                <span>{{ item.gross_pnl or item.current_pnl_display or '—' }}</span>
-                                <span>{{ item.action_recommendation or item.status }}</span>
-                            </div>
-                            <details class="delphi-mobile-details">
-                                <summary>Trade detail</summary>
-                                <div class="delphi-mobile-detail-stack">
-                                    <div class="delphi-mobile-detail-card">
-                                        <span>Original setup</span>
-                                        <strong>{{ item.strike_pair or ((item.short_strike or '—') ~ ' / ' ~ (item.long_strike or '—')) }}</strong>
-                                    </div>
-                                    <div class="delphi-mobile-detail-card">
-                                        <span>Current context</span>
-                                        <strong>{{ item.current_spx_display or item.current_total_close_cost_display or item.status }}</strong>
-                                    </div>
-                                    <div class="delphi-mobile-detail-card">
-                                        <span>Exit guidance</span>
-                                        <strong>{{ item.action_recommendation or item.monitoring_note or 'Review in management' }}</strong>
-                                    </div>
-                                    <div class="delphi-mobile-detail-card">
-                                        <span>Notes</span>
-                                        <strong>{{ item.notes_entry or item.notes_exit or item.status_note or 'No notes saved.' }}</strong>
-                                    </div>
+                                <div>
+                                    <span>Qty</span>
+                                    <strong>{{ trade.mobile_qty_display }}</strong>
                                 </div>
-                            </details>
-                            <div class="delphi-mobile-run-actions">
-                                {% if trade_id %}
+                                <div>
+                                    <span>Distance to Short</span>
+                                    <strong>{{ trade.mobile_distance_display }}</strong>
+                                </div>
+                                <div>
+                                    <span>P/L</span>
+                                    <strong>{{ trade.mobile_pnl_display }}</strong>
+                                </div>
+                                <div>
+                                    <span>Remaining P/L</span>
+                                    <strong>{{ trade.mobile_remaining_pl_display }}</strong>
+                                </div>
+                                <div class="delphi-mobile-next-trigger-wrap">
+                                    <span>Next Trigger</span>
+                                    <strong class="delphi-mobile-next-trigger">{{ trade.mobile_next_trigger }}</strong>
+                                </div>
+                            </div>
+                            <div class="delphi-mobile-trade-board-actions">
+                                {% if trade_id and trade.mobile_close_enabled %}
                                     <form method="post" action="{{ url_for('hosted_open_trade_management_prefill_close', trade_id=trade_id) }}">
-                                        <button type="submit">Close Partial</button>
+                                        <button type="submit" class="delphi-mobile-close-button">Send to Close</button>
                                     </form>
-                                    <form method="post" action="{{ url_for('hosted_open_trade_management_prefill_close', trade_id=trade_id) }}">
-                                        <button type="submit" class="secondary">Close Full</button>
-                                    </form>
-                                    <a class="button-link button-link-secondary" href="{{ url_for('hosted_trade_edit', trade_mode=trade_mode, trade_id=trade_id) }}">Edit</a>
-                                    <a class="button-link button-link-secondary" href="{{ url_for('hosted_trade_edit', trade_mode=trade_mode, trade_id=trade_id) }}#notes-exit">Add Note</a>
                                 {% else %}
-                                    <a class="button-link button-link-secondary" href="{{ desktop_routes.management }}">View in Desktop Management</a>
+                                    <a class="button-link button-link-secondary delphi-mobile-close-button" href="{{ desktop_routes.management }}">View in Desktop Management</a>
                                 {% endif %}
                             </div>
-                            <p class="delphi-mobile-form-note">Close actions use the existing journal-prefill workflow to avoid changing live management logic.</p>
                         </article>
                     {% else %}
-                        <article class="delphi-mobile-card"><p>No open trades are currently available.</p></article>
+                        <article class="delphi-mobile-card delphi-mobile-empty-state-card">
+                            <p>No open trades are active right now.</p>
+                            <small>Home stays focused on live operational risk once positions open.</small>
+                        </article>
                     {% endfor %}
                 </div>
+            </section>
+
+            <section class="delphi-mobile-section">
+                <div class="delphi-mobile-section-heading">
+                    <div>
+                        <p class="delphi-mobile-section-kicker">Workspace</p>
+                        <h2>Shortcuts</h2>
+                    </div>
+                </div>
+                <article class="delphi-mobile-card delphi-mobile-workspace-card">
+                    <div class="delphi-mobile-run-actions delphi-mobile-workspace-links">
+                        <a class="button-link" href="{{ url_for('hosted_device_launch', view='desktop', next=desktop_routes.home) }}">Switch to Desktop</a>
+                        <a class="button-link button-link-secondary" href="{{ desktop_routes.notifications }}">Notifications</a>
+                    </div>
+                    <form method="post" action="{{ hosted_sign_out_url }}" class="delphi-mobile-sign-out-form">
+                        <button type="submit" class="secondary">Log Out</button>
+                    </form>
+                </article>
             </section>
         {% elif active_tab == 'journal' %}
             <section class="delphi-mobile-section">
@@ -419,67 +274,128 @@
                     </div>
                 </form>
             </section>
-        {% else %}
-            <section class="delphi-mobile-section">
+        {% elif active_tab == 'performance' %}
+            <section class="delphi-mobile-section" data-mobile-performance-root data-performance-url="{{ mobile_performance_data_url }}">
                 <div class="delphi-mobile-section-heading">
                     <div>
-                        <p class="delphi-mobile-section-kicker">More</p>
-                        <h2>System</h2>
+                        <p class="delphi-mobile-section-kicker">Performance</p>
+                        <h2>Stats</h2>
                     </div>
+                    <a class="button-link button-link-secondary" href="{{ desktop_routes.performance }}">Desktop View</a>
                 </div>
-                <div class="delphi-mobile-card-list">
-                    <article class="delphi-mobile-card">
-                        <h3>Account</h3>
-                        <div class="delphi-mobile-detail-stack">
-                            <div class="delphi-mobile-detail-card"><span>Profile</span><strong>{{ mobile_identity.display_name or 'Approved User' }}</strong></div>
-                            <div class="delphi-mobile-detail-card"><span>Email</span><strong>{{ mobile_identity.email or '—' }}</strong></div>
-                            <div class="delphi-mobile-detail-card"><span>Version</span><strong>{{ app_identity.version_label }}</strong></div>
+                <div class="delphi-mobile-performance-filter-form" aria-label="Stats filters">
+                    {% for group in mobile_performance_filter_groups %}
+                        <section class="delphi-mobile-performance-filter-group" aria-label="{{ group.label }} filter group">
+                            <span>{{ group.label }}</span>
+                            <div class="delphi-mobile-performance-filter-row">
+                                {% for button in group.buttons %}
+                                    <a href="{{ button.href }}" class="delphi-mobile-filter-chip{% if button.active %} delphi-mobile-filter-chip-active{% endif %}">{{ button.label }}</a>
+                                {% endfor %}
+                            </div>
+                        </section>
+                    {% endfor %}
+                </div>
+
+                {% if mobile_home_performance.records_total|default(0) == 0 or mobile_home_performance.records_filtered|default(0) == 0 %}
+                    <div class="message message-info delphi-mobile-message" id="mobile-performance-empty-note">No hosted performance records are available for the current mobile Stats filter scope yet.</div>
+                {% else %}
+                    <div class="delphi-mobile-performance-runtime-note" id="mobile-performance-empty-note" hidden></div>
+                {% endif %}
+
+                <div class="delphi-mobile-performance-hero-grid">
+                    <article class="delphi-mobile-card delphi-mobile-performance-gauge-card">
+                        <p class="delphi-mobile-section-kicker">Win Rate</p>
+                        {% set win_rate_ratio = ((win_rate.value if win_rate.value is defined else 0) / 100) %}
+                        <div class="delphi-mobile-speedometer" data-mobile-performance-gauge="win-rate" style="--ratio: {{ 1 if win_rate_ratio > 1 else (0 if win_rate_ratio < 0 else win_rate_ratio) }}; --gauge-color: #1f8f5f;">
+                            <div class="delphi-mobile-speedometer-ring"></div>
+                            <div class="delphi-mobile-speedometer-center">
+                                <strong id="mobile-performance-win-rate-value">{{ '%.2f'|format(win_rate.value if win_rate.value is defined else 0) }}%</strong>
+                                <span id="mobile-performance-win-rate-note">{{ win_rate.closed_outcomes if win_rate.closed_outcomes is defined else 0 }} scored</span>
+                            </div>
                         </div>
                     </article>
-                    <article class="delphi-mobile-card">
-                        <h3>System Status</h3>
-                        <div class="delphi-mobile-detail-stack">
-                            {% for card in market_cards %}
-                                <div class="delphi-mobile-detail-card">
-                                    <span>{{ card.label }}</span>
-                                    <strong>{{ card.value }}</strong>
-                                </div>
-                            {% endfor %}
+                    <article class="delphi-mobile-card delphi-mobile-performance-gauge-card">
+                        <p class="delphi-mobile-section-kicker">Expectancy</p>
+                        {% set expectancy_ratio = (((expectancy.value if expectancy.value is defined else 0)|abs) / (expectancy.scale if expectancy.scale is defined and expectancy.scale else 100)) %}
+                        <div class="delphi-mobile-speedometer delphi-mobile-speedometer-expectancy" data-mobile-performance-gauge="expectancy" style="--ratio: {{ 1 if expectancy_ratio > 1 else (0 if expectancy_ratio < 0 else expectancy_ratio) }}; --gauge-color: {{ '#1f6feb' if (expectancy.value if expectancy.value is defined else 0) >= 0 else '#c24141' }};">
+                            <div class="delphi-mobile-speedometer-ring"></div>
+                            <div class="delphi-mobile-speedometer-center">
+                                <strong id="mobile-performance-expectancy-value">{{ '%.2f'|format(expectancy.value if expectancy.value is defined else 0) }}</strong>
+                                <span id="mobile-performance-expectancy-note">Scale {{ '%.0f'|format(expectancy.scale if expectancy.scale is defined else 0) }}</span>
+                            </div>
                         </div>
-                    </article>
-                    <article class="delphi-mobile-card">
-                        <h3>Experience</h3>
-                        <div class="delphi-mobile-run-actions delphi-mobile-more-links">
-                            <a class="button-link" href="{{ url_for('hosted_device_launch', view='desktop', next=desktop_routes.home) }}">Switch to Desktop</a>
-                            <a class="button-link button-link-secondary" href="{{ url_for('hosted_device_launch', view='mobile', next=mobile_routes.home) }}">Refresh Mobile Route</a>
-                            <a class="button-link button-link-secondary" href="{{ desktop_routes.notifications }}">Notifications</a>
-                        </div>
-                        <form method="post" action="{{ hosted_sign_out_url }}" class="delphi-mobile-sign-out-form">
-                            <button type="submit" class="secondary">Log Out</button>
-                        </form>
                     </article>
                 </div>
+
+                <article class="delphi-mobile-card delphi-mobile-performance-spotlight">
+                    <p class="delphi-mobile-section-kicker">Net P/L</p>
+                    <strong id="mobile-performance-net-pnl-value">{{ '%.2f'|format(net_pnl.value if net_pnl.value is defined else 0) }}</strong>
+                    <span id="mobile-performance-counts-caption">{{ mobile_home_performance.records_filtered }} filtered of {{ mobile_home_performance.records_total }} total trades</span>
+                </article>
+
+                <article class="delphi-mobile-card delphi-mobile-performance-equity-card">
+                    <div class="delphi-mobile-section-heading">
+                        <div>
+                            <p class="delphi-mobile-section-kicker">Equity Curve</p>
+                            <h2>Performance Path</h2>
+                        </div>
+                    </div>
+                    {% if equity_points %}
+                        <svg viewBox="0 0 320 140" class="delphi-mobile-equity-chart" id="mobile-performance-equity-chart" role="img" aria-label="Equity curve chart">
+                            <line id="mobile-performance-equity-baseline" x1="12" y1="118" x2="308" y2="118" class="delphi-mobile-equity-baseline" />
+                            <path id="mobile-performance-equity-area" class="delphi-mobile-equity-area" d="" />
+                            <polyline
+                                id="mobile-performance-equity-polyline"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="4"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                points="{% for point in equity_points %}{% set x = 12 + ((296 / ((equity_points|length - 1) if equity_points|length > 1 else 1)) * loop.index0) %}{% set y = 118 - (((point.cumulative - equity_min) / equity_range) * 92) %}{{ '%.2f'|format(x) }},{{ '%.2f'|format(y) }}{% if not loop.last %} {% endif %}{% endfor %}"
+                            />
+                        </svg>
+                        <div class="delphi-mobile-performance-footnote">
+                            <span id="mobile-performance-equity-low">{{ '$%.0f'|format(equity_min) }}</span>
+                            <span id="mobile-performance-equity-high">{{ '$%.0f'|format(equity_max) }}</span>
+                        </div>
+                    {% else %}
+                        <svg viewBox="0 0 320 140" class="delphi-mobile-equity-chart" id="mobile-performance-equity-chart" role="img" aria-label="Equity curve chart" hidden>
+                            <line id="mobile-performance-equity-baseline" x1="12" y1="118" x2="308" y2="118" class="delphi-mobile-equity-baseline" />
+                            <path id="mobile-performance-equity-area" class="delphi-mobile-equity-area" d="" />
+                            <polyline id="mobile-performance-equity-polyline" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" points="" />
+                        </svg>
+                        <div class="delphi-mobile-performance-footnote" id="mobile-performance-equity-footnote" hidden>
+                            <span id="mobile-performance-equity-low">$0</span>
+                            <span id="mobile-performance-equity-high">$0</span>
+                        </div>
+                        <p class="delphi-mobile-form-note" id="mobile-performance-equity-empty">No equity curve is available for the current filtered selection.</p>
+                    {% endif %}
+                </article>
+
+                <div class="delphi-mobile-performance-metric-grid">
+                    <article class="delphi-mobile-card delphi-mobile-performance-metric-card">
+                        <span>Avg Safety Ratio</span>
+                        <strong id="mobile-performance-avg-safety-ratio">{{ '%.2f'|format(performance_overview.avg_safety_ratio if performance_overview.avg_safety_ratio is defined and performance_overview.avg_safety_ratio is not none else 0) }}x</strong>
+                    </article>
+                    <article class="delphi-mobile-card delphi-mobile-performance-metric-card">
+                        <span>Avg Premium / EM Point</span>
+                        <strong id="mobile-performance-avg-premium-em">{{ '%.2f'|format(performance_overview.avg_premium_per_em if performance_overview.avg_premium_per_em is defined and performance_overview.avg_premium_per_em is not none else 0) }}</strong>
+                    </article>
+                    <article class="delphi-mobile-card delphi-mobile-performance-metric-card">
+                        <span>Avg Premium / Risk</span>
+                        <strong id="mobile-performance-avg-premium-risk">{{ '%.3f'|format(performance_overview.avg_risk_efficiency if performance_overview.avg_risk_efficiency is defined and performance_overview.avg_risk_efficiency is not none else 0) }}</strong>
+                    </article>
+                    <article class="delphi-mobile-card delphi-mobile-performance-metric-card">
+                        <span>Avg Credit Efficiency</span>
+                        <strong id="mobile-performance-avg-credit-efficiency">{{ '%.2f'|format(performance_overview.avg_credit_efficiency_pct if performance_overview.avg_credit_efficiency_pct is defined and performance_overview.avg_credit_efficiency_pct is not none else 0) }}%</strong>
+                    </article>
+                </div>
+                <script id="mobile-performance-dashboard-payload" type="application/json">{{ mobile_home_performance|tojson }}</script>
             </section>
         {% endif %}
     </main>
 
-    <nav class="delphi-mobile-bottom-nav" aria-label="Delphi Mobile Navigation">
-        <a href="{{ mobile_routes.home }}" class="{% if active_tab == 'home' %}delphi-mobile-bottom-nav-active{% endif %}">
-            <span>Home</span>
-        </a>
-        <a href="{{ mobile_routes.runs }}" class="{% if active_tab == 'runs' %}delphi-mobile-bottom-nav-active{% endif %}">
-            <span>Runs</span>
-        </a>
-        <a href="{{ mobile_routes.trades }}" class="{% if active_tab == 'trades' %}delphi-mobile-bottom-nav-active{% endif %}">
-            <span>Trades</span>
-        </a>
-        <a href="{{ mobile_routes.journal }}" class="{% if active_tab == 'journal' %}delphi-mobile-bottom-nav-active{% endif %}">
-            <span>Journal</span>
-        </a>
-        <a href="{{ mobile_routes.more }}" class="{% if active_tab == 'more' %}delphi-mobile-bottom-nav-active{% endif %}">
-            <span>More</span>
-        </a>
-    </nav>
+    {% include '_hosted_mobile_bottom_nav.html' %}
 
     <script>
         (() => {
@@ -504,6 +420,156 @@
             };
             chips.forEach((chip) => chip.addEventListener('click', () => applyFilter(chip.dataset.filterValue || 'all')));
             applyFilter('all');
+        })();
+
+        (() => {
+            const performanceRoot = document.querySelector('[data-mobile-performance-root]');
+            if (!performanceRoot) {
+                return;
+            }
+            const performanceUrl = performanceRoot.dataset.performanceUrl;
+            const payloadElement = document.getElementById('mobile-performance-dashboard-payload');
+            const clampRatio = (value) => Math.max(0, Math.min(1, Number(value || 0)));
+            const readInitialPayload = () => {
+                try {
+                    return JSON.parse(payloadElement?.textContent || '{}');
+                } catch {
+                    return {};
+                }
+            };
+            const normalizePayload = (payload) => ({
+                records_total: Number(payload?.records_total || 0),
+                records_filtered: Number(payload?.records_filtered || 0),
+                metrics: {
+                    win_rate: {
+                        value: Number(payload?.metrics?.win_rate?.value || 0),
+                        closed_outcomes: Number(payload?.metrics?.win_rate?.closed_outcomes || payload?.metrics?.win_rate?.wins || 0),
+                    },
+                    expectancy: {
+                        value: Number(payload?.metrics?.expectancy?.value || 0),
+                        scale: Number(payload?.metrics?.expectancy?.scale || 100),
+                    },
+                    net_pnl: {
+                        value: Number(payload?.metrics?.net_pnl?.value || 0),
+                    },
+                },
+                charts: {
+                    equity_curve: {
+                        min: Number(payload?.charts?.equity_curve?.min || 0),
+                        max: Number(payload?.charts?.equity_curve?.max || 0),
+                        points: Array.isArray(payload?.charts?.equity_curve?.points) ? payload.charts.equity_curve.points : [],
+                    },
+                },
+                learning: {
+                    overview: {
+                        avg_safety_ratio: Number(payload?.learning?.overview?.avg_safety_ratio || 0),
+                        avg_premium_per_em: Number(payload?.learning?.overview?.avg_premium_per_em || 0),
+                        avg_risk_efficiency: Number(payload?.learning?.overview?.avg_risk_efficiency || 0),
+                        avg_credit_efficiency_pct: Number(payload?.learning?.overview?.avg_credit_efficiency_pct || 0),
+                    },
+                },
+            });
+            const formatNumber = (value, decimals = 2) => Number(value || 0).toFixed(decimals);
+            const formatCurrency = (value, decimals = 2) => {
+                const numeric = Number(value || 0);
+                const sign = numeric < 0 ? '-' : '';
+                return `${sign}$${Math.abs(numeric).toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}`;
+            };
+            const setText = (id, value) => {
+                const node = document.getElementById(id);
+                if (node) {
+                    node.textContent = value;
+                }
+            };
+            const renderGauge = (key, ratio, color) => {
+                const node = document.querySelector(`[data-mobile-performance-gauge="${key}"]`);
+                if (node) {
+                    node.style.setProperty('--ratio', clampRatio(ratio));
+                    if (color) {
+                        node.style.setProperty('--gauge-color', color);
+                    }
+                }
+            };
+            const renderEquity = (equityCurve) => {
+                const chart = document.getElementById('mobile-performance-equity-chart');
+                const baseline = document.getElementById('mobile-performance-equity-baseline');
+                const area = document.getElementById('mobile-performance-equity-area');
+                const polyline = document.getElementById('mobile-performance-equity-polyline');
+                const footnote = document.getElementById('mobile-performance-equity-footnote');
+                const emptyNote = document.getElementById('mobile-performance-equity-empty');
+                const points = Array.isArray(equityCurve?.points) ? equityCurve.points : [];
+                if (!chart || !polyline || !baseline || !area) {
+                    return;
+                }
+                if (!points.length) {
+                    chart.hidden = true;
+                    if (footnote) {
+                        footnote.hidden = true;
+                    }
+                    if (emptyNote) {
+                        emptyNote.hidden = false;
+                    }
+                    polyline.setAttribute('points', '');
+                    return;
+                }
+                const min = Number(equityCurve.min || 0);
+                const max = Number(equityCurve.max || 0);
+                const range = max - min || 1;
+                const coordinates = points.map((point, index) => {
+                    const x = 12 + ((296 / Math.max(points.length - 1, 1)) * index);
+                    const y = 118 - ((((Number(point?.cumulative || 0) - min) / range)) * 92);
+                    return `${x.toFixed(2)},${y.toFixed(2)}`;
+                }).join(' ');
+                const coordinatePairs = coordinates.split(' ');
+                const firstPair = coordinatePairs[0] || '12.00,118.00';
+                const lastPair = coordinatePairs[coordinatePairs.length - 1] || '308.00,118.00';
+                const linePath = coordinatePairs.map((pair, index) => `${index === 0 ? 'M' : 'L'}${pair.replace(',', ' ')}`).join(' ');
+                const baselineY = 118 - (((0 - min) / range) * 92);
+                const areaPath = `${linePath} L${lastPair.replace(',', ' ')} L308 118 L12 118 Z`;
+                chart.hidden = false;
+                if (footnote) {
+                    footnote.hidden = false;
+                }
+                if (emptyNote) {
+                    emptyNote.hidden = true;
+                }
+                baseline.setAttribute('y1', baselineY.toFixed(2));
+                baseline.setAttribute('y2', baselineY.toFixed(2));
+                area.setAttribute('d', areaPath);
+                polyline.setAttribute('points', coordinates);
+                setText('mobile-performance-equity-low', formatCurrency(min, 0));
+                setText('mobile-performance-equity-high', formatCurrency(max, 0));
+            };
+            const renderPayload = (rawPayload) => {
+                const payload = normalizePayload(rawPayload);
+                const winRate = payload.metrics.win_rate;
+                const expectancy = payload.metrics.expectancy;
+                const netPnl = payload.metrics.net_pnl;
+                const overview = payload.learning.overview;
+                renderGauge('win-rate', winRate.value / 100, '#1f8f5f');
+                renderGauge('expectancy', Math.abs(expectancy.value) / Math.max(expectancy.scale || 100, 1), expectancy.value >= 0 ? '#1f6feb' : '#c24141');
+                setText('mobile-performance-win-rate-value', `${formatNumber(winRate.value, 2)}%`);
+                setText('mobile-performance-win-rate-note', `${winRate.closed_outcomes} scored`);
+                setText('mobile-performance-expectancy-value', formatCurrency(expectancy.value, 0));
+                setText('mobile-performance-expectancy-note', `Scale ${formatNumber(expectancy.scale, 0)}`);
+                setText('mobile-performance-net-pnl-value', formatCurrency(netPnl.value, 2));
+                const netPnlNode = document.getElementById('mobile-performance-net-pnl-value');
+                if (netPnlNode) {
+                    netPnlNode.classList.toggle('delphi-mobile-performance-value-positive', netPnl.value >= 0);
+                    netPnlNode.classList.toggle('delphi-mobile-performance-value-negative', netPnl.value < 0);
+                }
+                setText('mobile-performance-counts-caption', `${payload.records_filtered} filtered of ${payload.records_total} total trades`);
+                setText('mobile-performance-avg-safety-ratio', `${formatNumber(overview.avg_safety_ratio, 2)}x`);
+                setText('mobile-performance-avg-premium-em', formatNumber(overview.avg_premium_per_em, 2));
+                setText('mobile-performance-avg-premium-risk', formatNumber(overview.avg_risk_efficiency, 3));
+                setText('mobile-performance-avg-credit-efficiency', `${formatNumber(overview.avg_credit_efficiency_pct, 2)}%`);
+                renderEquity(payload.charts.equity_curve);
+                const emptyNote = document.getElementById('mobile-performance-empty-note');
+                if (emptyNote) {
+                    emptyNote.hidden = payload.records_total > 0 && payload.records_filtered > 0;
+                }
+            };
+            renderPayload(readInitialPayload());
         })();
     </script>
 </body>

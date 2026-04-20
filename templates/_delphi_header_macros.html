@@ -110,68 +110,7 @@
         {% endif %}
 
         {% if not hosted_mode %}
-        <script>
-            (() => {
-                document.querySelectorAll('[data-refresh-market-status="true"]').forEach((link) => {
-                    if (link.dataset.refreshBound === 'true') {
-                        return;
-                    }
-                    link.dataset.refreshBound = 'true';
-                    link.addEventListener('click', () => {
-                        try {
-                            const url = new URL(link.href, window.location.origin);
-                            url.searchParams.set('header_refresh', Date.now().toString());
-                            link.href = url.toString();
-                        } catch (error) {
-                            // Ignore malformed hrefs and preserve the original navigation path.
-                        }
-                    });
-                });
-
-                const button = document.getElementById('delphi-text-status-button');
-                const feedback = document.getElementById('delphi-text-status-feedback');
-                const displayName = {{ app_identity.display_name|tojson }};
-                if (!button || button.dataset.bound === 'true') {
-                    return;
-                }
-
-                const setFeedback = (text, tone = 'neutral') => {
-                    if (!feedback) {
-                        return;
-                    }
-                    feedback.textContent = text || '';
-                    feedback.dataset.tone = tone;
-                };
-
-                button.dataset.bound = 'true';
-                button.addEventListener('click', async () => {
-                    const originalLabel = button.textContent;
-                    button.disabled = true;
-                    button.textContent = 'Sending...';
-                    setFeedback(`Sending ${displayName} test alert...`, 'neutral');
-
-                    try {
-                        const response = await fetch(button.dataset.textStatusUrl, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                            },
-                            body: JSON.stringify({ source: 'header-button' }),
-                        });
-                        const payload = await response.json().catch(() => ({}));
-                        if (!response.ok || !payload.ok) {
-                            throw new Error(payload.error || 'Unable to send Pushover test alert.');
-                        }
-                        setFeedback(payload.message || 'Pushover test alert sent.', 'success');
-                    } catch (error) {
-                        setFeedback(error.message || 'Unable to send Pushover test alert.', 'error');
-                    } finally {
-                        button.disabled = false;
-                        button.textContent = originalLabel;
-                    }
-                });
-            })();
-        </script>
+        <script src="{{ url_for('static', filename='delphi_header.js') }}" defer data-delphi-display-name="{{ app_identity.display_name|e }}"></script>
         {% endif %}
     </div>
 {%- endmacro %}

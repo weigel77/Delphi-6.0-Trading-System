@@ -6413,11 +6413,28 @@ class KairosService:
                 if force_refresh and hasattr(self.market_data_service, "get_fresh_intraday_candles_for_date")
                 else self.market_data_service.get_intraday_candles_for_date
             )
-            if session_date is None or session_date == self._now().date():
+            requested_session_date = session_date or self._now().date()
+            session_request_resolver = getattr(self.market_data_service, "resolve_intraday_session_request", None)
+            if callable(session_request_resolver):
+                session_request = session_request_resolver(requested_session_date, current_time=self._now())
+                resolved_session_date = session_request.get("resolved_session_date", requested_session_date)
+                normalization_reason = str(session_request.get("normalization_reason") or "")
+            else:
+                resolved_session_date = requested_session_date
+                normalization_reason = ""
+            if resolved_session_date != requested_session_date:
+                LOGGER.info(
+                    "Kairos intraday session normalized | query_type=%s | requested_session_date=%s | resolved_session_date=%s | reason=%s",
+                    query_type,
+                    requested_session_date.isoformat(),
+                    resolved_session_date.isoformat(),
+                    normalization_reason or "latest valid tradable session",
+                )
+            if resolved_session_date == self._now().date() and requested_session_date == self._now().date():
                 return same_day_reader("^GSPC", interval_minutes=1, query_type=query_type)
             return dated_reader(
                 "^GSPC",
-                target_date=session_date,
+                target_date=resolved_session_date,
                 interval_minutes=1,
                 query_type=query_type,
             )

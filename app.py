@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import copy
+import hashlib
 import json
 import re
 import secrets
 import time
 import os
 import urllib.parse
+from contextlib import contextmanager
 from pathlib import Path
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
@@ -34,7 +36,7 @@ from services import (
     PerformanceEngine,
     PushoverService,
 )
-from services.performance_dashboard_service import PERFORMANCE_FILTER_GROUPS, build_dashboard_payload
+from services.performance_dashboard_service import PERFORMANCE_DEFAULT_FILTERS, PERFORMANCE_FILTER_GROUPS, build_dashboard_payload, normalize_filter_value
 from services.repositories.apollo_snapshot_repository import ApolloSnapshotRepository
 from services.repositories.hosted_runtime_state_repository import SupabaseHostedRuntimeStateRepository, SupabaseImportPreviewRepository
 from services.repositories.import_preview_repository import FileSystemImportPreviewRepository, ImportPreviewRepository
@@ -112,6 +114,8 @@ HOSTED_SESSION_DEVICE_BRANCH_KEY = "hosted_device_branch"
 HOSTED_LOCAL_BROWSER_SESSION_COOKIE = "delphi_hosted_local_session"
 HOSTED_PAYLOAD_CACHE_EXTENSION_KEY = "hosted_payload_cache"
 HOSTED_DELPHI4_SYNC_RESULT_KEY = "hosted_delphi4_sync_result"
+HOSTED_MOBILE_APOLLO_HANDOFF_KEY = "hosted_mobile_apollo_handoff"
+HOSTED_MOBILE_KAIROS_HANDOFF_KEY = "hosted_mobile_kairos_handoff"
 HOSTED_PERFORMANCE_CACHE_SECONDS = 8
 HOSTED_OPEN_TRADES_CACHE_SECONDS = 8
 HOSTED_APOLLO_SNAPSHOT_CACHE_SECONDS = 5
@@ -473,6 +477,11 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     @app.before_request
     def resolve_request_identity_for_runtime() -> None:
         g.request_identity = get_request_identity_resolver(app).resolve_request_identity(request)
+        _ensure_request_performance_trace()
+
+    @app.after_request
+    def emit_request_performance_summary(response: Any) -> Any:
+        return _log_request_performance_summary(response)
 
     @app.context_processor
     def inject_universal_header_status() -> Dict[str, Any]:
@@ -805,26 +814,103 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         identity, error_response = authorize_hosted_private_browser_request(app)
         if error_response is not None:
             return error_response
-        return render_template(
-            "hosted_mobile_shell.html",
-            page_browser_title=f"{HOSTED_APP_DISPLAY_NAME} Mobile",
-            page_heading="Delphi Mobile",
-            page_copy="SPX tactical command system for phone-first review, runs, trades, and journal access.",
-            **build_hosted_mobile_shell_context(identity, active_tab=active_tab, app=app),
-            **build_hosted_template_context(identity, app=app),
-        )
+        with _track_market_data_load(f"hosted_mobile_shell:{active_tab}", app=app):
+            with trace_request_perf_section(f"mobile-shell-context:{active_tab}"):
+                shell_context = build_hosted_mobile_shell_context(identity, active_tab=active_tab, app=app)
+            with trace_request_perf_section(f"template:hosted_mobile_shell:{active_tab}"):
+                return render_template(
+                    "hosted_mobile_shell.html",
+                    page_browser_title=f"{HOSTED_APP_DISPLAY_NAME} Mobile",
+                    page_heading="Delphi Mobile",
+                    page_copy="Phone-first open-trade dashboard for active Delphi decisions.",
+                    **shell_context,
+                    **build_hosted_template_context(identity, app=app),
+                )
 
     @app.route("/hosted/mobile", methods=["GET"])
     def hosted_mobile_home() -> Any:
         return render_hosted_mobile_shell("home")
 
+    @app.route("/hosted/mobile/apollo", methods=["GET"])
+    def hosted_mobile_apollo() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        pop_status_message()
+        handoff_state = pop_hosted_mobile_apollo_handoff()
+        apollo_render_state = resolve_hosted_apollo_render_state(app=app)
+        apollo_payload = dict(apollo_render_state["payload"])
+        app.logger.info(
+            "Hosted mobile Apollo destination | route_entered=%s | action=render | payload_available=%s | payload_source=%s | payload_id=%s | cache_key=%s | source_object=%s | handoff_state_present=%s | handoff_state_consumed=%s",
+            request.path,
+            bool(apollo_payload),
+            apollo_render_state["payload_source"],
+            apollo_render_state["payload_id"],
+            apollo_render_state["cache_key"],
+            apollo_render_state["source_object"],
+            bool(handoff_state),
+            bool(handoff_state),
+        )
+        with trace_request_perf_section("template:hosted_mobile_apollo"):
+            return render_template(
+                "hosted_mobile_apollo.html",
+                page_browser_title=f"{HOSTED_APP_DISPLAY_NAME} Mobile Apollo",
+                page_heading="Apollo Mobile",
+                page_copy="",
+                active_tab="apollo",
+                mobile_routes=build_hosted_mobile_route_map(),
+                mobile_identity=identity,
+                apollo_payload=apollo_payload,
+                apollo_payload_source=apollo_render_state["payload_source"],
+                hosted_apollo_prefill_url=url_for("hosted_apollo_prefill_candidate"),
+                **build_hosted_template_context(identity, app=app),
+            )
+
+    @app.route("/hosted/mobile/kairos", methods=["GET"])
+    def hosted_mobile_kairos() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        info_message = pop_status_message()
+        handoff_state = pop_hosted_mobile_kairos_handoff()
+        kairos_render_state = resolve_hosted_kairos_render_state(app=app)
+        kairos_payload = dict(kairos_render_state["payload"])
+        app.logger.info(
+            "Hosted mobile Kairos destination | route_entered=%s | action=render | payload_created=%s | payload_source=%s | payload_id=%s | cache_key=%s | source_object=%s | destination_consumed=%s",
+            request.path,
+            bool(kairos_payload),
+            kairos_render_state["payload_source"],
+            kairos_render_state["payload_id"],
+            kairos_render_state["cache_key"],
+            kairos_render_state["source_object"],
+            bool(handoff_state),
+        )
+        with trace_request_perf_section("template:hosted_mobile_kairos"):
+            return render_template(
+                "hosted_mobile_kairos.html",
+                page_browser_title=f"{HOSTED_APP_DISPLAY_NAME} Mobile Kairos",
+                page_heading="Kairos Mobile",
+                page_copy="",
+                active_tab="kairos",
+                mobile_routes=build_hosted_mobile_route_map(),
+                mobile_identity=identity,
+                info_message=info_message,
+                kairos_payload=kairos_payload,
+                hosted_kairos_prefill_url=url_for("hosted_kairos_prefill_candidate"),
+                **build_hosted_template_context(identity, app=app),
+            )
+
     @app.route("/hosted/mobile/runs", methods=["GET"])
     def hosted_mobile_runs() -> Any:
-        return render_hosted_mobile_shell("runs")
+        return redirect(url_for("hosted_mobile_apollo"))
 
     @app.route("/hosted/mobile/trades", methods=["GET"])
     def hosted_mobile_trades() -> Any:
-        return render_hosted_mobile_shell("trades")
+        return redirect(url_for("hosted_mobile_home"))
+
+    @app.route("/hosted/mobile/performance", methods=["GET"])
+    def hosted_mobile_performance() -> Any:
+        return render_hosted_mobile_shell("performance")
 
     @app.route("/hosted/mobile/journal", methods=["GET"])
     def hosted_mobile_journal() -> Any:
@@ -853,27 +939,73 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
     @app.route("/hosted/mobile/more", methods=["GET"])
     def hosted_mobile_more() -> Any:
-        return render_hosted_mobile_shell("more")
+        return redirect(url_for("hosted_mobile_home"))
 
     @app.post("/hosted/mobile/run/<engine>")
     def hosted_mobile_run_action(engine: str) -> Any:
         _, error_response = authorize_hosted_private_browser_request(app)
         if error_response is not None:
             return error_response
-        redirect_target = sanitize_hosted_next_path(request.form.get("next") or url_for("hosted_mobile_runs"))
+        redirect_target = sanitize_hosted_next_path(request.form.get("next") or url_for("hosted_mobile_home"))
         normalized_engine = str(engine or "").strip().lower()
+        route_entered = request.path
         try:
-            if normalized_engine == "apollo":
-                _clear_hosted_payload_cache("hosted:apollo:live", app=app)
-                _clear_hosted_payload_cache("hosted:apollo:snapshot", app=app)
-                build_hosted_apollo_live_payload(app=app, force_refresh=True)
-                set_status_message("Apollo refreshed for Delphi Mobile.", level="info")
-            elif normalized_engine == "kairos":
-                _clear_hosted_payload_cache("hosted:kairos", app=app)
-                execute_hosted_kairos_live_run(app=app)
-                set_status_message("Kairos refreshed for Delphi Mobile.", level="info")
-            else:
-                abort(404)
+            with _track_market_data_load(f"hosted_mobile_run:{normalized_engine}", app=app):
+                if normalized_engine == "apollo":
+                    _clear_hosted_payload_cache("hosted:apollo:live", app=app)
+                    _clear_hosted_payload_cache("hosted:apollo:snapshot", app=app)
+                    apollo_payload = build_hosted_apollo_live_payload(app=app, force_refresh=True)
+                    redirect_target = sanitize_hosted_next_path(request.form.get("next") or url_for("hosted_mobile_apollo"))
+                    remember_hosted_mobile_apollo_handoff(
+                        {
+                            "route_entered": route_entered,
+                            "action": "apollo-run",
+                            "redirect_target": redirect_target,
+                            "payload_created": bool(apollo_payload),
+                            "result_state_stored_session": True,
+                            "result_state_stored_cache": True,
+                            "run_timestamp": str(apollo_payload.get("run_timestamp") or ""),
+                            "status": str(apollo_payload.get("status") or ""),
+                        }
+                    )
+                    set_status_message("Apollo refreshed for Delphi Mobile.", level="info")
+                    app.logger.info(
+                        "Hosted mobile Apollo flow | route_entered=%s | action=run-live | redirect_target=%s | payload_created=%s | result_state_stored_session=%s | result_state_stored_cache=%s",
+                        route_entered,
+                        redirect_target,
+                        bool(apollo_payload),
+                        True,
+                        True,
+                    )
+                elif normalized_engine == "kairos":
+                    _clear_hosted_payload_cache("hosted:kairos:live", app=app)
+                    _clear_hosted_payload_cache("hosted:kairos", app=app)
+                    _clear_hosted_payload_cache("hosted:kairos:summary", app=app)
+                    redirect_target = sanitize_hosted_next_path(request.form.get("next") or url_for("hosted_mobile_kairos"))
+                    kairos_payload = build_hosted_kairos_live_payload(app=app, force_refresh=True)
+                    remember_hosted_mobile_kairos_handoff(
+                        {
+                            "route_entered": route_entered,
+                            "action": "kairos-run",
+                            "redirect_target": redirect_target,
+                            "payload_created": bool(kairos_payload),
+                            "result_state_stored_session": True,
+                            "result_state_stored_cache": True,
+                            "run_timestamp": str(kairos_payload.get("run_timestamp") or ""),
+                            "session_status": str(kairos_payload.get("session_status") or ""),
+                        }
+                    )
+                    set_status_message("Kairos refreshed for Delphi Mobile.", level="info")
+                    app.logger.info(
+                        "Hosted mobile Kairos flow | route_entered=%s | action=run-live | redirect_target=%s | payload_created=%s | result_state_stored_session=%s | result_state_stored_cache=%s",
+                        route_entered,
+                        redirect_target,
+                        bool(kairos_payload),
+                        True,
+                        True,
+                    )
+                else:
+                    abort(404)
         except MarketDataReauthenticationRequired as exc:
             set_status_message(str(exc), level="warning")
         except MarketDataAuthenticationError as exc:
@@ -883,6 +1015,20 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         except Exception as exc:  # pragma: no cover - defensive logging
             app.logger.exception("Hosted mobile %s execution failed: %s", normalized_engine, exc)
             set_status_message(f"Unable to refresh {normalized_engine.title()} right now.", level="warning")
+        if normalized_engine == "apollo":
+            app.logger.info(
+                "Hosted mobile Apollo flow complete | route_entered=%s | action=%s | redirect_target=%s",
+                route_entered,
+                normalized_engine,
+                redirect_target,
+            )
+        if normalized_engine == "kairos":
+            app.logger.info(
+                "Hosted mobile Kairos flow complete | route_entered=%s | action=%s | redirect_target=%s",
+                route_entered,
+                normalized_engine,
+                redirect_target,
+            )
         return redirect(redirect_target)
 
     @app.route("/hosted/sign-out", methods=["POST"])
@@ -917,11 +1063,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         filters = parse_performance_request_filters(request.args)
         try:
             payload = build_hosted_performance_dashboard(filters=filters, app=app)
-            current_app.logger.warning(
-                "Hosted performance data route counts: total=%s filtered=%s",
-                payload.get("records_total"),
-                payload.get("records_filtered"),
-            )
+            log_hosted_performance_trace(route_label=request.path, filters=filters, payload=payload, app=app)
             return jsonify(payload)
         except SupabaseRequestError as exc:
             if not is_missing_hosted_trade_table_error(exc):
@@ -1084,6 +1226,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         if admin_error is None:
             try:
                 dashboard_payload = build_hosted_performance_dashboard(filters=filters, app=app)
+                log_hosted_performance_trace(route_label=request.path, filters=filters, payload=dashboard_payload, app=app)
             except SupabaseRequestError as exc:
                 if not is_missing_hosted_trade_table_error(exc):
                     raise
@@ -1098,7 +1241,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             error_message=admin_error["detail"] if admin_error else None,
             info_message=pop_status_message(),
             hosted_admin_error=admin_error,
-            performance_data_url=url_for("hosted_performance_data", **request.args.to_dict(flat=False)),
+            performance_data_url=build_hosted_performance_url("hosted_performance_data", filters=normalize_requested_performance_filters(filters)),
             **build_hosted_template_context(identity),
         )
         return (response, 503) if admin_error else response
@@ -1552,14 +1695,14 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             return error_response
         error_message = None
         info_message = pop_status_message()
-        apollo_result: Optional[Dict[str, Any]] = None
 
         if request.method == "POST":
             try:
-                _clear_hosted_payload_cache("hosted:apollo:live", app=app)
-                _clear_hosted_payload_cache("hosted:apollo:snapshot", app=app)
-                apollo_result = build_hosted_apollo_live_payload(app=app, force_refresh=True)
-                app.logger.info("Completed hosted Apollo live execution for %s", identity.email or identity.user_id)
+                with _track_market_data_load("hosted_desktop_apollo:post", app=app):
+                    _clear_hosted_payload_cache("hosted:apollo:live", app=app)
+                    _clear_hosted_payload_cache("hosted:apollo:snapshot", app=app)
+                    build_hosted_apollo_live_payload(app=app, force_refresh=True)
+                    app.logger.info("Completed hosted Apollo live execution for %s", identity.email or identity.user_id)
             except MarketDataReauthenticationRequired as exc:
                 error_message = str(exc)
             except MarketDataAuthenticationError as exc:
@@ -1573,7 +1716,8 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             autorun_requested = str(request.args.get("autorun") or "").strip().lower() in {"1", "true", "yes", "on"}
             if autorun_requested:
                 try:
-                    apollo_result = build_hosted_apollo_live_payload(app=app)
+                    with _track_market_data_load("hosted_desktop_apollo:autorun", app=app):
+                        build_hosted_apollo_live_payload(app=app)
                 except MarketDataReauthenticationRequired as exc:
                     error_message = str(exc)
                 except MarketDataAuthenticationError as exc:
@@ -1583,9 +1727,17 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
                 except Exception as exc:  # pragma: no cover - defensive logging
                     error_message = "Hosted Apollo live execution failed unexpectedly."
                     app.logger.exception("Unexpected hosted Apollo autorun error: %s", exc)
-            if apollo_result is None:
-                action_payload = build_hosted_apollo_action_response(app=app)
-                apollo_result = action_payload["payload"]
+        with _track_market_data_load("hosted_desktop_apollo:render", app=app):
+            apollo_render_state = resolve_hosted_apollo_render_state(app=app)
+            apollo_result = apollo_render_state["payload"]
+        app.logger.info(
+            "Hosted Apollo desktop render | route_entered=%s | payload_source=%s | payload_id=%s | cache_key=%s | source_object=%s",
+            request.path,
+            apollo_render_state["payload_source"],
+            apollo_render_state["payload_id"],
+            apollo_render_state["cache_key"],
+            apollo_render_state["source_object"],
+        )
 
         return render_research_page(
             form_data=get_form_data(None),
@@ -2065,9 +2217,10 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
         if trigger_source:
             try:
-                apollo_result = execute_apollo_precheck(apollo_service, trigger_source=trigger_source)
-                save_apollo_snapshot(apollo_result, app=app)
-                app.logger.info("Completed Apollo pre-check via %s", trigger_source)
+                with _track_market_data_load(f"apollo_local:{trigger_source}", app=app):
+                    apollo_result = execute_apollo_precheck(apollo_service, trigger_source=trigger_source)
+                    save_apollo_snapshot(apollo_result, app=app)
+                    app.logger.info("Completed Apollo pre-check via %s", trigger_source)
             except MarketDataReauthenticationRequired as exc:
                 set_status_message(str(exc), level="warning")
                 app.logger.warning("Provider session expired during Apollo run: %s", exc)
@@ -2101,9 +2254,10 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             return ("Not Found", 404)
 
         try:
-            apollo_result = execute_apollo_precheck(apollo_service, trigger_source="autorun URL")
-            save_apollo_snapshot(apollo_result, app=app)
-            app.logger.info("Completed Apollo debug pre-check")
+            with _track_market_data_load("apollo_debug:autorun", app=app):
+                apollo_result = execute_apollo_precheck(apollo_service, trigger_source="autorun URL")
+                save_apollo_snapshot(apollo_result, app=app)
+                app.logger.info("Completed Apollo debug pre-check")
         except MarketDataReauthenticationRequired as exc:
             app.logger.warning("Provider session expired during Apollo debug run: %s", exc)
             return jsonify({"ok": False, "error": str(exc), "requires_login": True}), 401
@@ -3007,6 +3161,247 @@ def parse_performance_request_filters(source: Any) -> Dict[str, list[str]]:
     return filters
 
 
+def _should_trace_request_performance() -> bool:
+    if not has_request_context():
+        return False
+    path = str(request.path or "")
+    return path.startswith("/hosted/mobile") or path in {
+        "/hosted/performance",
+        "/hosted/performance/data",
+        "/hosted/actions/performance-summary",
+    }
+
+
+def _get_request_performance_trace() -> Optional[Dict[str, Any]]:
+    if not has_request_context():
+        return None
+    return getattr(g, "request_performance_trace", None)
+
+
+def _ensure_request_performance_trace() -> Optional[Dict[str, Any]]:
+    if not _should_trace_request_performance():
+        return None
+    trace = _get_request_performance_trace()
+    if trace is None:
+        trace = {
+            "started_at": time.perf_counter(),
+            "cache": {},
+            "builders": {},
+            "sections": {},
+            "market_data": {},
+        }
+        g.request_performance_trace = trace
+    return trace
+
+
+def _record_request_perf_builder(name: str, elapsed_seconds: float) -> None:
+    trace = _ensure_request_performance_trace()
+    if trace is None:
+        return
+    builders = trace["builders"]
+    entry = builders.setdefault(name, {"count": 0, "elapsed_seconds": 0.0})
+    entry["count"] += 1
+    entry["elapsed_seconds"] += max(0.0, float(elapsed_seconds))
+
+
+def _record_request_perf_section(name: str, elapsed_seconds: float) -> None:
+    trace = _ensure_request_performance_trace()
+    if trace is None:
+        return
+    sections = trace["sections"]
+    entry = sections.setdefault(name, {"count": 0, "elapsed_seconds": 0.0})
+    entry["count"] += 1
+    entry["elapsed_seconds"] += max(0.0, float(elapsed_seconds))
+
+
+def _record_request_cache_event(cache_key: str, *, hit: bool, elapsed_seconds: float = 0.0) -> None:
+    trace = _ensure_request_performance_trace()
+    if trace is None:
+        return
+    cache_events = trace["cache"]
+    entry = cache_events.setdefault(cache_key, {"hits": 0, "misses": 0, "elapsed_seconds": 0.0, "requests": 0})
+    entry["requests"] += 1
+    if hit:
+        entry["hits"] += 1
+    else:
+        entry["misses"] += 1
+        entry["elapsed_seconds"] += max(0.0, float(elapsed_seconds))
+
+
+def _record_request_market_data_summary(summary: Dict[str, Any], *, elapsed_seconds: float) -> None:
+    trace = _ensure_request_performance_trace()
+    if trace is None:
+        return
+    trace["market_data"] = {
+        "intraday_call_count": int(summary.get("intraday_call_count", 0) or 0),
+        "provider_live_fetch_count": int(summary.get("provider_live_fetch_count", 0) or 0),
+        "provider_cache_hit_count": int(summary.get("provider_cache_hit_count", 0) or 0),
+        "request_reuse_count": int(summary.get("request_reuse_count", 0) or 0),
+        "elapsed_seconds": max(0.0, float(elapsed_seconds)),
+    }
+
+
+def _log_request_performance_summary(response: Any) -> Any:
+    trace = _get_request_performance_trace()
+    if trace is None:
+        return response
+    total_elapsed = time.perf_counter() - float(trace.get("started_at") or time.perf_counter())
+    cache_entries = trace.get("cache") or {}
+    builders = trace.get("builders") or {}
+    sections = trace.get("sections") or {}
+    duplicates = sorted(key for key, value in cache_entries.items() if int(value.get("requests") or 0) > 1)
+    current_app.logger.info(
+        "Hosted request performance | route_action=%s %s | status=%s | total_elapsed_ms=%.1f | cache_hits=%s | cache_misses=%s | duplicate_cache_keys=%s | builder_summary=%s | section_summary=%s | market_data=%s | db_query_count=%s | db_query_timing_ms=%s",
+        request.method,
+        request.path,
+        getattr(response, "status_code", "n/a"),
+        total_elapsed * 1000.0,
+        sum(int(item.get("hits") or 0) for item in cache_entries.values()),
+        sum(int(item.get("misses") or 0) for item in cache_entries.values()),
+        duplicates or ["none"],
+        {key: {"count": value["count"], "elapsed_ms": round(value["elapsed_seconds"] * 1000.0, 1)} for key, value in builders.items()},
+        {key: {"count": value["count"], "elapsed_ms": round(value["elapsed_seconds"] * 1000.0, 1)} for key, value in sections.items()},
+        trace.get("market_data") or {},
+        "n/a",
+        "n/a",
+    )
+    return response
+
+
+def trace_request_perf_section(name: str):
+    @contextmanager
+    def _tracer():
+        started_at = time.perf_counter()
+        try:
+            yield
+        finally:
+            _record_request_perf_section(name, time.perf_counter() - started_at)
+
+    return _tracer()
+
+
+def normalize_requested_performance_filters(filters: Optional[Dict[str, list[str]]] = None) -> Dict[str, list[str]]:
+    normalized: Dict[str, list[str]] = {}
+    for group, options in PERFORMANCE_FILTER_GROUPS.items():
+        if not filters or group not in filters:
+            continue
+        allowed = {normalize_filter_value(group, option) for option in options}
+        values = [normalize_filter_value(group, value) for value in (filters.get(group) or [])]
+        normalized[group] = [value for value in values if value in allowed]
+    return normalized
+
+
+def build_mobile_performance_ui_filters(filters: Optional[Dict[str, list[str]]] = None) -> Dict[str, list[str]]:
+    requested = normalize_requested_performance_filters(filters)
+    ui_filters: Dict[str, list[str]] = {}
+    for group in ("system", "profile", "result", "trade_mode", "timeframe"):
+        if group in requested:
+            ui_filters[group] = list(requested.get(group) or [])
+            continue
+        default_values = list(PERFORMANCE_DEFAULT_FILTERS.get(group, ()))
+        if default_values:
+            ui_filters[group] = default_values
+    return ui_filters
+
+
+def build_hosted_performance_query_string(filters: Optional[Dict[str, list[str]]] = None) -> str:
+    query_parts: list[tuple[str, str]] = []
+    for group in PERFORMANCE_FILTER_GROUPS:
+        if not filters or group not in filters:
+            continue
+        values = list(filters.get(group) or [])
+        query_parts.append((f"{group}__active", "1"))
+        for value in values:
+            query_parts.append((group, value))
+    return urllib.parse.urlencode(query_parts, doseq=True)
+
+
+def build_hosted_performance_url(endpoint_name: str, *, filters: Optional[Dict[str, list[str]]] = None) -> str:
+    base_url = url_for(endpoint_name) if has_request_context() else endpoint_name
+    query_string = build_hosted_performance_query_string(filters)
+    if not query_string:
+        return base_url
+    return f"{base_url}?{query_string}"
+
+
+def build_hosted_mobile_performance_filter_groups(active_filters: Optional[Dict[str, list[str]]] = None) -> list[Dict[str, Any]]:
+    current_filters = {key: list(values) for key, values in (active_filters or {}).items()}
+    groups: list[Dict[str, Any]] = []
+    mobile_groups = {
+        "system": "System",
+        "profile": "Profile",
+        "result": "Result",
+        "trade_mode": "Trade Mode",
+        "timeframe": "Timeframe",
+    }
+    for group, label in mobile_groups.items():
+        options = PERFORMANCE_FILTER_GROUPS[group]
+        group_buttons: list[Dict[str, Any]] = []
+        current_values = list(current_filters.get(group) or [])
+        if group != "timeframe":
+            cleared_filters = {key: list(values) for key, values in current_filters.items() if key != group}
+            cleared_filters[group] = []
+            group_buttons.append(
+                {
+                    "label": "All",
+                    "href": build_hosted_performance_url("hosted_mobile_performance", filters=cleared_filters),
+                    "active": not current_values,
+                }
+            )
+        for option in options:
+            option_key = normalize_filter_value(group, option)
+            next_filters = {key: list(values) for key, values in current_filters.items()}
+            if group == "timeframe":
+                next_filters[group] = [option_key]
+            else:
+                next_values = list(next_filters.get(group) or [])
+                if option_key in next_values:
+                    next_values = [value for value in next_values if value != option_key]
+                else:
+                    next_values.append(option_key)
+                next_filters[group] = next_values
+            group_buttons.append(
+                {
+                    "label": option,
+                    "href": build_hosted_performance_url("hosted_mobile_performance", filters=next_filters),
+                    "active": option_key in current_values,
+                }
+            )
+        groups.append(
+            {
+                "key": group,
+                "label": label,
+                "buttons": group_buttons,
+            }
+        )
+    return groups
+
+
+def log_hosted_performance_trace(
+    *,
+    route_label: str,
+    filters: Dict[str, list[str]],
+    payload: Dict[str, Any],
+    app: Optional[Flask] = None,
+) -> None:
+    container = _resolve_flask_container(app)
+    trade_store = get_trade_store(container)
+    performance_service = get_performance_service(container)
+    trade_store_backend = container.extensions.get("trade_store_backend")
+    current_app.logger.info(
+        "Hosted performance trace | route_entered=%s | data_source_selected=%s | trade_count_loaded=%s | filtered_trade_count=%s | filter_state=%s | uses_desktop_hosted_path=%s | trade_store_type=%s | performance_service_type=%s | shared_store_binding=%s",
+        route_label,
+        type(trade_store_backend).__name__ if trade_store_backend is not None else type(trade_store).__name__,
+        int(payload.get("records_total") or 0),
+        int(payload.get("records_filtered") or 0),
+        filters,
+        True,
+        type(trade_store).__name__,
+        type(performance_service).__name__,
+        getattr(performance_service, "store", None) is trade_store,
+    )
+
+
 def _build_hosted_cache_key(prefix: str, **parts: Any) -> str:
     if not parts:
         return prefix
@@ -3034,10 +3429,138 @@ def _get_cached_hosted_payload(
     cached = cache.get(cache_key)
     now = time.monotonic()
     if cached and (now - float(cached.get("stored_at") or 0.0)) <= ttl_seconds:
+        _record_request_cache_event(cache_key, hit=True)
         return copy.deepcopy(cached.get("payload"))
+    builder_started_at = time.perf_counter()
     payload = builder()
+    builder_elapsed = time.perf_counter() - builder_started_at
     cache[cache_key] = {"stored_at": now, "payload": copy.deepcopy(payload)}
+    _record_request_cache_event(cache_key, hit=False, elapsed_seconds=builder_elapsed)
+    _record_request_perf_builder(cache_key, builder_elapsed)
     return payload
+
+
+def _store_cached_hosted_payload(cache_key: str, payload: Any, *, app: Optional[Flask] = None) -> Any:
+    cache = _get_hosted_payload_cache(app)
+    cache[cache_key] = {"stored_at": time.monotonic(), "payload": copy.deepcopy(payload)}
+    return payload
+
+
+def _peek_cached_hosted_payload(
+    cache_key: str,
+    *,
+    ttl_seconds: int,
+    app: Optional[Flask] = None,
+) -> Any:
+    cache = _get_hosted_payload_cache(app)
+    cached = cache.get(cache_key)
+    now = time.monotonic()
+    if not cached or (now - float(cached.get("stored_at") or 0.0)) > ttl_seconds:
+        return None
+    return copy.deepcopy(cached.get("payload"))
+
+
+def build_hosted_payload_id(payload: Dict[str, Any]) -> str:
+    normalized = dict(payload or {})
+    normalized.pop("hosted_payload_id", None)
+    normalized.pop("hosted_payload_cache_key", None)
+    normalized.pop("hosted_payload_source", None)
+    normalized.pop("hosted_payload_source_object", None)
+    serialized = json.dumps(normalized, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha1(serialized.encode("utf-8")).hexdigest()[:12]
+
+
+def decorate_hosted_render_payload(
+    payload: Optional[Dict[str, Any]],
+    *,
+    cache_key: str,
+    payload_source: str,
+    source_object: str,
+) -> Dict[str, Any]:
+    prepared = dict(payload or {})
+    prepared["hosted_payload_id"] = str(prepared.get("hosted_payload_id") or build_hosted_payload_id(prepared))
+    prepared["hosted_payload_cache_key"] = cache_key
+    prepared["hosted_payload_source"] = payload_source
+    prepared["hosted_payload_source_object"] = source_object
+    return prepared
+
+
+def resolve_hosted_apollo_render_state(*, app: Optional[Flask] = None) -> Dict[str, Any]:
+    live_payload = _peek_cached_hosted_payload(
+        "hosted:apollo:live",
+        ttl_seconds=HOSTED_APOLLO_AUTORUN_CACHE_SECONDS,
+        app=app,
+    )
+    if live_payload is not None:
+        prepared_payload = decorate_hosted_render_payload(
+            prepare_hosted_apollo_payload(live_payload),
+            cache_key="hosted:apollo:live",
+            payload_source="live-cache",
+            source_object="hosted:apollo:live",
+        )
+        return {
+            "payload": prepared_payload,
+            "payload_source": "live-cache",
+            "cache_key": "hosted:apollo:live",
+            "payload_id": prepared_payload["hosted_payload_id"],
+            "source_object": "hosted:apollo:live",
+        }
+    snapshot = _get_cached_hosted_payload(
+        "hosted:apollo:snapshot",
+        ttl_seconds=HOSTED_APOLLO_SNAPSHOT_CACHE_SECONDS,
+        builder=lambda: get_apollo_snapshot_repository(app).load_snapshot(),
+        app=app,
+    )
+    prepared_payload = decorate_hosted_render_payload(
+        prepare_hosted_apollo_payload(snapshot or build_empty_hosted_apollo_payload()),
+        cache_key="hosted:apollo:snapshot",
+        payload_source="snapshot" if snapshot is not None else "empty",
+        source_object="hosted:apollo:snapshot" if snapshot is not None else "hosted:apollo:empty",
+    )
+    return {
+        "payload": prepared_payload,
+        "payload_source": "snapshot" if snapshot is not None else "empty",
+        "cache_key": "hosted:apollo:snapshot",
+        "payload_id": prepared_payload["hosted_payload_id"],
+        "source_object": prepared_payload["hosted_payload_source_object"],
+    }
+
+
+def resolve_hosted_kairos_render_state(*, app: Optional[Flask] = None) -> Dict[str, Any]:
+    live_payload = _peek_cached_hosted_payload(
+        "hosted:kairos:live",
+        ttl_seconds=HOSTED_KAIROS_CACHE_SECONDS,
+        app=app,
+    )
+    if live_payload is not None:
+        prepared_payload = decorate_hosted_render_payload(
+            prepare_hosted_kairos_payload(live_payload),
+            cache_key="hosted:kairos:live",
+            payload_source="live-cache",
+            source_object="hosted:kairos:live",
+        )
+        return {
+            "payload": prepared_payload,
+            "payload_source": "live-cache",
+            "cache_key": "hosted:kairos:live",
+            "payload_id": prepared_payload["hosted_payload_id"],
+            "source_object": "hosted:kairos:live",
+        }
+    action_payload = build_hosted_kairos_action_response(app=app)
+    payload = dict(action_payload.get("payload") or {})
+    prepared_payload = decorate_hosted_render_payload(
+        payload,
+        cache_key="hosted:kairos:summary",
+        payload_source="summary",
+        source_object="hosted:kairos:summary",
+    )
+    return {
+        "payload": prepared_payload,
+        "payload_source": "summary",
+        "cache_key": "hosted:kairos:summary",
+        "payload_id": prepared_payload["hosted_payload_id"],
+        "source_object": "hosted:kairos:summary",
+    }
 
 
 def _clear_hosted_payload_cache(*prefixes: str, app: Optional[Flask] = None) -> None:
@@ -3048,6 +3571,34 @@ def _clear_hosted_payload_cache(*prefixes: str, app: Optional[Flask] = None) -> 
     for cache_key in list(cache.keys()):
         if any(cache_key == prefix or cache_key.startswith(f"{prefix}:") for prefix in prefixes):
             cache.pop(cache_key, None)
+
+
+@contextmanager
+def _track_market_data_load(action_name: str, *, app: Optional[Flask] = None):
+    container = _resolve_flask_container(app)
+    market_data_service = get_market_data_service(container)
+    started_at = time.perf_counter()
+    if hasattr(market_data_service, "begin_request_intraday_trace"):
+        market_data_service.begin_request_intraday_trace(action_name)
+    try:
+        yield
+    finally:
+        summary = (
+            market_data_service.get_request_intraday_trace_summary()
+            if hasattr(market_data_service, "get_request_intraday_trace_summary")
+            else {}
+        )
+        elapsed_seconds = time.perf_counter() - started_at
+        _record_request_market_data_summary(summary, elapsed_seconds=elapsed_seconds)
+        container.logger.info(
+            "Market-data load summary | route_action=%s | intraday_call_count=%s | provider_live_fetch_count=%s | provider_cache_hit_count=%s | request_reuse_count=%s | elapsed_seconds=%.4f",
+            action_name,
+            summary.get("intraday_call_count", 0),
+            summary.get("provider_live_fetch_count", 0),
+            summary.get("provider_cache_hit_count", 0),
+            summary.get("request_reuse_count", 0),
+            elapsed_seconds,
+        )
 
 
 def get_workflow_state(app: Optional[Flask] = None) -> WorkflowStateStore:
@@ -3406,7 +3957,7 @@ def build_delphi_route_map(*, hosted: bool = False) -> Dict[str, str]:
 
 
 HOSTED_MOBILE_PHONE_MAX_WIDTH = 767
-HOSTED_MOBILE_TABS = ("home", "runs", "trades", "journal", "more")
+HOSTED_MOBILE_TABS = ("home", "journal", "performance")
 HOSTED_DEVICE_BRANCHES = ("desktop", "mobile")
 
 
@@ -3447,6 +3998,12 @@ def build_hosted_login_url(branch: Any, *, next_path: Any = None) -> str:
 def map_hosted_next_path_to_desktop_path(next_path: Any) -> str:
     candidate = sanitize_hosted_next_path(next_path)
     normalized = candidate.split("#", 1)[0]
+    if normalized.startswith("/hosted/mobile/apollo"):
+        return url_for("hosted_shell_apollo") if has_request_context() else "/hosted/apollo"
+    if normalized.startswith("/hosted/mobile/kairos"):
+        return url_for("hosted_kairos_live_page") if has_request_context() else "/hosted/kairos/live"
+    if normalized.startswith("/hosted/mobile/performance"):
+        return url_for("hosted_shell_performance") if has_request_context() else "/hosted/performance"
     if normalized.startswith("/hosted/mobile/journal"):
         return url_for("hosted_shell_journal", trade_mode="real") if has_request_context() else "/hosted/journal?trade_mode=real"
     if normalized.startswith("/hosted/mobile/trades"):
@@ -3461,10 +4018,11 @@ def map_hosted_next_path_to_desktop_path(next_path: Any) -> str:
 def build_hosted_mobile_route_map() -> Dict[str, str]:
     return {
         "home": url_for("hosted_mobile_home"),
-        "runs": url_for("hosted_mobile_runs"),
-        "trades": url_for("hosted_mobile_trades"),
+        "apollo": url_for("hosted_mobile_apollo"),
+        "kairos": url_for("hosted_mobile_kairos"),
+        "trades": url_for("hosted_mobile_home"),
+        "performance": url_for("hosted_mobile_performance"),
         "journal": url_for("hosted_mobile_journal"),
-        "more": url_for("hosted_mobile_more"),
         "launch": url_for("hosted_device_launch"),
     }
 
@@ -3527,15 +4085,126 @@ def map_hosted_next_path_to_mobile_path(next_path: Any) -> str:
     normalized = candidate.split("#", 1)[0]
     if normalized.startswith("/hosted/mobile"):
         return candidate
-    if normalized.startswith("/hosted/apollo") or normalized.startswith("/hosted/kairos"):
-        return url_for("hosted_mobile_runs") if has_request_context() else "/hosted/mobile/runs"
+    if normalized.startswith("/hosted/apollo"):
+        return url_for("hosted_mobile_apollo") if has_request_context() else "/hosted/mobile/apollo"
+    if normalized.startswith("/hosted/kairos"):
+        return url_for("hosted_mobile_kairos") if has_request_context() else "/hosted/mobile/kairos"
+    if normalized.startswith("/hosted/performance"):
+        return url_for("hosted_mobile_performance") if has_request_context() else "/hosted/mobile/performance"
     if normalized.startswith("/hosted/journal"):
         return url_for("hosted_mobile_journal") if has_request_context() else "/hosted/mobile/journal"
     if normalized.startswith("/hosted/manage-trades") or normalized.startswith("/hosted/open-trades"):
-        return url_for("hosted_mobile_trades") if has_request_context() else "/hosted/mobile/trades"
+        return url_for("hosted_mobile_home") if has_request_context() else "/hosted/mobile"
     if normalized.startswith("/hosted/notifications"):
-        return url_for("hosted_mobile_more") if has_request_context() else "/hosted/mobile/more"
+        return url_for("hosted_mobile_home") if has_request_context() else "/hosted/mobile"
     return url_for("hosted_mobile_home") if has_request_context() else "/hosted/mobile"
+
+
+def build_hosted_mobile_market_stamps(menu_status: Dict[str, Any]) -> list[Dict[str, str]]:
+    stamps: list[Dict[str, str]] = []
+    for card in list(menu_status.get("cards") or [])[:2]:
+        change_parts = [str(part).strip() for part in str(card.get("change") or "").split("\u00b7") if str(part).strip()]
+        point_change = next((part for part in change_parts if "pts" in part.lower()), "Change unavailable")
+        percent_change = next((part for part in change_parts if "%" in part), "")
+        stamps.append(
+            {
+                "label": str(card.get("label") or "Market"),
+                "value": str(card.get("value") or "\u2014"),
+                "point_change": point_change,
+                "percent_change": percent_change or ("Closed" if point_change == "Change unavailable" else ""),
+                "trend": str(card.get("value_trend") or "neutral"),
+                "meta": str(card.get("meta") or ""),
+            }
+        )
+    return stamps
+
+
+def resolve_mobile_trade_profile_tint(system_name: Any, profile_label: Any) -> str:
+    system_key = str(system_name or "").strip().lower()
+    profile_key = str(profile_label or "").strip().lower()
+    if system_key == "apollo":
+        if "aggressive" in profile_key:
+            return "aggressive"
+        if "fortress" in profile_key:
+            return "fortress"
+        return "standard"
+    if system_key == "kairos":
+        if "subprime" in profile_key:
+            return "aggressive"
+        if "prime" in profile_key:
+            return "fortress"
+    return "standard"
+
+
+def resolve_mobile_trade_status_tone(status_key: Any, severity: Any) -> str:
+    normalized_key = str(status_key or "").strip().lower()
+    severity_value = int(severity or 0)
+    if severity_value >= 4 or normalized_key in {"exit-now", "critical", "danger"}:
+        return "critical"
+    if severity_value >= 2 or normalized_key in {"trim", "reduce", "warning"}:
+        return "warning"
+    if severity_value >= 1 or normalized_key in {"watch", "monitor"}:
+        return "watch"
+    return "calm"
+
+
+def build_hosted_mobile_open_trade_cards(management_payload: Dict[str, Any]) -> list[Dict[str, Any]]:
+    cards: list[Dict[str, Any]] = []
+    for item in list(management_payload.get("records") or []):
+        trade = dict(item)
+        trade_mode_key = resolve_hosted_trade_mode_filter(str(trade.get("trade_mode") or "real"))
+        distance_raw = _coerce_float(
+            trade.get("distance_to_short_raw")
+            if trade.get("distance_to_short_raw") not in {None, ""}
+            else trade.get("actual_distance_to_short")
+            if trade.get("actual_distance_to_short") not in {None, ""}
+            else trade.get("distance_to_short")
+        )
+        trade_number_raw = int(trade.get("trade_number") or trade.get("trade_number_raw") or 0)
+        trade["mobile_trade_mode_label"] = "Real" if trade_mode_key == "real" else "Sim"
+        trade["mobile_profile_label"] = str(trade.get("profile_label") or trade.get("candidate_profile") or trade.get("profile") or "Standard")
+        trade["mobile_status_label"] = str(trade.get("status") or trade.get("action_recommendation") or "Open")
+        trade["mobile_qty_display"] = str(
+            trade.get("remaining_contracts")
+            or trade.get("contracts")
+            or trade.get("contracts_display")
+            or trade.get("remaining_contracts_display")
+            or "\u2014"
+        )
+        trade["mobile_distance_display"] = str(
+            trade.get("distance_to_short_display")
+            or trade.get("distance_to_short")
+            or trade.get("actual_distance_to_short")
+            or "\u2014"
+        )
+        trade["mobile_pnl_display"] = str(
+            trade.get("current_pl_display")
+            or trade.get("unrealized_pnl_display")
+            or trade.get("gross_pnl")
+            or "\u2014"
+        )
+        trade["mobile_remaining_pl_display"] = str(
+            trade.get("pl_after_close_display")
+            or trade.get("remaining_risk_display")
+            or "\u2014"
+        )
+        trade["mobile_next_trigger"] = str(trade.get("next_trigger") or trade.get("action_recommendation") or "Awaiting next trigger")
+        trade["mobile_profile_tint"] = resolve_mobile_trade_profile_tint(trade.get("system_name"), trade["mobile_profile_label"])
+        trade["mobile_status_tone"] = resolve_mobile_trade_status_tone(trade.get("status_key") or trade.get("status"), trade.get("status_severity"))
+        trade["mobile_close_enabled"] = bool(trade.get("send_close_to_journal_enabled", True) and (trade.get("trade_id") or trade.get("id")))
+        trade["mobile_sort_distance"] = distance_raw if distance_raw is not None else float("inf")
+        trade["mobile_sort_real"] = 0 if trade_mode_key == "real" else 1
+        trade["mobile_sort_newest"] = -trade_number_raw
+        cards.append(trade)
+    return sorted(
+        cards,
+        key=lambda item: (
+            item["mobile_sort_distance"],
+            -int(item.get("status_severity") or 0),
+            item["mobile_sort_real"],
+            item["mobile_sort_newest"],
+        ),
+    )
 
 
 def build_hosted_mobile_recent_activity(*journal_payloads: Dict[str, Any]) -> list[Dict[str, Any]]:
@@ -3575,7 +4244,7 @@ def build_hosted_mobile_run_cards(*, apollo_action: Dict[str, Any], kairos_actio
             "candidate_count": int(apollo_payload.get("trade_candidates_valid_count") or 0),
             "best_trade_summary": str(apollo_payload.get("hosted_recommendation") or "Stand aside"),
             "plain_english": str(apollo_payload.get("hosted_plain_english") or "No Apollo run has been captured yet."),
-            "detail_url": url_for("hosted_shell_apollo"),
+            "detail_url": url_for("hosted_mobile_apollo"),
             "run_action_url": url_for("hosted_mobile_run_action", engine="apollo"),
             "prefill_action_url": url_for("hosted_apollo_prefill_candidate"),
             "candidates": apollo_candidates[:3],
@@ -3603,33 +4272,76 @@ def build_hosted_mobile_shell_context(
     active_tab: str,
     app: Optional[Flask] = None,
 ) -> Dict[str, Any]:
-    performance_filters = {
-        "system": [],
-        "profile": [],
-        "result": [],
-        "trade_mode": ["real"],
-        "macro_grade": [],
-        "structure_grade": [],
-        "timeframe": ["all"],
-    }
+    resolved_tab = resolve_hosted_mobile_tab(active_tab)
+    requested_performance_filters: Dict[str, list[str]] = {}
+    performance_ui_filters = build_mobile_performance_ui_filters()
+    if has_request_context() and resolved_tab == "performance":
+        requested_performance_filters = parse_performance_request_filters(request.args)
+        performance_ui_filters = build_mobile_performance_ui_filters(requested_performance_filters)
     desktop_routes = build_delphi_route_map(hosted=True)
     mobile_routes = build_hosted_mobile_route_map()
     trade_store = get_trade_store(app)
-    performance_payload = build_hosted_performance_dashboard(filters=performance_filters, app=app)
-    management_payload = build_open_trade_action_payload(build_hosted_open_trade_management_payload(app=app), trade_mode="all")
-    journal_real_payload = build_hosted_journal_trades_action_response(trade_mode="real", app=app)
-    journal_simulated_payload = build_hosted_journal_trades_action_response(trade_mode="simulated", app=app)
-    apollo_action = build_hosted_apollo_action_response(app=app)
-    kairos_action = build_hosted_kairos_action_response(app=app)
-    recent_activity = build_hosted_mobile_recent_activity(journal_real_payload, journal_simulated_payload)
+    performance_payload: Dict[str, Any] = build_dashboard_payload([], filters=performance_ui_filters)
+    if resolved_tab == "performance":
+        with trace_request_perf_section("mobile-builder:performance"):
+            performance_payload = build_hosted_performance_dashboard(filters=performance_ui_filters, app=app)
+        log_hosted_performance_trace(
+            route_label=request.path if has_request_context() else "hosted_mobile_performance",
+            filters=performance_ui_filters,
+            payload=performance_payload,
+            app=app,
+        )
+
+    management_payload: Dict[str, Any] = {
+        "trade_mode": "all",
+        "evaluated_at": "",
+        "evaluated_at_display": "",
+        "notifications_enabled": True,
+        "alerts_sent": 0,
+        "alert_failures": [],
+        "records_total": 0,
+        "records_filtered": 0,
+        "open_trade_count": 0,
+        "status_counts": [],
+        "records": [],
+    }
+    journal_real_payload: Dict[str, Any] = {"trades": []}
+    journal_simulated_payload: Dict[str, Any] = {"trades": []}
+    apollo_action: Dict[str, Any] = {"payload": {}, "ok": True, "action": "apollo-summary", "snapshot_available": False}
+    kairos_action: Dict[str, Any] = {"payload": {}, "ok": True, "action": "kairos-summary", "snapshot_available": False}
+    recent_activity: list[Dict[str, Any]] = []
+    menu_status: Dict[str, Any] = {"cards": []}
+    mobile_open_trade_cards: list[Dict[str, Any]] = []
+
+    if resolved_tab == "home":
+        with trace_request_perf_section("mobile-builder:open-trades"):
+            management_payload = build_open_trade_action_payload(build_hosted_open_trade_management_payload(app=app), trade_mode="all")
+        with trace_request_perf_section("mobile-builder:market-stamps"):
+            menu_status = build_startup_menu_payload(get_market_data_service(app))
+        with trace_request_perf_section("mobile-builder:open-trade-cards"):
+            mobile_open_trade_cards = build_hosted_mobile_open_trade_cards(management_payload)
+    elif resolved_tab == "journal":
+        with trace_request_perf_section("mobile-builder:journal-real"):
+            journal_real_payload = build_hosted_journal_trades_action_response(trade_mode="real", app=app)
+        with trace_request_perf_section("mobile-builder:journal-sim"):
+            journal_simulated_payload = build_hosted_journal_trades_action_response(trade_mode="simulated", app=app)
+        with trace_request_perf_section("mobile-builder:recent-activity"):
+            recent_activity = build_hosted_mobile_recent_activity(journal_real_payload, journal_simulated_payload)
+
     return {
-        "active_tab": resolve_hosted_mobile_tab(active_tab),
+        "active_tab": resolved_tab,
         "mobile_routes": mobile_routes,
         "desktop_routes": desktop_routes,
         "mobile_breakpoint": HOSTED_MOBILE_PHONE_MAX_WIDTH + 1,
+        "mobile_market_stamps": build_hosted_mobile_market_stamps(menu_status),
         "mobile_run_cards": build_hosted_mobile_run_cards(apollo_action=apollo_action, kairos_action=kairos_action),
         "mobile_home_performance": performance_payload,
+        "mobile_performance_requested_filters": requested_performance_filters,
+        "mobile_performance_ui_filters": performance_ui_filters,
+        "mobile_performance_filter_groups": build_hosted_mobile_performance_filter_groups(performance_ui_filters),
+        "mobile_performance_data_url": build_hosted_performance_url("hosted_performance_data", filters=performance_ui_filters),
         "mobile_open_trades": management_payload,
+        "mobile_open_trade_cards": mobile_open_trade_cards,
         "mobile_journal_real": journal_real_payload,
         "mobile_journal_simulated": journal_simulated_payload,
         "mobile_journal_trades": recent_activity,
@@ -4398,6 +5110,32 @@ def pop_hosted_delphi4_sync_result() -> Optional[Dict[str, Any]]:
     return payload if isinstance(payload, dict) else None
 
 
+def remember_hosted_mobile_apollo_handoff(payload: Dict[str, Any]) -> None:
+    if not has_request_context():
+        return
+    session[HOSTED_MOBILE_APOLLO_HANDOFF_KEY] = payload
+
+
+def pop_hosted_mobile_apollo_handoff() -> Optional[Dict[str, Any]]:
+    if not has_request_context():
+        return None
+    payload = session.pop(HOSTED_MOBILE_APOLLO_HANDOFF_KEY, None)
+    return payload if isinstance(payload, dict) else None
+
+
+def remember_hosted_mobile_kairos_handoff(payload: Dict[str, Any]) -> None:
+    if not has_request_context():
+        return
+    session[HOSTED_MOBILE_KAIROS_HANDOFF_KEY] = payload
+
+
+def pop_hosted_mobile_kairos_handoff() -> Optional[Dict[str, Any]]:
+    if not has_request_context():
+        return None
+    payload = session.pop(HOSTED_MOBILE_KAIROS_HANDOFF_KEY, None)
+    return payload if isinstance(payload, dict) else None
+
+
 def store_trade_prefill(trade_mode: str, values: Dict[str, Any]) -> None:
     get_workflow_state().store_trade_prefill(trade_mode, values)
 
@@ -4688,38 +5426,53 @@ def build_trade_page_context(
     editing_trade_id: Optional[int],
     error_message: Optional[str],
     info_message: Optional[Dict[str, str]],
+    editing_trade: Optional[Dict[str, Any]] = None,
     prefill_active: bool = False,
     prefill_notice: str = "",
     hosted_prefill_enabled: bool = False,
     import_preview: Optional[Dict[str, Any]] = None,
     import_journal_name: str = JOURNAL_NAME_DEFAULT,
-    editing_trade: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     normalized_mode = resolve_trade_mode(trade_mode)
     loaded_trades = store.list_trades(normalized_mode)
     trades = [build_trade_row_payload(item) for item in loaded_trades]
     summary = summarize_loaded_trade_rows(loaded_trades)
+    trade_record = editing_trade if editing_trade is not None else (store.get_trade(editing_trade_id) if editing_trade_id else None)
+    prepared_form_values = prepare_trade_form_values(form_values)
+    journal_name_options = sorted(
+        {
+            *(str(option or "").strip() for option in TRADE_JOURNAL_OPTIONS),
+            str(import_journal_name or "").strip(),
+            str(prepared_form_values.get("journal_name") or "").strip(),
+        }
+        - {""}
+    )
     return {
         "trade_mode": normalized_mode,
-        "trade_mode_label": TRADE_MODE_LABELS[normalized_mode],
-        "trade_mode_description": TRADE_MODE_DESCRIPTIONS[normalized_mode],
-        "trade_modes": [{"key": key, "label": label} for key, label in TRADE_MODE_LABELS.items()],
-        "trade_statuses": TRADE_STATUS_OPTIONS,
-        "candidate_profiles": TRADE_PROFILE_OPTIONS,
-        "option_type_options": TRADE_OPTION_TYPE_OPTIONS,
-        "system_name_options": TRADE_SYSTEM_OPTIONS,
-        "filter_groups": TRADE_FILTER_GROUPS,
-        "journal_name_options": TRADE_JOURNAL_OPTIONS,
-        "summary_metrics": build_trade_summary_metrics(summary),
-        "trades": trades,
-        "form_values": prepare_trade_form_values(form_values),
-        "distance_field_meta": build_distance_field_context(form_values),
-        "expected_move_field_meta": build_expected_move_field_context(form_values),
-        "total_max_loss_field": build_total_max_loss_field_context(form_values),
+        "trade_mode_label": TRADE_MODE_LABELS.get(normalized_mode, normalized_mode.title()),
+        "form_values": prepared_form_values,
         "form_action": form_action,
         "form_title": form_title,
         "editing_trade_id": editing_trade_id,
-        "editing_trade": build_trade_detail_payload(editing_trade) if editing_trade else None,
+        "editing_trade": build_trade_detail_payload(trade_record) if trade_record else None,
+        "trades": trades,
+        "summary_metrics": build_trade_summary_metrics(summary),
+        "trade_modes": [
+            {
+                "key": key,
+                "label": label,
+                "description": TRADE_MODE_DESCRIPTIONS.get(key, ""),
+            }
+            for key, label in TRADE_MODE_LABELS.items()
+        ],
+        "filter_groups": TRADE_FILTER_GROUPS,
+        "system_name_options": list(TRADE_SYSTEM_OPTIONS),
+        "journal_name_options": journal_name_options,
+        "candidate_profiles": list(TRADE_PROFILE_OPTIONS),
+        "option_type_options": list(TRADE_OPTION_TYPE_OPTIONS),
+        "expected_move_field_meta": build_expected_move_field_context(prepared_form_values),
+        "total_max_loss_field": build_total_max_loss_field_context(prepared_form_values),
+        "distance_field_meta": build_distance_field_context(prepared_form_values),
         "error_message": error_message,
         "info_message": info_message,
         "prefill_active": prefill_active,
@@ -4822,6 +5575,17 @@ def build_hosted_apollo_live_payload(*, app: Optional[Flask] = None, force_refre
         "hosted:apollo:live",
         ttl_seconds=HOSTED_APOLLO_AUTORUN_CACHE_SECONDS,
         builder=lambda: execute_hosted_apollo_live_run(app=app)["payload"],
+        app=app,
+    )
+
+
+def build_hosted_kairos_live_payload(*, app: Optional[Flask] = None, force_refresh: bool = False) -> Dict[str, Any]:
+    if force_refresh:
+        _clear_hosted_payload_cache("hosted:kairos:live", app=app)
+    return _get_cached_hosted_payload(
+        "hosted:kairos:live",
+        ttl_seconds=HOSTED_KAIROS_CACHE_SECONDS,
+        builder=lambda: execute_hosted_kairos_live_run(app=app)["payload"],
         app=app,
     )
 
@@ -6507,7 +7271,7 @@ if __name__ == "__main__":
         print(startup_message)
     get_runtime_lifecycle(app).schedule_launch()
     app.run(
-        host=runtime_profile.host,
+        host="0.0.0.0",
         port=runtime_profile.port,
         debug=False,
         use_reloader=False,
