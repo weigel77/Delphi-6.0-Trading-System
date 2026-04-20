@@ -183,7 +183,7 @@ class HostedLoginFlowTest(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             self.assertIn(b"Selecting Your Command Portal", response.data)
-            self.assertIn(b"Delphi 6.3.6 is detecting the right login portal for this device before sign-in.", response.data)
+            self.assertIn(b"Delphi 6.4 is detecting the right login portal for this device before sign-in.", response.data)
             self.assertIn(b'data-desktop-target="/hosted/login/desktop?next=/hosted/apollo"', response.data)
             self.assertIn(b'data-mobile-target="/hosted/login/mobile?next=/hosted/apollo"', response.data)
             self.assertIn(b'data-explicit-view="mobile"', response.data)
@@ -208,7 +208,7 @@ class HostedLoginFlowTest(unittest.TestCase):
             response = client.get("/hosted/launch")
 
             self.assertEqual(response.status_code, 200)
-            self.assertIn(b"Delphi 6.3.6 is preserving your active branch and routing you into the right command surface.", response.data)
+            self.assertIn(b"Delphi 6.4 is preserving your active branch and routing you into the right command surface.", response.data)
 
     def test_hosted_desktop_login_page_renders_delphi_6_3_6_portal(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -222,7 +222,7 @@ class HostedLoginFlowTest(unittest.TestCase):
             self.assertIn(b"type=\"email\"", response.data)
             self.assertIn(b"type=\"password\"", response.data)
             self.assertIn(b"Login", response.data)
-            self.assertIn(b"Delphi 6.3.6", response.data)
+            self.assertIn(b"Delphi 6.4", response.data)
             self.assertIn(b'action="/hosted/login/desktop"', response.data)
             self.assertNotIn(b"delphi-pyramid.png", response.data)
             for fragment in self.RAW_JS_FRAGMENTS:
@@ -240,7 +240,7 @@ class HostedLoginFlowTest(unittest.TestCase):
             self.assertIn(b"type=\"email\"", response.data)
             self.assertIn(b"type=\"password\"", response.data)
             self.assertIn(b"Login", response.data)
-            self.assertIn(b"Delphi 6.3.6", response.data)
+            self.assertIn(b"Delphi 6.4", response.data)
             self.assertIn(b'action="/hosted/login/mobile"', response.data)
             self.assertNotIn(b"delphi-pyramid.png", response.data)
             for fragment in self.RAW_JS_FRAGMENTS:

@@ -15,7 +15,7 @@ except ImportError:  # pragma: no cover - optional dependency during bootstrap
 HOSTED_RUNTIME_HOST = "127.0.0.1"
 HOSTED_RUNTIME_PORT = 5015
 HOSTED_RUNTIME_BASE_URL = f"http://{HOSTED_RUNTIME_HOST}:{HOSTED_RUNTIME_PORT}"
-HOSTED_APP_VERSION = "6.3.6"
+HOSTED_APP_VERSION = "6.4"
 HOSTED_APP_DISPLAY_NAME = f"Delphi {HOSTED_APP_VERSION}"
 HOSTED_APP_PAGE_KICKER = f"Delphi {HOSTED_APP_VERSION}"
 HOSTED_APP_VERSION_LABEL = f"Version {HOSTED_APP_VERSION}"
@@ -37,9 +37,9 @@ class AppConfig:
     hosted_refresh_token_cookie_name: str = "delphi_hosted_refresh_token"
     app_host: str = "127.0.0.1"
     app_port: int = 5000
-    app_display_name: str = "Delphi 4.3 Dev"
-    app_page_kicker: str = "Delphi 4.3 Dev"
-    app_version_label: str = "Version 4.3 Dev"
+    app_display_name: str = "Delphi 6.4 Local"
+    app_page_kicker: str = "Delphi 6.4 Local"
+    app_version_label: str = "Version 6.4"
     session_cookie_name: str = "delphi3_production_session"
     oauth_session_namespace: str = "delphi3"
     kairos_replay_storage_dir: str = ""
@@ -91,9 +91,9 @@ class AppConfig:
             or "delphi_hosted_refresh_token",
             app_host=os.getenv("APP_HOST", "127.0.0.1").strip() or "127.0.0.1",
             app_port=int(os.getenv("APP_PORT", "5000").strip() or "5000"),
-            app_display_name=os.getenv("APP_DISPLAY_NAME", "Delphi 4.3 Dev").strip() or "Delphi 4.3 Dev",
-            app_page_kicker=os.getenv("APP_PAGE_KICKER", "Delphi 4.3 Dev").strip() or "Delphi 4.3 Dev",
-            app_version_label=os.getenv("APP_VERSION_LABEL", "Version 4.3 Dev").strip() or "Version 4.3 Dev",
+            app_display_name=os.getenv("APP_DISPLAY_NAME", "Delphi 6.4 Local").strip() or "Delphi 6.4 Local",
+            app_page_kicker=os.getenv("APP_PAGE_KICKER", "Delphi 6.4 Local").strip() or "Delphi 6.4 Local",
+            app_version_label=os.getenv("APP_VERSION_LABEL", "Version 6.4").strip() or "Version 6.4",
             session_cookie_name=os.getenv("SESSION_COOKIE_NAME", "delphi3_production_session").strip() or "delphi3_production_session",
             oauth_session_namespace=os.getenv("OAUTH_SESSION_NAMESPACE", "delphi3").strip().lower() or "delphi3",
             kairos_replay_storage_dir=os.getenv("KAIROS_REPLAY_STORAGE_DIR", "").strip(),

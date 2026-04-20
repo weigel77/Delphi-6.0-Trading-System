@@ -13,9 +13,9 @@ try {
     $env:DELPHI_RUNTIME_TARGET = 'local'
     $env:APP_HOST = '127.0.0.1'
     $env:APP_PORT = '5001'
-    $env:APP_DISPLAY_NAME = 'Delphi 4.3 Dev'
-    $env:APP_PAGE_KICKER = 'Delphi 4.3 Dev'
-    $env:APP_VERSION_LABEL = 'Version 4.3 Dev'
+    $env:APP_DISPLAY_NAME = 'Delphi 6.4 Local'
+    $env:APP_PAGE_KICKER = 'Delphi 6.4 Local'
+    $env:APP_VERSION_LABEL = 'Version 6.4'
     $env:SESSION_COOKIE_NAME = 'delphi4_dev_session'
     $env:OAUTH_SESSION_NAMESPACE = 'delphi4'
     & $pythonExe app.py

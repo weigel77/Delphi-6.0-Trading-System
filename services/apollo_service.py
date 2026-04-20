@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from time import perf_counter
+import copy
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
+from threading import Lock
 from typing import Any, Dict, List
 from zoneinfo import ZoneInfo
 
@@ -37,10 +38,12 @@ class ApolloService:
         self.options_chain_service = options_chain_service or OptionsChainService(self.config, provider=self._resolve_option_chain_provider())
         self.candidate_service = ApolloCandidateService(self.config)
         self.display_timezone = ZoneInfo(self.config.app_timezone)
+        self._management_context_cache: Dict[str, Any] | None = None
+        self._management_context_cache_expires_at: datetime | None = None
+        self._management_context_cache_lock = Lock()
 
     def run_precheck(self, *, force_refresh: bool = False) -> Dict[str, Any]:
         """Execute the first-stage Apollo workflow."""
-        started_at = perf_counter()
         checked_at = datetime.now(self.display_timezone)
         reasons: List[str] = []
         calendar_context = self.market_calendar_service.get_next_market_day_context(checked_at)
@@ -65,7 +68,6 @@ class ApolloService:
             if force_refresh and hasattr(self.market_data_service, "get_fresh_latest_snapshot")
             else self.market_data_service.get_latest_snapshot
         )
-        snapshot_started_at = perf_counter()
         with ThreadPoolExecutor(max_workers=2) as executor:
             spx_future = executor.submit(latest_snapshot_reader, "^GSPC", query_type="apollo_latest_spx")
             vix_future = executor.submit(latest_snapshot_reader, "^VIX", query_type="apollo_latest_vix")
@@ -80,11 +82,22 @@ class ApolloService:
                 reasons.append("Live VIX data retrieved successfully.")
             except MarketDataError as exc:
                 reasons.append(f"Unable to retrieve live VIX data: {exc}")
-        snapshot_seconds = perf_counter() - snapshot_started_at
 
-        macro_started_at = perf_counter()
-        macro_status = self.macro_service.get_macro_status(calendar_context["next_market_day"])
-        macro_seconds = perf_counter() - macro_started_at
+        timing_status = self._evaluate_timing_window(checked_at)
+        reasons.extend([reason for reason in timing_status["reasons"] if reason not in reasons])
+
+        provider_name = self.market_data_service.get_result_metadata(spx_data or vix_data).get(
+            "provider_name",
+            self.market_data_service.get_provider_metadata().get("live_provider_name", "Unknown Provider"),
+        )
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            macro_future = executor.submit(self.macro_service.get_macro_status, calendar_context["next_market_day"])
+            structure_future = executor.submit(self.structure_service.analyze_same_day_spx_structure)
+            option_chain_future = executor.submit(self.options_chain_service.get_spx_option_chain_summary, calendar_context["next_market_day"])
+            macro_status = macro_future.result()
+            structure = structure_future.result()
+            option_chain = option_chain_future.result()
+
         if not macro_status.get("available", True):
             reasons.append("Macro calendar check unavailable.")
         elif macro_status.get("fallback_used"):
@@ -104,36 +117,17 @@ class ApolloService:
             if summary not in reasons:
                 reasons.append(summary)
 
-        timing_status = self._evaluate_timing_window(checked_at)
-        reasons.extend([reason for reason in timing_status["reasons"] if reason not in reasons])
-
         apollo_status = self._determine_status(
             spx_data=spx_data,
             vix_data=vix_data,
             macro_status=macro_status,
             timing_level=timing_status["level"],
         )
-
-        provider_name = self.market_data_service.get_result_metadata(spx_data or vix_data).get(
-            "provider_name",
-            self.market_data_service.get_provider_metadata().get("live_provider_name", "Unknown Provider"),
-        )
-        structure_started_at = perf_counter()
-        option_chain_started_at = perf_counter()
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            structure_future = executor.submit(self.structure_service.analyze_same_day_spx_structure)
-            option_chain_future = executor.submit(self.options_chain_service.get_spx_option_chain_summary, calendar_context["next_market_day"])
-            structure = structure_future.result()
-            structure_seconds = perf_counter() - structure_started_at
-            option_chain = option_chain_future.result()
-            option_chain_seconds = perf_counter() - option_chain_started_at
-        candidate_started_at = perf_counter()
         trade_candidates = self.candidate_service.build_trade_candidates(
             option_chain=option_chain,
             structure=structure,
             macro=macro_status,
         )
-        candidate_seconds = perf_counter() - candidate_started_at
         if structure.get("available"):
             reasons.append(
                 f"Apollo final structure grade: {structure.get('grade', 'Neutral')} using {structure.get('source_used', 'SPX')}."
@@ -160,21 +154,6 @@ class ApolloService:
         else:
             reasons.append("Apollo did not find a qualifying Gate 3 trade candidate.")
 
-        total_seconds = perf_counter() - started_at
-        performance = {
-            "total_seconds": round(total_seconds, 4),
-            "schwab_wait_seconds": round(snapshot_seconds + structure_seconds + option_chain_seconds, 4),
-            "delphi_internal_seconds": round(max(total_seconds - (snapshot_seconds + structure_seconds + option_chain_seconds), 0.0), 4),
-            "schwab_wait_percent": round(((snapshot_seconds + structure_seconds + option_chain_seconds) / total_seconds) * 100.0, 2) if total_seconds > 0 else 0.0,
-            "delphi_internal_percent": round((max(total_seconds - (snapshot_seconds + structure_seconds + option_chain_seconds), 0.0) / total_seconds) * 100.0, 2) if total_seconds > 0 else 0.0,
-            "phases": {
-                "snapshot_seconds": round(snapshot_seconds, 4),
-                "macro_seconds": round(macro_seconds, 4),
-                "structure_seconds": round(structure_seconds, 4),
-                "option_chain_seconds": round(option_chain_seconds, 4),
-                "candidate_build_seconds": round(candidate_seconds, 4),
-            },
-        }
         return {
             "title": "Apollo Gate 1 -- SPX Structure",
             "provider_name": provider_name,
@@ -188,29 +167,29 @@ class ApolloService:
             "local_datetime": checked_at,
             "apollo_status": apollo_status,
             "reasons": reasons,
-            "performance": performance,
         }
 
     def build_management_context(self) -> Dict[str, Any]:
-        started_at = perf_counter()
+        if self.config.runtime_target == "local":
+            now = datetime.now(self.display_timezone)
+            with self._management_context_cache_lock:
+                if self._management_context_cache is not None and self._management_context_cache_expires_at is not None and now <= self._management_context_cache_expires_at:
+                    return copy.deepcopy(self._management_context_cache)
+
         try:
             structure = self.structure_service.analyze_same_day_spx_structure()
         except Exception:
             structure = {}
-        total_seconds = perf_counter() - started_at
-        return {
+        context = {
             "current_structure_grade": str(structure.get("final_grade") or structure.get("grade") or "Not available"),
             "current_macro_grade": "Not available",
             "precheck": {},
-            "performance": {
-                "total_seconds": round(total_seconds, 4),
-                "schwab_wait_seconds": round(total_seconds, 4),
-                "delphi_internal_seconds": 0.0,
-                "schwab_wait_percent": 100.0 if total_seconds > 0 else 0.0,
-                "delphi_internal_percent": 0.0,
-                "phases": {"structure_seconds": round(total_seconds, 4)},
-            },
         }
+        if self.config.runtime_target == "local":
+            with self._management_context_cache_lock:
+                self._management_context_cache = copy.deepcopy(context)
+                self._management_context_cache_expires_at = datetime.now(self.display_timezone) + timedelta(seconds=5)
+        return context
 
     def _resolve_option_chain_provider(self):
         provider = getattr(self.market_data_service, "live_provider", None)

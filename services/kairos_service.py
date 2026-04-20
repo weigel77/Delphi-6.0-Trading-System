@@ -2134,6 +2134,19 @@ class KairosService:
             self._refresh_session_locked(now)
             return self._build_payload_locked(now)
 
+    def build_management_context(self) -> Dict[str, Any]:
+        """Return the minimal Kairos session context needed by Manage Trades."""
+        now = self._now()
+        with self._lock:
+            self._refresh_session_locked(now)
+            latest_scan = self._session.latest_scan
+
+        default_status = "Initializing" if self._runtime.mode == KairosMode.LIVE else "Activation"
+        return {
+            "current_structure_status": str(latest_scan.structure_status if latest_scan is not None else default_status),
+            "current_momentum_status": str(latest_scan.momentum_status if latest_scan is not None else default_status),
+        }
+
     def initialize_live_kairos_on_page_load(self, *, force_refresh: bool = False) -> Dict[str, Any]:
         """Initialize the Live Kairos workspace when the live page is opened."""
         now = self._now()

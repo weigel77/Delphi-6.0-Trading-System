@@ -1,10 +1,9 @@
-"""Open-trade management, scheduled notifications, and deduped alerts for Delphi 4.3 Dev."""
+"""Open-trade management, scheduled notifications, and deduped alerts."""
 
 from __future__ import annotations
 
 import logging
 import math
-from time import perf_counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -203,52 +202,53 @@ class OpenTradeManager:
         return {"ran": True, **payload}
 
     def evaluate_open_trades(self, *, send_alerts: bool = False) -> Dict[str, Any]:
-        started_at = perf_counter()
         now = self._now()
-        load_started_at = perf_counter()
         open_trades = self._load_open_trades()
-        notifications_by_trade_id = self._load_trade_notifications(open_trades)
         global_notification_settings = self.load_global_notification_settings()
         global_notification_map = {
             item["key"]: item for item in global_notification_settings if item.get("key")
         }
-        alert_eligible_trades = [trade for trade in open_trades if str(trade.get("trade_mode") or "").strip().lower() == "real"]
-        states_by_trade = self._load_management_states()
-        runtime_settings = self._load_runtime_settings()
-        data_load_seconds = perf_counter() - load_started_at
+        alert_eligible_trades = [trade for trade in open_trades if str(trade.get("trade_mode") or "").strip().lower() == "real"] if send_alerts else []
+        notifications_by_trade_id: Dict[int, List[Dict[str, Any]]] = {}
+        states_by_trade: Dict[int, Dict[str, Any]] = {}
+        runtime_settings: Dict[str, Any] = {}
+        if send_alerts:
+            notifications_by_trade_id = self._load_trade_notifications(open_trades)
+            states_by_trade = self._load_management_states()
+            runtime_settings = self._load_runtime_settings()
         shared_context = self._build_shared_context(open_trades, now)
         alerts_sent = 0
         alert_failures: List[str] = []
         records: List[Dict[str, Any]] = []
 
         daily_outcomes: list[Dict[str, Any]] = []
-        record_build_started_at = perf_counter()
         for trade in open_trades:
             previous_state = states_by_trade.get(int(trade.get("id") or 0), {})
             record = self._evaluate_trade(trade, shared_context, now)
-            notifications = list(notifications_by_trade_id.get(int(trade.get("id") or 0), normalize_trade_notifications([])))
-            triggered_notifications = evaluate_trade_notifications({**trade, "notifications": notifications}, record)
-            triggered_by_type = {item["type"]: item for item in triggered_notifications}
-            record["notifications"] = [
-                {
-                    **notification,
-                    "triggered": notification["type"] in triggered_by_type,
-                    "trigger_reason": (triggered_by_type.get(notification["type"]) or {}).get("reason", ""),
+            if send_alerts:
+                notifications = list(notifications_by_trade_id.get(int(trade.get("id") or 0), normalize_trade_notifications([])))
+                triggered_notifications = evaluate_trade_notifications({**trade, "notifications": notifications}, record)
+                triggered_by_type = {item["type"]: item for item in triggered_notifications}
+                record["notifications"] = [
+                    {
+                        **notification,
+                        "triggered": notification["type"] in triggered_by_type,
+                        "trigger_reason": (triggered_by_type.get(notification["type"]) or {}).get("reason", ""),
+                    }
+                    for notification in notifications
+                ]
+                record["active_notifications"] = [item for item in record["notifications"] if item.get("enabled")]
+                record["triggered_notifications"] = triggered_notifications
+                record["triggered_notification_count"] = len(triggered_notifications)
+                alert_outcome = {"sent": False, "error": "", "priority": None, "alert_type": None, "sent_at": None}
+                record["trade_notification_state"] = {
+                    "last_status": self._coerce_text(trade.get("last_status"), fallback="—"),
+                    "last_action_sent": self._coerce_text(trade.get("last_action_sent"), fallback="—"),
+                    "last_alert_timestamp": self._format_datetime(parse_datetime_value(trade.get("last_alert_timestamp"))),
                 }
-                for notification in notifications
-            ]
-            record["active_notifications"] = [item for item in record["notifications"] if item.get("enabled")]
-            record["triggered_notifications"] = triggered_notifications
-            record["triggered_notification_count"] = len(triggered_notifications)
-            alert_outcome = {"sent": False, "error": "", "priority": None, "alert_type": None, "sent_at": None}
-            record["trade_notification_state"] = {
-                "last_status": self._coerce_text(trade.get("last_status"), fallback="—"),
-                "last_action_sent": self._coerce_text(trade.get("last_action_sent"), fallback="—"),
-                "last_alert_timestamp": self._format_datetime(parse_datetime_value(trade.get("last_alert_timestamp"))),
-            }
-            self._upsert_management_state(record, previous_state, alert_outcome, now)
-            persisted_state = build_management_state_payload(record, previous_state, alert_outcome, now)
-            record["alert_state"] = self._build_alert_state_payload(persisted_state, trade)
+                self._upsert_management_state(record, previous_state, alert_outcome, now)
+                persisted_state = build_management_state_payload(record, previous_state, alert_outcome, now)
+                record["alert_state"] = self._build_alert_state_payload(persisted_state, trade)
             records.append(record)
 
         if send_alerts:
@@ -279,30 +279,8 @@ class OpenTradeManager:
                     updated_trade["last_action_sent"] = str(record.get("action_type") or "")
                     updated_trade["last_alert_timestamp"] = alert_outcome.get("sent_at") or trade.get("last_alert_timestamp")
                     record["alert_state"] = self._build_alert_state_payload(persisted_state, updated_trade)
-
         records.sort(key=lambda item: (-int(item.get("status_severity") or 0), str(item.get("system_name") or ""), -int(item.get("trade_number") or 0)))
-        total_seconds = perf_counter() - started_at
-        record_build_seconds = perf_counter() - record_build_started_at
-        shared_performance = shared_context.get("performance") or {}
-        schwab_wait_seconds = float(shared_performance.get("schwab_wait_seconds") or 0.0)
-        delphi_internal_seconds = max(
-            total_seconds - schwab_wait_seconds,
-            0.0,
-        )
-        performance = self._finalize_performance(
-            total_seconds=total_seconds,
-            schwab_wait_seconds=schwab_wait_seconds,
-            delphi_internal_seconds=delphi_internal_seconds,
-            phases={
-                "data_load_seconds": data_load_seconds,
-                "shared_context_seconds": float(shared_performance.get("shared_context_seconds") or 0.0),
-                "record_build_seconds": record_build_seconds,
-                "apollo_context_seconds": float(shared_performance.get("apollo_context_seconds") or 0.0),
-                "kairos_context_seconds": float(shared_performance.get("kairos_context_seconds") or 0.0),
-                "option_chain_seconds": float(shared_performance.get("option_chain_seconds") or 0.0),
-                "snapshot_seconds": float(shared_performance.get("snapshot_seconds") or 0.0),
-            },
-        )
+        status_counts = self._build_status_counts(records)
         return {
             "evaluated_at": now.isoformat(),
             "evaluated_at_display": self._format_datetime(now),
@@ -314,10 +292,21 @@ class OpenTradeManager:
             "last_morning_snapshot_date": runtime_settings.get("last_morning_snapshot_date") or "",
             "last_eod_summary_date": runtime_settings.get("last_eod_summary_date") or "",
             "live_expected_move_display": next((record.get("current_live_expected_move_display") for record in records if record.get("current_live_expected_move_display")), "—"),
-            "status_counts": self._build_status_counts(records),
+            "header_market_snapshots": {
+                "^GSPC": shared_context.get("spx_snapshot") or {},
+                "^VIX": shared_context.get("vix_snapshot") or {},
+            },
+            "status_counts": status_counts,
             "records": records,
-            "performance": performance,
         }
+
+    def evaluate_trade_record(self, trade_id: int) -> Dict[str, Any] | None:
+        trade = self.trade_store.get_trade(trade_id)
+        if not trade:
+            return None
+        now = self._now()
+        shared_context = self._build_shared_context([trade], now)
+        return self._evaluate_trade(trade, shared_context, now)
 
     def send_manual_status_update(self, *, trade_mode: str) -> Dict[str, Any]:
         normalized_trade_mode = str(trade_mode or "").strip().lower()
@@ -369,20 +358,19 @@ class OpenTradeManager:
         }
 
     def _build_shared_context(self, open_trades: List[Dict[str, Any]], now: datetime) -> Dict[str, Any]:
-        shared_started_at = perf_counter()
-        snapshot_started_at = perf_counter()
+        normalized_systems = {str(item.get("system_name") or "").strip().lower() for item in open_trades}
+        has_apollo_trades = "apollo" in normalized_systems
+        has_kairos_trades = "kairos" in normalized_systems
         with ThreadPoolExecutor(max_workers=2) as executor:
             spx_future = executor.submit(self._safe_snapshot, "^GSPC", query_type="open_trade_management_spx")
             vix_future = executor.submit(self._safe_snapshot, "^VIX", query_type="open_trade_management_vix")
             spx_snapshot = spx_future.result()
             vix_snapshot = vix_future.result()
-        snapshot_seconds = perf_counter() - snapshot_started_at
         expirations = {
             parsed_date
             for parsed_date in (self._coerce_trade_expiration(item) for item in open_trades)
             if parsed_date is not None
         }
-        option_chain_started_at = perf_counter()
         option_chains: Dict[str, Any] = {}
         sorted_expirations = sorted(expirations)
         if sorted_expirations:
@@ -393,73 +381,134 @@ class OpenTradeManager:
                 }
                 for future, expiration_date in future_map.items():
                     option_chains[expiration_date.isoformat()] = future.result()
-        option_chain_seconds = perf_counter() - option_chain_started_at
+        current_spx = self._coerce_float((spx_snapshot or {}).get("Latest Value"))
+        prepared_option_chains = self._prepare_option_chain_contexts(
+            option_chains=option_chains,
+            spot=current_spx,
+            evaluation_date=now.date(),
+        )
 
         apollo_context: Dict[str, Any] = {}
-        apollo_context_seconds = 0.0
-        if any(str(item.get("system_name") or "").strip().lower() == "apollo" for item in open_trades):
-            apollo_started_at = perf_counter()
-            try:
-                management_context_builder = getattr(self.apollo_service, "build_management_context", None)
-                if callable(management_context_builder):
-                    apollo_context = management_context_builder()
-                else:
-                    apollo_precheck = self.apollo_service.run_precheck()
-                    apollo_context = {
-                        "current_structure_grade": self._coerce_text(((apollo_precheck.get("structure") or {}).get("final_grade") or (apollo_precheck.get("structure") or {}).get("grade")), fallback="Not available"),
-                        "current_macro_grade": self._coerce_text(((apollo_precheck.get("macro") or {}).get("grade")), fallback="Not available"),
-                        "precheck": apollo_precheck,
-                        "performance": apollo_precheck.get("performance") or {},
-                    }
-            except Exception as exc:  # pragma: no cover - defensive provider handling
-                LOGGER.warning("Apollo management context unavailable: %s", exc)
-                apollo_context = {}
-            apollo_context_seconds = perf_counter() - apollo_started_at
-
-        kairos_started_at = perf_counter()
-        kairos_context: Dict[str, Any] = self._build_kairos_context(now)
-        kairos_context_seconds = perf_counter() - kairos_started_at
-        apollo_performance = apollo_context.get("performance") or {}
-        shared_context_seconds = perf_counter() - shared_started_at
+        kairos_context: Dict[str, Any] = {}
+        context_futures: Dict[Any, str] = {}
+        context_worker_count = int(has_apollo_trades) + int(has_kairos_trades)
+        if context_worker_count > 0:
+            with ThreadPoolExecutor(max_workers=context_worker_count) as executor:
+                if has_apollo_trades:
+                    context_futures[executor.submit(self._build_apollo_management_context)] = "apollo"
+                if has_kairos_trades:
+                    context_futures[executor.submit(self._build_kairos_context, now)] = "kairos"
+                for future, context_name in context_futures.items():
+                    if context_name == "apollo":
+                        apollo_context = future.result()
+                    else:
+                        kairos_context = future.result()
         return {
             "now": now,
             "spx_snapshot": spx_snapshot,
             "vix_snapshot": vix_snapshot,
             "option_chains": option_chains,
+            "prepared_option_chains": prepared_option_chains,
             "apollo": apollo_context,
             "kairos": kairos_context,
-            "current_spx": self._coerce_float((spx_snapshot or {}).get("Latest Value")),
+            "current_spx": current_spx,
             "current_vix": self._coerce_float((vix_snapshot or {}).get("Latest Value")),
-            "performance": {
-                "shared_context_seconds": shared_context_seconds,
-                "snapshot_seconds": snapshot_seconds,
-                "option_chain_seconds": option_chain_seconds,
-                "apollo_context_seconds": apollo_context_seconds,
-                "kairos_context_seconds": kairos_context_seconds,
-                "schwab_wait_seconds": (
-                    snapshot_seconds
-                    + option_chain_seconds
-                    + kairos_context_seconds
-                    + float(apollo_performance.get("schwab_wait_seconds") or 0.0)
-                ),
-            },
         }
 
-    def _build_kairos_context(self, now: datetime) -> Dict[str, Any]:
-        dashboard = {}
+    def _build_apollo_management_context(self) -> Dict[str, Any]:
+        apollo_context: Dict[str, Any] = {}
         try:
-            dashboard = self.kairos_service.get_dashboard_payload() if self.kairos_service is not None else {}
+            management_context_builder = getattr(self.apollo_service, "build_management_context", None)
+            if callable(management_context_builder):
+                apollo_context = management_context_builder()
+            else:
+                apollo_precheck = self.apollo_service.run_precheck()
+                apollo_context = {
+                    "current_structure_grade": self._coerce_text(((apollo_precheck.get("structure") or {}).get("final_grade") or (apollo_precheck.get("structure") or {}).get("grade")), fallback="Not available"),
+                }
+        except Exception as exc:  # pragma: no cover - defensive provider handling
+            LOGGER.warning("Apollo management context unavailable: %s", exc)
+            apollo_context = {}
+        return apollo_context
+
+    def _prepare_option_chain_contexts(
+        self,
+        *,
+        option_chains: Dict[str, Any],
+        spot: float | None,
+        evaluation_date: date,
+    ) -> Dict[str, Dict[str, Any]]:
+        prepared: Dict[str, Dict[str, Any]] = {}
+        for expiration_key, chain_summary in option_chains.items():
+            if not isinstance(chain_summary, dict):
+                continue
+            expiration_date = parse_date_value(expiration_key)
+            prepared[expiration_key] = self._prepare_option_chain_context(
+                chain_summary=chain_summary,
+                spot=spot,
+                expiration_date=expiration_date,
+                evaluation_date=evaluation_date,
+            )
+        return prepared
+
+    def _prepare_option_chain_context(
+        self,
+        *,
+        chain_summary: Dict[str, Any],
+        spot: float | None,
+        expiration_date: date | None,
+        evaluation_date: date,
+    ) -> Dict[str, Any]:
+        normalized_puts = self._normalize_live_contracts(chain_summary.get("puts") or [])
+        normalized_calls = self._normalize_live_contracts(chain_summary.get("calls") or [])
+        prepared = {
+            "normalized_puts": normalized_puts,
+            "normalized_calls": normalized_calls,
+            "puts_by_strike": {round(float(item["strike"]), 2): item for item in normalized_puts},
+            "calls_by_strike": {round(float(item["strike"]), 2): item for item in normalized_calls},
+            "expected_move_by_system": {},
+        }
+        if spot is not None:
+            prepared["expected_move_by_system"] = {
+                "apollo": self._build_expected_move_details_from_normalized(
+                    normalized_puts=normalized_puts,
+                    normalized_calls=normalized_calls,
+                    spot=spot,
+                    system_name="Apollo",
+                    expiration_date=expiration_date,
+                    evaluation_date=evaluation_date,
+                ),
+                "kairos": self._build_expected_move_details_from_normalized(
+                    normalized_puts=normalized_puts,
+                    normalized_calls=normalized_calls,
+                    spot=spot,
+                    system_name="Kairos",
+                    expiration_date=expiration_date,
+                    evaluation_date=evaluation_date,
+                ),
+            }
+        return prepared
+
+    def _build_kairos_context(self, now: datetime) -> Dict[str, Any]:
+        management_context: Dict[str, Any] = {}
+        try:
+            management_context_builder = getattr(self.kairos_service, "build_management_context", None)
+            if callable(management_context_builder):
+                management_context = management_context_builder() if self.kairos_service is not None else {}
+            elif self.kairos_service is not None:
+                dashboard = self.kairos_service.get_dashboard_payload()
+                latest_scan = dashboard.get("latest_scan") or {}
+                management_context = {
+                    "current_structure_status": latest_scan.get("structure_status"),
+                    "current_momentum_status": latest_scan.get("momentum_status"),
+                }
         except Exception as exc:  # pragma: no cover - defensive provider handling
             LOGGER.warning("Kairos management context unavailable: %s", exc)
+            management_context = {}
 
-        latest_scan = dashboard.get("latest_scan") or {}
         intraday = self._build_intraday_kairos_context(now)
         return {
-            "dashboard": dashboard,
-            "current_structure_status": self._coerce_text(latest_scan.get("structure_status") or intraday.get("structure_status"), fallback="Developing"),
-            "current_momentum_status": self._coerce_text(latest_scan.get("momentum_status") or intraday.get("momentum_status"), fallback="Steady"),
-            "current_vwap": intraday.get("current_vwap"),
-            "current_session_posture": intraday.get("session_posture") or "Awaiting tape",
+            "current_structure_status": self._coerce_text(management_context.get("current_structure_status") or intraday.get("structure_status"), fallback="Developing"),
             "below_vwap": intraday.get("below_vwap", False),
         }
 
@@ -512,33 +561,18 @@ class OpenTradeManager:
         typical_price = (pd.to_numeric(working["High"], errors="coerce") + pd.to_numeric(working["Low"], errors="coerce") + pd.to_numeric(working["Close"], errors="coerce")) / 3.0
         cumulative_volume = float(volume_series.sum())
         current_vwap = float(((typical_price * volume_series).sum() / cumulative_volume) if cumulative_volume > 0 else current_close)
-        recent_close = self._coerce_float(working.iloc[max(0, len(working) - 6)].get("Close"), fallback=current_close)
         net_change_percent = self._percent_change(current_close, session_open)
-        close_vs_vwap_percent = self._percent_change(current_close, current_vwap)
-        recent_change_percent = self._percent_change(current_close, recent_close)
-        session_posture = self._derive_session_posture(
-            net_change_percent=net_change_percent,
-            close_vs_vwap_percent=close_vs_vwap_percent,
-            recent_change_percent=recent_change_percent,
-        )
         if current_close < current_vwap and net_change_percent <= -0.18:
             structure_status = "Failed"
-            momentum_status = "Expired"
         elif current_close < current_vwap:
             structure_status = "Weakening"
-            momentum_status = "Weakening"
         elif current_close > current_vwap and net_change_percent >= 0.08:
             structure_status = "Bullish Confirmation"
-            momentum_status = "Improving"
         else:
             structure_status = "Developing"
-            momentum_status = "Steady"
         return {
-            "current_vwap": round(current_vwap, 2),
             "below_vwap": bool(current_close < current_vwap),
-            "session_posture": session_posture,
             "structure_status": structure_status,
-            "momentum_status": momentum_status,
         }
 
     def _evaluate_trade(self, trade: Dict[str, Any], shared_context: Dict[str, Any], now: datetime) -> Dict[str, Any]:
@@ -556,7 +590,7 @@ class OpenTradeManager:
             classification = self._classify_apollo_trade(trade, metrics, shared_context.get("apollo") or {}, now)
             profile_label = resolve_trade_candidate_profile(trade)
 
-        return {
+        record = {
             "trade_id": int(trade.get("id") or 0),
             "trade_number": int(trade.get("trade_number") or 0),
             "system_name": system_name,
@@ -648,6 +682,7 @@ class OpenTradeManager:
             "evaluated_at": now.isoformat(),
             "evaluated_at_display": self._format_datetime(now),
         }
+        return record
 
     def _build_live_metrics(self, trade: Dict[str, Any], *, current_underlying: float, current_vix: float | None, shared_context: Dict[str, Any], now: datetime) -> Dict[str, Any]:
         short_strike = self._coerce_float(trade.get("short_strike"), fallback=0.0)
@@ -688,9 +723,12 @@ class OpenTradeManager:
             current_pl = round((net_credit_per_contract - current_close_price) * remaining_contracts * 100.0, 2)
 
         expiration_date = self._coerce_trade_expiration(trade)
-        chain_summary = (shared_context.get("option_chains") or {}).get(expiration_date.isoformat()) if expiration_date is not None else None
+        expiration_key = expiration_date.isoformat() if expiration_date is not None else ""
+        chain_summary = (shared_context.get("option_chains") or {}).get(expiration_key) if expiration_key else None
+        prepared_chain = (shared_context.get("prepared_option_chains") or {}).get(expiration_key) if expiration_key else None
         current_live_expected_move_details = self._estimate_live_expected_move_from_chain(
             chain_summary=chain_summary,
+            prepared_chain=prepared_chain,
             spot=current_underlying,
             system_name=normalize_system_name(trade.get("system_name")),
             expiration_date=expiration_date,
@@ -948,9 +986,6 @@ class OpenTradeManager:
     def _load_management_states(self) -> Dict[int, Dict[str, Any]]:
         return self.state_repository.load_management_states()
 
-    def _load_management_state(self, trade_id: int) -> Dict[str, Any]:
-        return self.state_repository.load_management_state(trade_id)
-
     def _build_alert_state_payload(self, state: Dict[str, Any], trade: Dict[str, Any]) -> Dict[str, Any]:
         last_alert_sent_at = parse_datetime_value(state.get("last_alert_sent_at")) if state else None
         last_alert_priority = state.get("last_alert_priority") if state else None
@@ -1078,10 +1113,13 @@ class OpenTradeManager:
         if not chain_summary.get("success"):
             return None
         option_type = self._coerce_text(trade.get("option_type"), fallback="Put Credit Spread")
-        contracts = chain_summary.get("calls") if "call" in option_type.lower() else chain_summary.get("puts")
-        if not isinstance(contracts, list):
-            return None
-        strike_lookup = {round(float(item.get("strike") or 0.0), 2): item for item in contracts if self._coerce_float(item.get("strike")) is not None}
+        prepared_chain = (shared_context.get("prepared_option_chains") or {}).get(expiration.isoformat()) or {}
+        strike_lookup = prepared_chain.get("calls_by_strike") if "call" in option_type.lower() else prepared_chain.get("puts_by_strike")
+        if not isinstance(strike_lookup, dict):
+            contracts = chain_summary.get("calls") if "call" in option_type.lower() else chain_summary.get("puts")
+            if not isinstance(contracts, list):
+                return None
+            strike_lookup = {round(float(item.get("strike") or 0.0), 2): item for item in contracts if self._coerce_float(item.get("strike")) is not None}
         short_leg = strike_lookup.get(round(float(trade.get("short_strike") or 0.0), 2))
         long_leg = strike_lookup.get(round(float(trade.get("long_strike") or 0.0), 2))
         if not short_leg or not long_leg:
@@ -1107,6 +1145,7 @@ class OpenTradeManager:
         self,
         *,
         chain_summary: Dict[str, Any] | None,
+        prepared_chain: Dict[str, Any] | None = None,
         spot: float,
         system_name: str,
         expiration_date: date | None,
@@ -1120,8 +1159,33 @@ class OpenTradeManager:
                 "contracts_label": "—",
             }
 
-        normalized_puts = self._normalize_live_contracts(chain_summary.get("puts") or [])
-        normalized_calls = self._normalize_live_contracts(chain_summary.get("calls") or [])
+        system_key = "kairos" if normalize_system_name(system_name) == "Kairos" else "apollo"
+        prepared_expected_moves = (prepared_chain or {}).get("expected_move_by_system") or {}
+        cached_details = prepared_expected_moves.get(system_key)
+        if isinstance(cached_details, dict) and cached_details:
+            return dict(cached_details)
+
+        normalized_puts = (prepared_chain or {}).get("normalized_puts") or self._normalize_live_contracts(chain_summary.get("puts") or [])
+        normalized_calls = (prepared_chain or {}).get("normalized_calls") or self._normalize_live_contracts(chain_summary.get("calls") or [])
+        return self._build_expected_move_details_from_normalized(
+            normalized_puts=normalized_puts,
+            normalized_calls=normalized_calls,
+            spot=spot,
+            system_name=system_name,
+            expiration_date=expiration_date,
+            evaluation_date=evaluation_date,
+        )
+
+    def _build_expected_move_details_from_normalized(
+        self,
+        *,
+        normalized_puts: List[Dict[str, Any]],
+        normalized_calls: List[Dict[str, Any]],
+        spot: float,
+        system_name: str,
+        expiration_date: date | None,
+        evaluation_date: date,
+    ) -> Dict[str, Any]:
         selected_put = self._find_live_contract_at_or_below_strike(normalized_puts, spot) or self._find_nearest_live_contract(normalized_puts, spot)
         selected_call = self._find_live_contract_at_or_above_strike(normalized_calls, spot) or self._find_nearest_live_contract(normalized_calls, spot)
         put_anchor = self._option_mark(selected_put or {}) if selected_put is not None else 0.0
@@ -1590,26 +1654,6 @@ class OpenTradeManager:
     @staticmethod
     def _slugify(value: str) -> str:
         return str(value or "").strip().lower().replace(" ", "-")
-
-    @staticmethod
-    def _finalize_performance(
-        *,
-        total_seconds: float,
-        schwab_wait_seconds: float,
-        delphi_internal_seconds: float,
-        phases: Dict[str, float],
-    ) -> Dict[str, Any]:
-        safe_total = max(float(total_seconds), 0.0)
-        safe_schwab = max(min(float(schwab_wait_seconds), safe_total), 0.0)
-        safe_internal = max(min(float(delphi_internal_seconds), safe_total), 0.0)
-        return {
-            "total_seconds": round(safe_total, 4),
-            "schwab_wait_seconds": round(safe_schwab, 4),
-            "delphi_internal_seconds": round(safe_internal, 4),
-            "schwab_wait_percent": round((safe_schwab / safe_total) * 100.0, 2) if safe_total > 0 else 0.0,
-            "delphi_internal_percent": round((safe_internal / safe_total) * 100.0, 2) if safe_total > 0 else 0.0,
-            "phases": {key: round(max(float(value), 0.0), 4) for key, value in phases.items()},
-        }
 
     def _format_date(self, value: date | None) -> str:
         return value.isoformat() if value is not None else "—"

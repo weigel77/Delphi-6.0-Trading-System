@@ -40,7 +40,6 @@ class MarketDataIntradayRequestCacheTests(unittest.TestCase):
         app = Flask(__name__)
 
         with app.test_request_context("/hosted/mobile"):
-            service.begin_request_intraday_trace("hosted_mobile_shell:home")
             first = service.get_intraday_candles_for_date("^GSPC", date(2026, 4, 17), interval_minutes=1, query_type="kairos_latest_state")
             second = service.get_intraday_candles_for_date(
                 "^GSPC",
@@ -48,13 +47,10 @@ class MarketDataIntradayRequestCacheTests(unittest.TestCase):
                 interval_minutes=1,
                 query_type="open_trade_management_kairos_intraday",
             )
-            summary = service.get_request_intraday_trace_summary()
 
         self.assertEqual(len(provider.calls), 1)
         self.assertEqual(len(first.index), 1)
         self.assertEqual(len(second.index), 1)
-        self.assertEqual(summary["intraday_call_count"], 2)
-        self.assertEqual(summary["request_reuse_count"], 1)
 
 
 if __name__ == "__main__":

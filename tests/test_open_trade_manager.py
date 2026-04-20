@@ -64,14 +64,6 @@ class StubApolloService:
             "current_structure_grade": self.current_structure,
             "current_macro_grade": self.current_macro,
             "precheck": {},
-            "performance": {
-                "total_seconds": 0.01,
-                "schwab_wait_seconds": 0.01,
-                "delphi_internal_seconds": 0.0,
-                "schwab_wait_percent": 100.0,
-                "delphi_internal_percent": 0.0,
-                "phases": {"structure_seconds": 0.01},
-            },
         }
 
 
@@ -117,6 +109,12 @@ class StubKairosService:
     def __init__(self):
         self.structure_status = "Weakening"
         self.momentum_status = "Weakening"
+
+    def build_management_context(self):
+        return {
+            "current_structure_status": self.structure_status,
+            "current_momentum_status": self.momentum_status,
+        }
 
     def get_dashboard_payload(self):
         return {
@@ -256,6 +254,17 @@ class OpenTradeManagerTest(unittest.TestCase):
         self.assertEqual(payload["open_trade_count"], 3)
         trade_modes = {item["trade_number"]: item["trade_mode"] for item in payload["records"]}
         self.assertIn("Simulated", trade_modes.values())
+
+    def test_plain_board_uses_minimal_kairos_management_context(self):
+        def fail_dashboard_call():
+            raise AssertionError("Plain Manage Trades board should not build the full Kairos dashboard payload.")
+
+        self.kairos_service.get_dashboard_payload = fail_dashboard_call
+
+        payload = self.manager.evaluate_open_trades(send_alerts=False)
+        kairos_trade = next(item for item in payload["records"] if item["system_name"] == "Kairos")
+
+        self.assertEqual(kairos_trade["current_structure_grade"], "Weakening")
 
     def test_simulated_trades_do_not_participate_in_alerts(self):
         self._set_runtime_field("last_morning_snapshot_date", "2026-04-10")
@@ -500,14 +509,10 @@ class OpenTradeManagerTest(unittest.TestCase):
         self.assertIn("close 1 contracts", trade["next_trigger"])
         self.assertIn("short-strike breach", trade["next_trigger"])
 
-    def test_management_payload_includes_performance_breakdown(self):
+    def test_management_payload_excludes_performance_breakdown(self):
         payload = self.manager.evaluate_open_trades(send_alerts=False)
 
-        self.assertIn("performance", payload)
-        self.assertIn("total_seconds", payload["performance"])
-        self.assertIn("schwab_wait_seconds", payload["performance"])
-        self.assertIn("delphi_internal_seconds", payload["performance"])
-        self.assertIn("shared_context_seconds", payload["performance"]["phases"])
+        self.assertNotIn("performance", payload)
 
 
 if __name__ == "__main__":

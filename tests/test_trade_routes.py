@@ -720,29 +720,20 @@ class TradeRoutesTest(unittest.TestCase):
             trade_id = connection.execute("SELECT id FROM trades WHERE trade_number = 1").fetchone()["id"]
 
         manager = self.app.extensions["open_trade_manager"]
-        manager.evaluate_open_trades = lambda send_alerts=False: {
+        manager.evaluate_trade_record = lambda target_trade_id: {
+            "trade_id": target_trade_id,
+            "trade_number": 1,
+            "trade_mode": "Simulated",
+            "contracts": 2,
+            "current_spread_mark": 4.9,
+            "current_total_close_cost_display": "$980.00",
             "evaluated_at_display": "2026-04-10 12:00 PM CDT",
-            "open_trade_count": 1,
-            "alerts_sent": 0,
-            "alert_failures": [],
-            "status_counts": [],
-            "records": [
-                {
-                    "trade_id": trade_id,
-                    "trade_number": 1,
-                    "trade_mode": "Simulated",
-                    "contracts": 2,
-                    "current_spread_mark": 4.9,
-                    "current_total_close_cost_display": "$980.00",
-                    "evaluated_at_display": "2026-04-10 12:00 PM CDT",
-                    "alert_state": {
-                        "last_alert_type": None,
-                        "last_alert_priority": None,
-                        "last_alert_sent_at": None,
-                        "alert_count": 0,
-                    },
-                }
-            ],
+            "alert_state": {
+                "last_alert_type": None,
+                "last_alert_priority": None,
+                "last_alert_sent_at": None,
+                "alert_count": 0,
+            },
         }
 
         response = self.client.post(f"/management/open-trades/{trade_id}/prefill-close", follow_redirects=False)
@@ -1188,7 +1179,7 @@ class TradeRoutesTest(unittest.TestCase):
         response = self.client.post("/apollo")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Version 4.3 Dev", response.data)
+        self.assertIn(b"Version 6.4", response.data)
         self.assertIn(b"Apollo: Greek God of Prophecy and Part-Time Options Trader", response.data)
         self.assertIn(b"Base Structure", response.data)
         self.assertIn(b"RSI Modifier", response.data)
