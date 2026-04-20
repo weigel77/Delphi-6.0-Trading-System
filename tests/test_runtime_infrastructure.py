@@ -28,6 +28,9 @@ class RuntimeInfrastructureTest(unittest.TestCase):
             self.assertEqual(infrastructure.storage.import_preview_root, Path(app.instance_path))
             self.assertEqual(app.config["TRADE_DATABASE"], str(database_path))
             self.assertEqual(app.config["KAIROS_REPLAY_STORAGE_DIR"], str(replay_path))
+            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 7.0 Local")
+            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 7.0")
+            self.assertIn("talos_service", app.extensions)
 
     def test_hosted_runtime_skeleton_reuses_local_storage_boundary_without_changing_routes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -49,8 +52,8 @@ class RuntimeInfrastructureTest(unittest.TestCase):
 
             self.assertEqual(infrastructure.host_kind, "hosted")
             self.assertEqual(infrastructure.settings.runtime_target, "hosted")
-            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 6.4")
-            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 6.4")
+            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 6.4.1")
+            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 6.4.1")
             self.assertEqual(app.config["SESSION_COOKIE_NAME"], "delphi5_hosted_session")
             self.assertEqual(app.config["OAUTH_SESSION_NAMESPACE"], "delphi5hosted")
             self.assertIsNotNone(infrastructure.supabase_context)
@@ -63,6 +66,7 @@ class RuntimeInfrastructureTest(unittest.TestCase):
             self.assertFalse(profile.auto_open_browser)
             self.assertEqual(app.extensions["service_bundle"].host_infrastructure, infrastructure)
             self.assertIs(app.extensions["supabase_context"], infrastructure.supabase_context)
+            self.assertFalse(app.extensions["talos_service"].get_dashboard_payload()["enabled"])
 
             client = app.test_client()
             response = client.get("/")
@@ -137,6 +141,6 @@ class RuntimeInfrastructureTest(unittest.TestCase):
                 }
             )
 
-            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 6.4")
-            self.assertEqual(app.config["APP_PAGE_KICKER"], "Delphi 6.4")
-            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 6.4")
+            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 6.4.1")
+            self.assertEqual(app.config["APP_PAGE_KICKER"], "Delphi 6.4.1")
+            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 6.4.1")

@@ -18,7 +18,7 @@
                 active_page='journal',
                 page_heading=trade_mode_label,
                 page_copy=trade_mode_description,
-                page_meta='Persistent trade log for real and simulated credit spreads.',
+                page_meta='Persistent trade log for real, simulated, and Talos credit spreads.',
                 page_kicker=app_identity.page_kicker,
                 page_version=app_identity.version_label,
                 menu_status=menu_status,
@@ -48,7 +48,7 @@
             <div class="result-header">
                 <div>
                     <h2>{{ trade_mode_label }}</h2>
-                    <p class="subtle">{% if hosted_read_only %}{% if allow_trade_edit %}Hosted Delphi 6.4 journal mirrors the live Supabase trade store and supports draft review, editing, and deleting directly in hosted mode.{% else %}Hosted Delphi 6.4 journal mirrors the live trade store in read-only mode so links stay working and the browser surface stays safe.{% endif %}{% else %}One local database stores both real and simulated trades, filtered by mode.{% endif %}</p>
+                    <p class="subtle">{% if hosted_read_only %}{% if allow_trade_edit %}Hosted Delphi 6.4.1 journal mirrors the live Supabase trade store and supports draft review, editing, and deleting directly in hosted mode.{% else %}Hosted Delphi 6.4.1 journal mirrors the live trade store in read-only mode so links stay working and the browser surface stays safe.{% endif %}{% else %}One local database stores real, simulated, and Talos trades, filtered by mode.{% endif %}</p>
                 </div>
             </div>
 
