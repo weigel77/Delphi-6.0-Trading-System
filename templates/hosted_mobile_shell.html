@@ -49,6 +49,15 @@
                 <span>{{ app_identity.version_label }}</span>
                 <strong>{{ mobile_identity.display_name or mobile_identity.email or 'Approved User' }}</strong>
             </div>
+            {% if mobile_schwab.requires_auth %}
+                <div class="delphi-mobile-header-connection delphi-mobile-header-connection-{{ 'connected' if mobile_schwab.connected else 'disconnected' }}">
+                    <span>{{ mobile_schwab.provider_name }}</span>
+                    <strong>{{ mobile_schwab.status_label }}</strong>
+                    {% if not mobile_schwab.connected %}
+                        <a class="button-link delphi-mobile-connect-button" href="{{ mobile_schwab.connect_url }}">Connect Schwab</a>
+                    {% endif %}
+                </div>
+            {% endif %}
         </header>
 
         {% if request.args.get('prefill') %}

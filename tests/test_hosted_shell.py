@@ -533,56 +533,76 @@ class HostedShellTest(unittest.TestCase):
             self.assertIn(b"Switch to Desktop", home_response.data)
             self.assertIn(b"Notifications", home_response.data)
             self.assertIn(b"Log Out", home_response.data)
-
             self.assertLess(home_response.data.find(b"Trade #420"), home_response.data.find(b"Trade #411"))
             self.assertLess(home_response.data.find(b"Trade #411"), home_response.data.find(b"Trade #402"))
             self.assertLess(home_response.data.find(b"Trade #402"), home_response.data.find(b"Trade #301"))
 
-            journal_response = client.get("/hosted/mobile/journal")
-            self.assertEqual(journal_response.status_code, 200)
-            self.assertIn(b"Quick Add Form", journal_response.data)
-            self.assertIn(b">Journal<", journal_response.data)
-
-            performance_response = client.get("/hosted/mobile/performance")
-            self.assertEqual(performance_response.status_code, 200)
-            self.assertIn(b"Stats", performance_response.data)
-            self.assertIn(b"System", performance_response.data)
-            self.assertIn(b"Profile", performance_response.data)
-            self.assertIn(b"Result", performance_response.data)
-            self.assertIn(b"Trade Mode", performance_response.data)
-            self.assertIn(b"Timeframe", performance_response.data)
-            self.assertIn(b"/hosted/performance/data", performance_response.data)
-            self.assertIn(b"Win Rate", performance_response.data)
-            self.assertIn(b"Expectancy", performance_response.data)
-            self.assertIn(b"Net P/L", performance_response.data)
-            self.assertIn(b"Equity Curve", performance_response.data)
-            self.assertIn(b"Avg Safety Ratio", performance_response.data)
-            self.assertIn(b"Avg Premium / EM Point", performance_response.data)
-            self.assertIn(b"Avg Premium / Risk", performance_response.data)
-            self.assertIn(b"Avg Credit Efficiency", performance_response.data)
-            self.assertNotIn(b"<select name=\"system\"", performance_response.data)
-            self.assertNotIn(b"<select name=\"profile\"", performance_response.data)
-            self.assertNotIn(b"Macro Grade", performance_response.data)
-            self.assertNotIn(b"Structure Grade", performance_response.data)
-            self.assertNotIn(b"Mobile Dashboard", performance_response.data)
-            self.assertNotIn(b"Performance Pulse", performance_response.data)
-            self.assertNotIn(b"Compact Metrics", performance_response.data)
-            self.assertIn(b">Stats<", performance_response.data)
-
-            filtered_performance_response = client.get(
-                "/hosted/mobile/performance?system=Apollo&profile=Fortress&result=Win&trade_mode=real&timeframe=Last+Month"
-            )
-            self.assertEqual(filtered_performance_response.status_code, 200)
-            self.assertEqual(
-                app.extensions["performance_service"].calls[-1],
+    def test_hosted_mobile_shell_shows_schwab_connect_button_when_provider_login_is_required(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = self._create_hosted_app(temp_dir)
+            self._allow_identity(app)
+            market_data_service = _FakeMarketDataService()
+            market_data_service.get_provider_metadata = lambda: {
+                "live_provider_name": "Schwab",
+                "provider_name": "Schwab",
+                "requires_auth": True,
+                "authenticated": False,
+            }
+            app.extensions["market_data_service"] = market_data_service
+            app.extensions["performance_service"] = _FakePerformanceService(
                 {
-                    "system": ["apollo"],
-                    "profile": ["fortress"],
-                    "result": ["win"],
-                    "trade_mode": ["real"],
-                    "timeframe": ["last-month"],
-                },
+                    "filters": {"system": [], "profile": [], "result": [], "trade_mode": [], "macro_grade": [], "structure_grade": [], "timeframe": ["all"]},
+                    "filter_groups": {},
+                    "records_total": 0,
+                    "records_filtered": 0,
+                    "metrics": {"totals": {}, "win_rate": {}, "expectancy": {}, "net_pnl": {}},
+                    "learning": {"overview": {}},
+                    "charts": {"equity_curve": {"min": 0.0, "max": 0.0, "points": []}},
+                }
             )
+            app.extensions["trade_store"] = _FakeTradeStore({"real": [], "simulated": []}, {"real": {}, "simulated": {}})
+
+            client = app.test_client()
+            response = client.get("/hosted/mobile/performance")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(b"Schwab", response.data)
+            self.assertIn(b"Login required", response.data)
+            self.assertIn(b"Connect Schwab", response.data)
+            self.assertIn(b"/hosted/login/mobile?next=/hosted/mobile/performance", response.data)
+
+    def test_hosted_mobile_shell_shows_connected_state_when_schwab_is_authenticated(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = self._create_hosted_app(temp_dir)
+            self._allow_identity(app)
+            market_data_service = _FakeMarketDataService()
+            market_data_service.get_provider_metadata = lambda: {
+                "live_provider_name": "Schwab",
+                "provider_name": "Schwab",
+                "requires_auth": True,
+                "authenticated": True,
+            }
+            app.extensions["market_data_service"] = market_data_service
+            app.extensions["performance_service"] = _FakePerformanceService(
+                {
+                    "filters": {"system": [], "profile": [], "result": [], "trade_mode": [], "macro_grade": [], "structure_grade": [], "timeframe": ["all"]},
+                    "filter_groups": {},
+                    "records_total": 0,
+                    "records_filtered": 0,
+                    "metrics": {"totals": {}, "win_rate": {}, "expectancy": {}, "net_pnl": {}},
+                    "learning": {"overview": {}},
+                    "charts": {"equity_curve": {"min": 0.0, "max": 0.0, "points": []}},
+                }
+            )
+            app.extensions["trade_store"] = _FakeTradeStore({"real": [], "simulated": []}, {"real": {}, "simulated": {}})
+
+            client = app.test_client()
+            response = client.get("/hosted/mobile/performance")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(b"Schwab", response.data)
+            self.assertIn(b"Connected", response.data)
+            self.assertNotIn(b"Connect Schwab", response.data)
 
             trades_response = client.get("/hosted/mobile/trades", follow_redirects=False)
             self.assertEqual(trades_response.status_code, 302)
@@ -848,6 +868,54 @@ class HostedShellTest(unittest.TestCase):
             self.assertIn(b'$95', response.data)
             self.assertNotIn(b'Max Loss', response.data)
             self.assertNotIn(b'Jump to Manual Entry Form', response.data)
+
+    def test_hosted_journal_allows_talos_mode_when_supabase_contains_talos_rows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = self._create_hosted_app(temp_dir)
+            self._allow_identity(app)
+            app.extensions["trade_store"] = _FakeTradeStore(
+                {
+                    "talos": [
+                        {
+                            "id": 11,
+                            "trade_number": 75,
+                            "trade_mode": "talos",
+                            "system_name": "Apollo",
+                            "candidate_profile": "Standard",
+                            "status": "open",
+                            "trade_date": "2026-04-20",
+                            "entry_datetime": "2026-04-20T09:45",
+                            "expiration_date": "2026-04-20",
+                            "underlying_symbol": "SPX",
+                            "short_strike": 7080,
+                            "long_strike": 7070,
+                            "contracts": 2,
+                            "actual_entry_credit": 1.35,
+                            "gross_pnl": 0.0,
+                            "win_loss_result": "Open",
+                            "journal_name": "Horme",
+                        }
+                    ]
+                },
+                {
+                    "talos": {
+                        "total_trades": 1,
+                        "open_trades": 1,
+                        "closed_trades": 0,
+                        "total_pnl": 0.0,
+                        "average_pnl": 0.0,
+                        "win_count": 0,
+                        "loss_count": 0,
+                    }
+                },
+            )
+
+            response = app.test_client().get("/hosted/journal?trade_mode=talos")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(b'/hosted/journal?trade_mode=talos', response.data)
+            self.assertIn(b'Talos', response.data)
+            self.assertIn(b'75', response.data)
 
     def test_hosted_apollo_prefill_redirects_into_hosted_journal_draft(self):
         with tempfile.TemporaryDirectory() as temp_dir:

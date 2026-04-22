@@ -128,6 +128,20 @@ class PerformanceDashboardTest(unittest.TestCase):
             actual_exit_value="",
             close_reason="",
         )
+        self._create_trade(
+            "talos",
+            system_name="Kairos",
+            candidate_profile="Prime",
+            trade_date="2026-04-04",
+            expiration_date="2026-04-04",
+            spx_at_entry="6500",
+            vix_at_entry="19",
+            macro_grade="None",
+            structure_grade="Good",
+            expected_move="28",
+            actual_entry_credit="1.6",
+            actual_exit_value="0.4",
+        )
 
     def test_timeframe_filters_use_expiration_date_instead_of_trade_date(self):
         today = date.today()
@@ -196,6 +210,7 @@ class PerformanceDashboardTest(unittest.TestCase):
         self.assertIn(b"data-performance-url=\"/performance/data\"", response.data)
         self.assertIn(b"System", response.data)
         self.assertIn(b"Trade Mode", response.data)
+        self.assertIn(b"Talos", response.data)
         self.assertIn(b"performance-line-popup", response.data)
         self.assertIn(b"Performance Learning Metrics", response.data)
         self.assertIn(b"id=\"credit-efficiency-system-panel\"", response.data)
@@ -249,7 +264,7 @@ class PerformanceDashboardTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        self.assertEqual(payload["records_total"], 4)
+        self.assertEqual(payload["records_total"], 5)
         self.assertEqual(payload["records_filtered"], 2)
         self.assertEqual(payload["filters"]["trade_mode"], ["real"])
         self.assertEqual(payload["metrics"]["totals"]["open_trades"], 0)

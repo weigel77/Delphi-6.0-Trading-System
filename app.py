@@ -177,10 +177,11 @@ QUERY_DEFINITIONS = [
     QueryDefinition("vix_close_range", "VIX closing values for a date range", "range", "^VIX", "VIX", "range"),
 ]
 QUERY_LOOKUP = {definition.key: definition for definition in QUERY_DEFINITIONS}
-TRADE_MODE_LABELS = {"real": "Real Trades", "simulated": "Simulated Trades"}
+TRADE_MODE_LABELS = {"real": "Real Trades", "simulated": "Simulated Trades", "talos": "Talos"}
 TRADE_MODE_DESCRIPTIONS = {
     "real": "Persistent live-trade log for real-world positions.",
     "simulated": "Persistent paper-trade log for simulated execution review.",
+    "talos": "Persistent autonomous local-only Talos trade log for simulated execution.",
 }
 TRADE_STATUS_OPTIONS = ["open", "closed", "expired", "cancelled"]
 TRADE_PROFILE_OPTIONS = ["Legacy", "Aggressive", "Fortress", "Standard", "Prime", "Subprime"]
@@ -228,6 +229,8 @@ TRADE_FORM_FIELDS = [
     "max_theoretical_risk",
     "risk_efficiency",
     "target_em",
+    "prefill_source",
+    "automation_status",
     "fallback_used",
     "fallback_rule_name",
     "short_delta",
@@ -421,6 +424,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     performance_service = service_bundle.performance_service
     performance_engine = service_bundle.performance_engine
     open_trade_manager = service_bundle.open_trade_manager
+    talos_service = service_bundle.talos_service
     trade_notification_repository = build_trade_notification_repository(app, trade_store)
     trade_notification_repository.initialize()
     global_notification_settings_repository = build_global_notification_settings_repository(app, trade_store)
@@ -448,6 +452,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     app.extensions["kairos_sim_service"] = kairos_sim_service
     app.extensions["kairos_scenario_repository"] = kairos_scenario_repository
     app.extensions["kairos_scenario_repository_backend"] = kairos_scenario_repository_backend
+    app.extensions["talos_service"] = talos_service
     app.extensions["import_preview_repository"] = import_preview_repository
     app.extensions["workflow_state"] = workflow_state
     app.extensions["request_identity_resolver"] = request_identity_resolver
@@ -484,6 +489,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
                 market_data_service,
                 snapshot_overrides=getattr(g, "startup_menu_snapshot_overrides", None),
             ),
+            "delphi_routes": build_delphi_route_map(hosted=app.config.get("RUNTIME_TARGET") == "hosted"),
             "app_identity": {
                 "display_name": app.config["APP_DISPLAY_NAME"],
                 "page_kicker": app.config["APP_PAGE_KICKER"],
@@ -499,11 +505,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             return redirect(url_for("hosted_device_launch"))
         if request.method == "POST":
             return app.view_functions["research"]()
-
-        return render_template(
-            "home.html",
-            info_message=pop_status_message(),
-        )
+        return redirect(url_for("open_trade_management_page"))
 
     def render_research_page(
         *,
@@ -2762,6 +2764,54 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         )
         return response
 
+    @app.get("/talos")
+    def talos_dashboard_page() -> str:
+        if app.config.get("RUNTIME_TARGET") == "hosted":
+            abort(404)
+        talos_payload = talos_service.get_dashboard_payload()
+        g.startup_menu_snapshot_overrides = dict(talos_payload.get("header_market_snapshots") or {})
+        return render_template(
+            "talos.html",
+            talos_payload=talos_payload,
+            info_message=pop_status_message(),
+        )
+
+    @app.post("/talos/run-cycle")
+    def talos_run_cycle() -> Any:
+        if app.config.get("RUNTIME_TARGET") == "hosted":
+            abort(404)
+        payload = talos_service.run_cycle(trigger_reason="manual")
+        set_status_message(
+            f"Talos cycle completed with {payload.get('open_trade_count') or 0} open Talos trade(s).",
+            level="info",
+        )
+        return redirect(url_for("talos_dashboard_page"))
+
+    @app.post("/talos/reset")
+    def talos_reset() -> Any:
+        if app.config.get("RUNTIME_TARGET") == "hosted":
+            abort(404)
+        raw_starting_balance = str(request.form.get("new_starting_balance") or "").strip()
+        try:
+            new_starting_balance = float(raw_starting_balance)
+        except (TypeError, ValueError):
+            new_starting_balance = 0.0
+        if new_starting_balance <= 0:
+            set_status_message(
+                "Talos reset requires a new starting balance greater than zero. No Talos trades or logs were cleared.",
+                level="warning",
+            )
+            return redirect(url_for("talos_dashboard_page"))
+        result = talos_service.reset_state(new_starting_balance=new_starting_balance)
+        set_status_message(
+            (
+                f"Talos reset cleared {result.get('deleted_trade_count') or 0} Talos trade(s), reset the settled starting balance to "
+                f"${new_starting_balance:,.2f}, and archived the prior Talos logs/history at {result.get('archive_path') or 'the Talos recovery folder'}."
+            ),
+            level="warning",
+        )
+        return redirect(url_for("talos_dashboard_page"))
+
     @app.get("/notifications")
     def notifications_settings_page() -> str:
         settings = get_global_notification_settings_repository(app).load_settings()
@@ -3600,6 +3650,7 @@ def build_hosted_empty_trade_page_context(*, trade_mode: str, info_message: Opti
         error_message=None,
         info_message=info_message,
         prefill_active=False,
+        available_trade_modes=("real", "simulated"),
     )
 
 
@@ -3610,6 +3661,12 @@ def render_hosted_journal_page(
     admin_error: Optional[Dict[str, Any]] = None,
     app: Optional[Flask] = None,
 ) -> Any:
+    hosted_context = dict(context)
+    hosted_context["trade_modes"] = [
+        item
+        for item in (context.get("trade_modes") or [])
+        if str(item.get("key") or "") in {"real", "simulated"}
+    ]
     response = render_template(
         "trades.html",
         trade_mode_links={
@@ -3620,7 +3677,7 @@ def render_hosted_journal_page(
         hosted_edit_enabled=True,
         hosted_delete_enabled=True,
         hosted_admin_error=admin_error,
-        **context,
+        **hosted_context,
         **build_hosted_template_context(identity, app=app),
     )
     return (response, 503) if admin_error else response
@@ -3763,11 +3820,13 @@ def build_delphi_route_map(*, hosted: bool = False) -> Dict[str, str]:
         "research": url_for("research"),
         "apollo": url_for("run_apollo", autorun=1),
         "kairos": url_for("kairos_live_page"),
+        "talos": url_for("talos_dashboard_page"),
         "management": url_for("open_trade_management_page"),
         "performance": url_for("performance_dashboard"),
         "journal": url_for("trade_dashboard", trade_mode="real"),
         "journal_real": url_for("trade_dashboard", trade_mode="real"),
         "journal_simulated": url_for("trade_dashboard", trade_mode="simulated"),
+        "journal_talos": url_for("trade_dashboard", trade_mode="talos"),
         "open_trades": url_for("open_trade_management_page"),
         "notifications": url_for("notifications_settings_page"),
         "performance_data": url_for("performance_dashboard_data"),
@@ -4100,6 +4159,18 @@ def build_hosted_mobile_shell_context(
     desktop_routes = build_delphi_route_map(hosted=True)
     mobile_routes = build_hosted_mobile_route_map()
     trade_store = get_trade_store(app)
+    provider_meta = get_market_data_service(app).get_provider_metadata()
+    provider_name = str(provider_meta.get("live_provider_name") or provider_meta.get("provider_name") or "Schwab").strip() or "Schwab"
+    requires_auth = bool(provider_meta.get("requires_auth"))
+    provider_authenticated = bool(provider_meta.get("authenticated", True))
+    mobile_next_path = request.full_path if has_request_context() else mobile_routes.get("home", "/hosted/mobile")
+    mobile_schwab = {
+        "provider_name": provider_name,
+        "requires_auth": requires_auth,
+        "connected": (not requires_auth) or provider_authenticated,
+        "status_label": "Connected" if (not requires_auth) or provider_authenticated else "Login required",
+        "connect_url": build_hosted_login_url(get_hosted_device_branch(default="mobile"), next_path=mobile_next_path),
+    }
     performance_payload: Dict[str, Any] = build_dashboard_payload([], filters=performance_ui_filters)
     if resolved_tab == "performance":
         performance_payload = build_hosted_performance_dashboard(filters=performance_ui_filters, app=app)
@@ -4161,6 +4232,7 @@ def build_hosted_mobile_shell_context(
         "mobile_apollo_action": apollo_action,
         "mobile_kairos_action": kairos_action,
         "mobile_identity": identity,
+        "mobile_schwab": mobile_schwab,
         "mobile_next_trade_number": trade_store.next_trade_number(),
     }
 
@@ -5244,6 +5316,7 @@ def build_trade_page_context(
     hosted_prefill_enabled: bool = False,
     import_preview: Optional[Dict[str, Any]] = None,
     import_journal_name: str = JOURNAL_NAME_DEFAULT,
+    available_trade_modes: Optional[list[str] | tuple[str, ...]] = None,
 ) -> Dict[str, Any]:
     normalized_mode = resolve_trade_mode(trade_mode)
     loaded_trades = store.list_trades(normalized_mode)
@@ -5276,6 +5349,7 @@ def build_trade_page_context(
                 "description": TRADE_MODE_DESCRIPTIONS.get(key, ""),
             }
             for key, label in TRADE_MODE_LABELS.items()
+            if available_trade_modes is None or key in available_trade_modes
         ],
         "filter_groups": TRADE_FILTER_GROUPS,
         "system_name_options": list(TRADE_SYSTEM_OPTIONS),

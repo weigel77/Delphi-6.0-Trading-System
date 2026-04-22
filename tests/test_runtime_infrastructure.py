@@ -28,8 +28,8 @@ class RuntimeInfrastructureTest(unittest.TestCase):
             self.assertEqual(infrastructure.storage.import_preview_root, Path(app.instance_path))
             self.assertEqual(app.config["TRADE_DATABASE"], str(database_path))
             self.assertEqual(app.config["KAIROS_REPLAY_STORAGE_DIR"], str(replay_path))
-            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 7.0 Local")
-            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 7.0")
+            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 7.1 Local")
+            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 7.1")
             self.assertIn("talos_service", app.extensions)
 
     def test_hosted_runtime_skeleton_reuses_local_storage_boundary_without_changing_routes(self):
@@ -52,8 +52,8 @@ class RuntimeInfrastructureTest(unittest.TestCase):
 
             self.assertEqual(infrastructure.host_kind, "hosted")
             self.assertEqual(infrastructure.settings.runtime_target, "hosted")
-            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 6.4.1")
-            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 6.4.1")
+            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 7.1")
+            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 7.1")
             self.assertEqual(app.config["SESSION_COOKIE_NAME"], "delphi5_hosted_session")
             self.assertEqual(app.config["OAUTH_SESSION_NAMESPACE"], "delphi5hosted")
             self.assertIsNotNone(infrastructure.supabase_context)
@@ -141,6 +141,6 @@ class RuntimeInfrastructureTest(unittest.TestCase):
                 }
             )
 
-            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 6.4.1")
-            self.assertEqual(app.config["APP_PAGE_KICKER"], "Delphi 6.4.1")
-            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 6.4.1")
+            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 7.1")
+            self.assertEqual(app.config["APP_PAGE_KICKER"], "Delphi 7.1")
+            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 7.1")

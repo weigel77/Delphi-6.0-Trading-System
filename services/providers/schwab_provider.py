@@ -21,6 +21,7 @@ from .base_provider import (
     ProviderAuthRequiredError,
     ProviderError,
     ProviderNotImplementedError,
+    ProviderRateLimitError,
     ProviderReauthenticationRequiredError,
 )
 
@@ -59,6 +60,10 @@ class SchwabProvider(BaseMarketDataProvider):
     }
     REGULAR_SESSION_START = time(8, 30)
     REGULAR_SESSION_END = time(15, 0)
+    OPTION_CHAIN_MAX_ATTEMPTS = 2
+    REQUEST_LOG_DEDUPE_SECONDS = 30
+    RATE_LIMIT_BACKOFF_SECONDS = 60
+    AUTH_BACKOFF_SECONDS = 45
 
     def __init__(
         self,
@@ -71,6 +76,8 @@ class SchwabProvider(BaseMarketDataProvider):
         self.auth_service = auth_service or SchwabAuthService(config)
         self.market_calendar_service = MarketCalendarService(config)
         self.last_option_chain_diagnostics: Dict[str, Any] = {}
+        self._request_backoffs: Dict[str, Dict[str, Any]] = {}
+        self._log_suppression: Dict[str, datetime] = {}
 
     def get_metadata(self) -> Dict[str, Any]:
         """Return provider metadata including Schwab auth state."""
@@ -242,7 +249,7 @@ class SchwabProvider(BaseMarketDataProvider):
                 start_at=session_window["start_utc"],
                 end_at=session_window["end_utc"],
             )
-            LOGGER.info(
+            LOGGER.debug(
                 "Schwab intraday request | symbol=%s | endpoint=%s | requested_session_date=%s | resolved_session_date=%s | caller=%s | params=%s",
                 schwab_symbol,
                 endpoint,
@@ -318,27 +325,47 @@ class SchwabProvider(BaseMarketDataProvider):
 
         endpoint = f"{self.config.schwab_base_url}/chains"
         final_symbol = self._resolve_option_chain_symbol(symbol)
+        caller_context = self._describe_option_chain_request_caller()
+        resolved_target_date, normalization_reason = self._resolve_option_chain_expiration(target_date)
         diagnostics: Dict[str, Any] = {
             "endpoint": endpoint,
             "final_symbol": final_symbol,
-            "final_expiration": target_date.isoformat(),
+            "requested_expiration": target_date.isoformat(),
+            "final_expiration": resolved_target_date.isoformat(),
             "attempt_used": None,
             "raw_params_sent": {},
             "attempts": [],
             "error_detail": None,
             "failure_category": None,
             "failure_label": None,
+            "caller": caller_context["caller"],
+            "caller_chain": caller_context["chain"],
+            "expiration_normalized": bool(normalization_reason),
+            "expiration_normalization_reason": normalization_reason,
         }
         self.last_option_chain_diagnostics = diagnostics
 
-        for attempt_label, params in self._build_option_chain_attempts(symbol=final_symbol, expiration_date=target_date):
+        if normalization_reason:
+            LOGGER.warning(
+                "Schwab option-chain expiration normalized | caller=%s | requested_expiration=%s | resolved_expiration=%s | reason=%s",
+                caller_context["chain"],
+                target_date.isoformat(),
+                resolved_target_date.isoformat(),
+                normalization_reason,
+            )
+
+        for attempt_index, (attempt_label, params) in enumerate(
+            self._build_option_chain_attempts(symbol=final_symbol, expiration_date=resolved_target_date),
+            start=1,
+        ):
+            if attempt_index > self.OPTION_CHAIN_MAX_ATTEMPTS:
+                break
             diagnostics["raw_params_sent"] = dict(params)
-            print("SCHWAB OPTION CHAIN PARAMS:", params)
-            LOGGER.info(
+            LOGGER.debug(
                 "Schwab option-chain request | symbol=%s | endpoint=%s | expiration_target=%s | attempt=%s | params=%s",
                 final_symbol,
                 endpoint,
-                target_date.isoformat(),
+                resolved_target_date.isoformat(),
                 attempt_label,
                 params,
             )
@@ -368,9 +395,13 @@ class SchwabProvider(BaseMarketDataProvider):
                     response=response,
                     params=params,
                     symbol=final_symbol,
-                    target_date=target_date,
+                    target_date=resolved_target_date,
                     attempt_label=attempt_label,
+                    failure_detail=failure_detail,
                 )
+                if failure_detail["failure_category"] == "malformed-request":
+                    diagnostics["attempt_used"] = attempt_label
+                    break
                 continue
 
             payload = response.json()
@@ -388,7 +419,12 @@ class SchwabProvider(BaseMarketDataProvider):
             diagnostics["attempt_used"] = attempt_label
             self.last_option_chain_diagnostics = diagnostics
 
-            normalized = self._normalize_option_chain_payload(payload, target_date, requested_symbol=final_symbol)
+            normalized = self._normalize_option_chain_payload(
+                payload,
+                requested_target_date=target_date,
+                resolved_target_date=resolved_target_date,
+                requested_symbol=final_symbol,
+            )
             normalized["request_diagnostics"] = diagnostics
             return normalized
 
@@ -400,9 +436,9 @@ class SchwabProvider(BaseMarketDataProvider):
         """Run a raw Schwab option-chain request for debugging and return diagnostics."""
         endpoint = f"{self.config.schwab_base_url}/chains"
         final_symbol = self._resolve_option_chain_symbol(symbol)
-        attempts = self._build_option_chain_attempts(symbol=final_symbol, expiration_date=target_date)
+        resolved_target_date, _ = self._resolve_option_chain_expiration(target_date)
+        attempts = self._build_option_chain_attempts(symbol=final_symbol, expiration_date=resolved_target_date)
         attempt_label, params = attempts[0] if minimal_only else attempts[0]
-        print("SCHWAB OPTION CHAIN PARAMS:", params)
         response = self._authorized_get(endpoint, params=params)
         try:
             payload = response.json()
@@ -411,7 +447,7 @@ class SchwabProvider(BaseMarketDataProvider):
         return {
             "endpoint": endpoint,
             "symbol": final_symbol,
-            "expiration": target_date.isoformat(),
+            "expiration": resolved_target_date.isoformat(),
             "attempt": attempt_label,
             "params": params,
             "status_code": response.status_code,
@@ -498,8 +534,7 @@ class SchwabProvider(BaseMarketDataProvider):
                 "toDate": self._format_option_expiration_date(expiration_date),
             }
         )
-        attempt_c = self._clean_option_chain_params({"symbol": self._resolve_option_chain_symbol(symbol)})
-        return [("Attempt A", attempt_a), ("Attempt B", attempt_b), ("Attempt C", attempt_c)]
+        return [("Attempt A", attempt_a), ("Attempt B", attempt_b)]
 
     def _resolve_option_chain_symbol(self, symbol: str) -> str:
         """Normalize the chain symbol to the same format used by quotes."""
@@ -552,25 +587,44 @@ class SchwabProvider(BaseMarketDataProvider):
         symbol: str,
         target_date: date,
         attempt_label: str,
+        failure_detail: Dict[str, Any],
     ) -> None:
-        """Log the full failed option-chain response details."""
-        try:
-            parsed_json = response.json()
-        except Exception:
-            parsed_json = None
-        print("SCHWAB OPTION CHAIN FAILURE STATUS:", response.status_code)
-        print("SCHWAB OPTION CHAIN FAILURE BODY:", self._safe_response_text(response))
-        print("SCHWAB OPTION CHAIN FAILURE JSON:", parsed_json)
-        LOGGER.warning(
-            "Schwab option-chain request failed | symbol=%s | expiration_target=%s | attempt=%s | params=%s | status=%s | body=%s | json=%s",
+        """Log a concise failed option-chain response summary."""
+        self._log_once(
+            f"option-chain-failure:{symbol}:{target_date.isoformat()}:{attempt_label}:{response.status_code}",
+            logging.WARNING,
+            "Schwab option-chain request failed | symbol=%s | expiration_target=%s | attempt=%s | params=%s | status=%s | category=%s | detail=%s",
             symbol,
             target_date.isoformat(),
             attempt_label,
             params,
             response.status_code,
-            self._safe_response_text(response),
-            json.dumps(parsed_json, default=str) if parsed_json is not None else "null",
+            failure_detail.get("failure_category") or "unknown-error",
+            failure_detail.get("error_detail") or f"HTTP {response.status_code}",
         )
+
+    def _resolve_option_chain_expiration(self, requested_expiration: date) -> tuple[date, str | None]:
+        local_now = self._now()
+        resolved_expiration = requested_expiration
+        reasons: list[str] = []
+        session_date = local_now.date()
+
+        if resolved_expiration < session_date:
+            resolved_expiration = session_date
+            reasons.append(f"requested expiration was before the current session date {session_date.isoformat()}")
+
+        if not self.market_calendar_service.is_tradable_market_day(resolved_expiration):
+            closure_reason = self.market_calendar_service.get_holiday_name(resolved_expiration) or "weekend"
+            rolled_expiration = self.market_calendar_service.get_next_or_same_tradable_market_day(resolved_expiration)
+            reasons.append(
+                f"requested expiration {resolved_expiration.isoformat()} was {closure_reason}; rolled forward to {rolled_expiration.isoformat()}"
+            )
+            resolved_expiration = rolled_expiration
+
+        return resolved_expiration, "; ".join(reasons) if reasons else None
+
+    def _describe_option_chain_request_caller(self) -> Dict[str, str]:
+        return self._describe_intraday_request_caller()
 
     @staticmethod
     def _build_intraday_params(
@@ -590,17 +644,47 @@ class SchwabProvider(BaseMarketDataProvider):
         }
 
     def _authorized_get(self, endpoint: str, *, params: Dict[str, Any]) -> requests.Response:
-        access_token = self.auth_service.get_valid_access_token()
+        request_scope_key = self._request_scope_key(endpoint)
+        request_signature = self._request_signature(endpoint, params)
+        self._raise_if_backed_off(request_scope_key)
+        self._raise_if_backed_off(request_signature)
+        try:
+            access_token = self.auth_service.get_valid_access_token()
+        except (ProviderAuthRequiredError, ProviderReauthenticationRequiredError) as exc:
+            self._record_backoff(request_scope_key, seconds=self.AUTH_BACKOFF_SECONDS, error=exc)
+            self._record_backoff(request_signature, seconds=self.AUTH_BACKOFF_SECONDS, error=exc)
+            self._log_once(
+                f"auth-required:{request_scope_key}",
+                logging.INFO,
+                "Schwab request suppressed until login is restored | endpoint=%s | detail=%s",
+                endpoint,
+                str(exc),
+            )
+            raise
         response = requests.get(
             endpoint,
             params=params,
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=30,
         )
+        if response.status_code == 429:
+            rate_limit_error = ProviderRateLimitError("Schwab rate-limited the request. Cooling down briefly before retrying.")
+            self._record_backoff(request_scope_key, seconds=self.RATE_LIMIT_BACKOFF_SECONDS, error=rate_limit_error)
+            self._record_backoff(request_signature, seconds=self.RATE_LIMIT_BACKOFF_SECONDS, error=rate_limit_error)
+            self._log_once(
+                f"rate-limit:{request_scope_key}",
+                logging.WARNING,
+                "Schwab request rate-limited | endpoint=%s | params=%s | status=%s",
+                endpoint,
+                params,
+                response.status_code,
+            )
         if response.status_code != 401:
             return response
 
-        LOGGER.warning(
+        self._log_once(
+            f"unauthorized:{request_scope_key}",
+            logging.WARNING,
             "Schwab request unauthorized; attempting token refresh | endpoint=%s | params=%s",
             endpoint,
             params,
@@ -614,8 +698,49 @@ class SchwabProvider(BaseMarketDataProvider):
         )
         if response.status_code == 401:
             self.auth_service.clear_tokens()
-            raise ProviderReauthenticationRequiredError("Schwab authentication expired. Please log in again.")
+            reauth_error = ProviderReauthenticationRequiredError("Schwab authentication expired. Please log in again.")
+            self._record_backoff(request_scope_key, seconds=self.AUTH_BACKOFF_SECONDS, error=reauth_error)
+            self._record_backoff(request_signature, seconds=self.AUTH_BACKOFF_SECONDS, error=reauth_error)
+            raise reauth_error
         return response
+
+    def _request_signature(self, endpoint: str, params: Dict[str, Any]) -> str:
+        return f"{self._request_scope_key(endpoint)}:{json.dumps(params, sort_keys=True, default=str)}"
+
+    @staticmethod
+    def _request_scope_key(endpoint: str) -> str:
+        return endpoint.rsplit("/", 1)[-1].lower().strip()
+
+    def _record_backoff(self, key: str, *, seconds: int, error: Exception) -> None:
+        self._request_backoffs[key] = {
+            "until": datetime.now(self.display_timezone) + timedelta(seconds=max(seconds, 1)),
+            "error_type": type(error),
+            "message": str(error),
+        }
+
+    def _raise_if_backed_off(self, key: str) -> None:
+        payload = self._request_backoffs.get(key)
+        if not payload:
+            return
+        until = payload.get("until")
+        if not isinstance(until, datetime):
+            self._request_backoffs.pop(key, None)
+            return
+        now = datetime.now(self.display_timezone)
+        if now >= until:
+            self._request_backoffs.pop(key, None)
+            return
+        error_type = payload.get("error_type") or ProviderError
+        message = payload.get("message") or "Schwab request is temporarily throttled."
+        raise error_type(message)
+
+    def _log_once(self, key: str, level: int, message: str, *args: Any) -> None:
+        now = datetime.now(self.display_timezone)
+        last_logged_at = self._log_suppression.get(key)
+        if last_logged_at is not None and (now - last_logged_at).total_seconds() < self.REQUEST_LOG_DEDUPE_SECONDS:
+            return
+        self._log_suppression[key] = now
+        LOGGER.log(level, message, *args)
 
     @staticmethod
     def _extract_quote_container(payload: Dict[str, Any], symbol: str) -> Dict[str, Any]:
@@ -673,15 +798,21 @@ class SchwabProvider(BaseMarketDataProvider):
             "Volume": self._coerce_float(candle.get("volume")),
         }
 
-    def _normalize_option_chain_payload(self, payload: Dict[str, Any], target_date: date, requested_symbol: str) -> Dict[str, Any]:
+    def _normalize_option_chain_payload(
+        self,
+        payload: Dict[str, Any],
+        requested_target_date: date,
+        resolved_target_date: date,
+        requested_symbol: str,
+    ) -> Dict[str, Any]:
         expiration_dates = self._extract_expiration_dates(payload)
-        calls = self._flatten_option_map(payload.get("callExpDateMap"), target_date, put_call="CALL")
-        puts = self._flatten_option_map(payload.get("putExpDateMap"), target_date, put_call="PUT")
+        calls = self._flatten_option_map(payload.get("callExpDateMap"), resolved_target_date, put_call="CALL")
+        puts = self._flatten_option_map(payload.get("putExpDateMap"), resolved_target_date, put_call="PUT")
         return {
             "underlying_symbol": "SPX",
             "requested_symbol": requested_symbol,
-            "expiration_target": target_date,
-            "expiration_date": target_date,
+            "expiration_target": requested_target_date,
+            "expiration_date": resolved_target_date,
             "expiration_dates": expiration_dates,
             "expiration_count": len(expiration_dates),
             "underlying_price": self._coerce_float(payload.get("underlyingPrice")),
@@ -736,10 +867,11 @@ class SchwabProvider(BaseMarketDataProvider):
         """Convert a pandas row into a plain dictionary."""
         result: Dict[str, Any] = {}
         for key, value in row.items():
+            normalized_key = str(key)
             if isinstance(value, float):
-                result[key] = round(value, 2)
+                result[normalized_key] = round(value, 2)
             else:
-                result[key] = value
+                result[normalized_key] = value
         return result
 
     @staticmethod
@@ -815,7 +947,9 @@ class SchwabProvider(BaseMarketDataProvider):
             session_end_local = min(local_now, session_end_local)
 
         if clamp_reason:
-            LOGGER.warning(
+            self._log_once(
+                f"intraday-clamp:{caller_context['chain']}:{session_date.isoformat()}:{resolved_session_date.isoformat()}",
+                logging.WARNING,
                 "Schwab intraday session clamped | caller=%s | requested_session_date=%s | resolved_session_date=%s | local_now=%s | reason=%s",
                 caller_context["chain"],
                 session_date.isoformat(),
@@ -825,7 +959,9 @@ class SchwabProvider(BaseMarketDataProvider):
             )
 
         if session_end_local < session_start_local:
-            LOGGER.warning(
+            self._log_once(
+                f"intraday-range-normalized:{caller_context['chain']}:{session_date.isoformat()}:{resolved_session_date.isoformat()}",
+                logging.WARNING,
                 "Schwab intraday range normalized | caller=%s | requested_session_date=%s | resolved_session_date=%s | start_local=%s | end_local=%s",
                 caller_context["chain"],
                 session_date.isoformat(),
@@ -902,6 +1038,9 @@ class SchwabProvider(BaseMarketDataProvider):
             "caller": caller,
             "chain": " -> ".join(chain_items) if chain_items else "unknown",
         }
+
+    def _now(self) -> datetime:
+        return datetime.now(self.display_timezone)
 
     @staticmethod
     def _coerce_float(value: Any) -> float | None:

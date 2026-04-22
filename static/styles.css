@@ -54,6 +54,559 @@ td {
         grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 }
+.management-row-real {
+    background: rgba(255, 255, 255, 0.96);
+}
+.management-row-simulated {
+    background: rgba(225, 239, 255, 0.68);
+}
+.management-row-talos {
+    background: rgba(241, 243, 246, 0.88);
+}
+.talos-engine-header {
+    align-items: start;
+}
+.talos-subtitle-kicker {
+    margin: 0 0 4px;
+    font-size: 0.72rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: #8e5c20;
+}
+.talos-runtime-status-card-running,
+.talos-score-band-elite,
+.talos-band-item-elite {
+    background: linear-gradient(180deg, #fff7df 0%, #fde7b2 100%);
+    border-color: #e7c778;
+}
+.talos-runtime-status-card-ready,
+.talos-score-band-strong,
+.talos-band-item-strong {
+    background: linear-gradient(180deg, #eef8ff 0%, #d8eaff 100%);
+    border-color: #b8d2f6;
+}
+.talos-runtime-status-card-waiting,
+.talos-runtime-status-card-final-pass,
+.talos-score-band-acceptable,
+.talos-band-item-acceptable {
+    background: linear-gradient(180deg, #f4f6f8 0%, #e5eaef 100%);
+    border-color: #ced6df;
+}
+.talos-runtime-status-card-paused,
+.talos-runtime-status-card-idle,
+.talos-score-band-weak,
+.talos-band-item-weak {
+    background: linear-gradient(180deg, #fff2f2 0%, #f5dfe1 100%);
+    border-color: #dfbdc0;
+}
+.talos-score-band-reject,
+.talos-band-item-reject {
+    background: linear-gradient(180deg, #ffe4e4 0%, #f6c9cc 100%);
+    border-color: #d99aa0;
+}
+.talos-policy-strip,
+.talos-visual-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 8px;
+    min-width: 0;
+}
+.talos-policy-text {
+    margin: 0;
+    font-size: 0.86rem;
+    min-height: 430px;
+    color: var(--muted);
+}
+.talos-reset-details {
+    min-width: 0;
+}
+.talos-reset-details summary,
+.talos-model-details summary {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-weight: 700;
+    padding: 10px 0;
+    cursor: pointer;
+}
+.talos-reset-details summary::-webkit-details-marker,
+.talos-model-details summary::-webkit-details-marker {
+    display: none;
+}
+.talos-equity-chart {
+    min-height: 260px;
+}
+.talos-commitment-meta,
+.talos-equity-meta,
+.talos-penalty-note {
+    margin-top: auto;
+}
+.talos-reset-card,
+.talos-model-details[open] {
+    margin-top: 10px;
+}
+.talos-title-panel,
+.talos-visual-panel,
+.talos-performance-panel {
+    gap: 14px;
+}
+.talos-reset-card {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: #fbfdff;
+    padding: 10px;
+}
+.talos-reset-form {
+    margin-top: 8px;
+}
+.talos-chart-card {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 420px;
+    height: 100%;
+}
+
+.talos-orders-card .result-header,
+.talos-commitment-card .result-header,
+.talos-equity-card .result-header {
+    min-height: 72px;
+}
+
+.talos-orders-card,
+.talos-commitment-card,
+.talos-equity-card {
+    min-height: 430px;
+}
+.talos-pie-shell,
+.talos-commitment-gauge {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    min-height: 240px;
+}
+.talos-pie-svg {
+    width: 100%;
+    max-width: 360px;
+    overflow: visible;
+}
+.talos-pie-shadow {
+    fill: rgba(16, 38, 63, 0.12);
+}
+.talos-pie-rim {
+    fill: none;
+    stroke: rgba(255, 255, 255, 0.55);
+    stroke-width: 2;
+}
+.talos-pie-label {
+    fill: #111111;
+    font-size: 0.75rem;
+    font-weight: 800;
+    letter-spacing: 0.01em;
+}
+.talos-commitment-meta,
+.talos-equity-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+.talos-commitment-meta span {
+    color: #52677f;
+    font-weight: 600;
+}
+.talos-donut-wrap {
+    position: relative;
+    display: grid;
+    place-items: center;
+    min-height: 220px;
+    margin: 8px 0 12px;
+}
+.talos-donut-chart {
+    width: 190px;
+    height: 190px;
+    border-radius: 50%;
+    position: relative;
+    box-shadow: inset 0 0 0 1px rgba(16, 34, 58, 0.06);
+}
+.talos-donut-chart::after {
+    content: "";
+    position: absolute;
+    inset: 28px;
+    border-radius: 50%;
+    background: #ffffff;
+}
+.talos-donut-center {
+    position: absolute;
+    display: grid;
+    gap: 2px;
+    text-align: center;
+}
+.talos-donut-center strong {
+    font-size: 1.8rem;
+    color: var(--accent-dark);
+}
+.talos-donut-center span,
+.talos-equity-meta span {
+    color: var(--muted);
+}
+.talos-legend-list,
+.talos-band-list {
+    display: grid;
+    gap: 8px;
+}
+.talos-legend-item,
+.talos-band-item {
+    display: grid;
+    grid-template-columns: auto 1fr auto auto;
+    gap: 8px;
+    align-items: center;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 8px 10px;
+    background: #ffffff;
+}
+.talos-band-item {
+    grid-template-columns: 1fr auto;
+}
+.talos-legend-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+}
+.talos-equity-meta {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+    font-size: 0.78rem;
+}
+.talos-equity-chart {
+    width: 100%;
+    height: auto;
+    min-height: 220px;
+    background: linear-gradient(180deg, #fbfdff 0%, #f3f7fc 100%);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+}
+.talos-equity-area {
+    fill: rgba(45, 108, 223, 0.12);
+}
+.talos-equity-line {
+    fill: none;
+    stroke: #2d6cdf;
+    stroke-width: 3;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.talos-equity-point {
+    fill: #ef8f35;
+    stroke: #ffffff;
+    stroke-width: 2;
+}
+.talos-open-row td {
+    vertical-align: top;
+}
+.talos-system-cell,
+.talos-exit-plan-cell,
+.talos-decision-cell {
+    display: grid;
+    gap: 4px;
+}
+.talos-system-cell span,
+.talos-exit-plan-cell span,
+.talos-decision-cell span,
+.talos-model-formula {
+    color: var(--muted);
+}
+.talos-score-band {
+    display: inline-flex;
+    width: fit-content;
+    align-items: center;
+    padding: 3px 8px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    font-size: 0.74rem;
+    font-weight: 700;
+    color: #203449;
+}
+.talos-model-card-wide {
+    grid-column: 1 / -1;
+}
+.talos-model-details {
+    display: grid;
+    gap: 10px;
+}
+
+.talos-title-panel {
+    background: linear-gradient(180deg, #c79350 0%, #e0b277 54%, #f0d2a8 100%);
+    border-color: rgba(103, 63, 21, 0.34);
+    box-shadow: inset 0 1px 0 rgba(255, 248, 235, 0.28);
+}
+
+.talos-title-grid {
+    display: grid;
+    grid-template-columns: minmax(260px, 1.2fr) minmax(360px, 1.5fr) minmax(260px, 1fr);
+    gap: 14px;
+    align-items: stretch;
+}
+
+.talos-title-copy h2 {
+    margin: 0;
+    color: #17110a;
+}
+
+.talos-bronze-kicker,
+.talos-title-subtitle {
+    margin: 0;
+    color: #23180d;
+}
+
+.talos-bronze-kicker {
+    margin-bottom: 6px;
+    font-size: 0.76rem;
+    font-weight: 800;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+}
+
+.talos-title-subtitle {
+    margin-top: 8px;
+    font-size: 0.98rem;
+    line-height: 1.45;
+}
+
+.talos-title-stamps {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    align-self: stretch;
+}
+
+.talos-title-stamp,
+.talos-last-run-stamp {
+    min-height: 100%;
+    border-color: rgba(103, 63, 21, 0.24);
+    background: rgba(255, 246, 232, 0.9);
+}
+
+.talos-title-stamp .summary-value,
+.talos-last-run-stamp .summary-value {
+    color: #111111;
+}
+
+.talos-title-side {
+    display: grid;
+    gap: 10px;
+}
+
+.talos-reset-details {
+    min-width: 0;
+}
+
+.talos-visual-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    align-items: stretch;
+}
+
+.talos-penalty-note {
+    border: 1px solid rgba(194, 65, 65, 0.18);
+    border-radius: 12px;
+    padding: 10px 12px;
+    background: rgba(255, 244, 244, 0.92);
+}
+
+.talos-penalty-note strong {
+    display: block;
+    color: #8f2e2e;
+}
+
+.talos-penalty-note span {
+    display: block;
+    margin-top: 2px;
+    font-weight: 700;
+    color: #b14545;
+}
+
+.talos-performance-panel {
+    background: linear-gradient(180deg, #fbfdff 0%, #f6f9fd 100%);
+}
+
+.talos-performance-strip {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.talos-open-table-v71 {
+    min-width: 1260px;
+}
+
+.talos-open-table-v71 th,
+.talos-open-table-v71 td {
+    padding: 8px 10px;
+    font-size: 0.78rem;
+    line-height: 1.28;
+}
+
+.talos-open-table-v71 col.talos-col-trade-number {
+    width: 6%;
+}
+
+.talos-open-table-v71 col.talos-col-system {
+    width: 13%;
+}
+
+.talos-open-table-v71 col.talos-col-expiration {
+    width: 10%;
+}
+
+.talos-open-table-v71 col.talos-col-qty {
+    width: 5%;
+}
+
+.talos-open-table-v71 col.talos-col-strikes {
+    width: 9%;
+}
+
+.talos-open-table-v71 col.talos-col-status {
+    width: 9%;
+}
+
+.talos-open-table-v71 col.talos-col-score {
+    width: 12%;
+}
+
+.talos-open-table-v71 col.talos-col-exit-plan {
+    width: 24%;
+}
+
+.talos-open-table-v71 col.talos-col-pnl {
+    width: 8%;
+}
+
+.talos-score-cell,
+.talos-strike-cell,
+.talos-exit-plan-stack,
+.talos-detail-lines {
+    display: grid;
+    gap: 3px;
+}
+
+.talos-score-cell strong,
+.talos-strike-cell strong {
+    color: var(--text);
+}
+
+.talos-strike-cell span,
+.talos-detail-lines p {
+    margin: 0;
+    color: #536983;
+}
+
+.talos-gate-chip {
+    display: inline-flex;
+    width: fit-content;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 800;
+}
+
+.talos-gate-chip-ready {
+    background: rgba(31, 143, 95, 0.12);
+    color: #1f8f5f;
+}
+
+.talos-gate-chip-blocked {
+    background: rgba(194, 65, 65, 0.12);
+    color: #b14545;
+}
+
+.talos-exit-gate {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) repeat(3, auto);
+    gap: 6px;
+    align-items: center;
+    padding: 6px 8px;
+    border: 1px solid rgba(23, 48, 74, 0.08);
+    border-radius: 10px;
+    background: rgba(248, 251, 255, 0.92);
+    font-size: 0.74rem;
+}
+
+.talos-exit-gate strong {
+    color: var(--text);
+}
+
+.talos-exit-gate span {
+    color: #536983;
+}
+
+.talos-exit-gate-executed {
+    background: rgba(194, 65, 65, 0.12);
+    border-color: rgba(194, 65, 65, 0.2);
+}
+
+.talos-exit-gate-executed strong,
+.talos-exit-gate-executed span {
+    color: #8f2e2e;
+}
+
+.talos-exit-gate-due {
+    background: rgba(255, 243, 223, 0.92);
+    border-color: rgba(185, 122, 54, 0.2);
+}
+
+.talos-detail-row td {
+    padding-top: 0;
+    background: rgba(248, 251, 255, 0.82);
+}
+
+.talos-trade-detail-panel {
+    border-top: 1px solid rgba(23, 48, 74, 0.08);
+    padding-top: 6px;
+}
+
+.talos-trade-detail-panel summary {
+    cursor: pointer;
+    width: fit-content;
+    color: #7c5426;
+    font-weight: 700;
+    font-size: 0.76rem;
+}
+
+.talos-trade-detail-body {
+    margin-top: 8px;
+    display: grid;
+    gap: 8px;
+}
+
+.talos-metric-strip-detail span {
+    background: rgba(185, 122, 54, 0.12);
+    color: #7c5426;
+}
+@media (max-width: 1120px) {
+    .talos-policy-strip,
+    .talos-visual-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .talos-title-grid,
+    .talos-title-stamps,
+    .talos-performance-strip,
+    .talos-visual-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .talos-orders-card,
+    .talos-commitment-card,
+    .talos-equity-card {
+        min-height: auto;
+    }
+}
 
 .page-shell {
     max-width: 1720px;
@@ -153,6 +706,20 @@ h2 {
     display: block;
 }
 
+.delphi-header-emblem-image-shell {
+    padding: 6px;
+    overflow: hidden;
+}
+
+.delphi-header-emblem-image {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: contain;
+    object-position: center;
+    border-radius: 16px;
+}
+
 .hero-title-meta {
     display: grid;
     gap: 4px;
@@ -240,7 +807,7 @@ h2 {
 
 .delphi-header-brand {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 14px;
 }
 
@@ -738,7 +1305,7 @@ h2 {
 
 .delphi-header-nav {
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(7, minmax(0, 1fr));
     gap: 10px;
 }
 
@@ -3753,6 +4320,116 @@ button.secondary:hover {
     color: #5b78a8;
 }
 
+.talos-open-table {
+    min-width: 1180px;
+    table-layout: fixed;
+}
+
+.talos-open-table col.talos-col-trade-number {
+    width: 6%;
+}
+
+.talos-open-table col.talos-col-system {
+    width: 7%;
+}
+
+.talos-open-table col.talos-col-profile {
+    width: 8%;
+}
+
+.talos-open-table col.talos-col-status {
+    width: 8%;
+}
+
+.talos-open-table col.talos-col-action {
+    width: 8%;
+}
+
+.talos-open-table col.talos-col-exit-plan {
+    width: 21%;
+}
+
+.talos-open-table col.talos-col-pnl {
+    width: 8%;
+}
+
+.talos-open-table col.talos-col-decision {
+    width: 34%;
+}
+
+.talos-exit-plan-cell,
+.talos-decision-cell {
+    display: grid;
+    gap: 4px;
+}
+
+.talos-decision-cell strong,
+.talos-exit-plan-cell strong {
+    color: var(--text);
+}
+
+.talos-decision-cell span,
+.talos-exit-plan-cell span,
+.talos-model-formula,
+.talos-weight-item,
+.talos-skip-summary-label {
+    font-size: 0.78rem;
+    line-height: 1.35;
+    color: #536983;
+}
+
+.talos-metric-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.talos-metric-strip span {
+    padding: 4px 6px;
+    border-radius: 999px;
+    background: rgba(31, 111, 235, 0.08);
+    color: #274d7b;
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+
+.talos-model-grid,
+.talos-skip-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.talos-model-card,
+.talos-skip-card {
+    gap: 8px;
+}
+
+.talos-weight-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.talos-weight-item {
+    padding: 10px 12px;
+    border: 1px solid rgba(31, 111, 235, 0.12);
+    border-radius: 12px;
+    background: rgba(248, 251, 255, 0.88);
+}
+
+.talos-skip-details {
+    margin-top: 12px;
+}
+
+.talos-skip-details summary {
+    cursor: pointer;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: #274d7b;
+}
+
 .management-debug-grid {
     display: grid;
     gap: 4px;
@@ -5101,6 +5778,55 @@ tr:hover td {
     font-size: 0.84rem;
 }
 
+.delphi-mobile-header-connection {
+    display: grid;
+    gap: 6px;
+    min-width: 132px;
+    padding: 10px 12px;
+    border-radius: 16px;
+    text-align: right;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+.delphi-mobile-header-connection span {
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(232, 244, 255, 0.76);
+}
+
+.delphi-mobile-header-connection strong {
+    font-size: 0.84rem;
+    color: #ffffff;
+}
+
+.delphi-mobile-header-connection-connected {
+    background: linear-gradient(180deg, rgba(27, 107, 72, 0.34) 0%, rgba(18, 67, 50, 0.26) 100%);
+}
+
+.delphi-mobile-header-connection-disconnected {
+    background: linear-gradient(180deg, rgba(128, 73, 37, 0.36) 0%, rgba(94, 48, 21, 0.24) 100%);
+}
+
+.delphi-mobile-connect-button {
+    justify-self: end;
+    padding: 8px 12px;
+    border-radius: 999px;
+    background: linear-gradient(135deg, #f4d48d 0%, #dba44c 100%);
+    color: #2b1903;
+    font-size: 0.76rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    box-shadow: 0 10px 20px rgba(7, 14, 21, 0.18);
+}
+
+.delphi-mobile-connect-button:hover,
+.delphi-mobile-connect-button:focus-visible {
+    color: #1d0f01;
+    transform: translateY(-1px);
+}
+
 .delphi-mobile-section {
     display: grid;
     gap: 10px;
@@ -5858,6 +6584,15 @@ tr:hover td {
 
     .delphi-mobile-header-badge {
         text-align: left;
+    }
+
+    .delphi-mobile-header-connection {
+        min-width: 0;
+        text-align: left;
+    }
+
+    .delphi-mobile-connect-button {
+        justify-self: start;
     }
 
     .delphi-mobile-market-grid-compact {
@@ -6854,6 +7589,12 @@ tr:hover td {
 
     .management-table {
         min-width: 1024px;
+    }
+
+    .talos-model-grid,
+    .talos-skip-summary-grid,
+    .talos-weight-list {
+        grid-template-columns: minmax(0, 1fr);
     }
 
     .apollo-control-chip-wide {

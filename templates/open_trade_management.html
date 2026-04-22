@@ -86,7 +86,7 @@
                 <div>
                     <h2>Open Positions</h2>
                     {% if not suppress_open_positions_copy %}
-                        <p class="subtle">{% if hosted_mode %}Statuses and action recommendations use the current live option-chain expected move. Hosted Delphi 6.4.1 alert delivery only applies to real trades, but both real and simulated open positions are listed here.{% else %}Statuses and action recommendations use the current live option-chain expected move. Delphi 7.0 local alert delivery only applies to real trades, while real, simulated, and Talos open positions are listed here.{% endif %}</p>
+                        <p class="subtle">{% if hosted_mode %}Statuses and action recommendations use the current live option-chain expected move. Hosted Delphi 6.4.1 alert delivery only applies to real trades, but both real and simulated open positions are listed here.{% else %}Statuses and action recommendations use the current live option-chain expected move. Delphi 7.1 local alert delivery only applies to real trades, while real, simulated, and Talos open positions are listed here.{% endif %}</p>
                     {% endif %}
                 </div>
             </div>
@@ -126,7 +126,7 @@
                         </thead>
                         <tbody>
                             {% for item in management_payload.records %}
-                                <tr>
+                                <tr class="management-row management-row-{{ item.trade_mode|lower }}">
                                     <td>{{ item.trade_number }}</td>
                                     <td>{{ item.system_name }}</td>
                                     <td>{{ 'SubPrime' if hosted_mode and item.profile_label == 'Subprime' else item.profile_label }}</td>

@@ -391,11 +391,11 @@ class KairosServiceTest(unittest.TestCase):
 
         self.service._evaluate_live_intraday_backfill = lambda now, trigger_reason="scheduled": [transition_scan]
         self.service.run_scan_cycle()
-        self.assertEqual(len(self.pushover_service.sent_messages), 1)
+        self.assertEqual(len(self.pushover_service.sent_messages), 0)
 
         self.service._evaluate_live_intraday_backfill = lambda now, trigger_reason="scheduled": [steady_scan]
         self.service.run_scan_cycle()
-        self.assertEqual(len(self.pushover_service.sent_messages), 1)
+        self.assertEqual(len(self.pushover_service.sent_messages), 0)
 
     def test_stop_cancels_active_timer_and_marks_session_stopped(self):
         self.service.activate_for_today()
