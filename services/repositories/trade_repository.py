@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Protocol, runtime_checkable
 
 from services.trade_store import TradeStore
 from services.trade_store import (
+    EDITABLE_FIELDS,
+    JOURNAL_NAME_DEFAULT,
     build_real_trade_outcome_profile,
     build_trade_duplicate_signature,
     current_timestamp,
@@ -49,6 +52,9 @@ class TradeRepository(Protocol):
         ...
 
     def get_trade(self, trade_id: int) -> Dict[str, Any] | None:
+        ...
+
+    def get_trade_by_number(self, trade_number: int) -> Dict[str, Any] | None:
         ...
 
     def update_trade(self, trade_id: int, values: Dict[str, Any]) -> None:
@@ -101,6 +107,9 @@ class SQLiteTradeRepository:
     def get_trade(self, trade_id: int) -> Dict[str, Any] | None:
         return self._store.get_trade(trade_id)
 
+    def get_trade_by_number(self, trade_number: int) -> Dict[str, Any] | None:
+        return self._store.get_trade_by_number(trade_number)
+
     def update_trade(self, trade_id: int, values: Dict[str, Any]) -> None:
         self._store.update_trade(trade_id, values)
 
@@ -127,6 +136,196 @@ class SQLiteTradeRepository:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._store, name)
+
+
+class MirroredTradeRepository:
+    """Local journal repository that mirrors writes into Supabase while serving local runtime reads from SQLite."""
+
+    def __init__(self, *, local_repository: TradeRepository, remote_repository: TradeRepository) -> None:
+        self._local_repository = local_repository
+        self._remote_repository = remote_repository
+
+    @property
+    def database_path(self) -> str:
+        return self._local_repository.database_path
+
+    def initialize(self) -> None:
+        self._local_repository.initialize()
+        self._remote_repository.initialize()
+
+    def next_trade_number(self) -> int:
+        try:
+            return max(self._local_repository.next_trade_number(), self._remote_repository.next_trade_number())
+        except Exception:
+            return self._local_repository.next_trade_number()
+
+    def find_recent_duplicate(self, values: Dict[str, Any], window_seconds: int = 15) -> Dict[str, Any] | None:
+        duplicate = self._remote_repository.find_recent_duplicate(values, window_seconds=window_seconds)
+        if duplicate is not None:
+            return duplicate
+        return self._local_repository.find_recent_duplicate(values, window_seconds=window_seconds)
+
+    def create_trade(self, values: Dict[str, Any]) -> int:
+        remote_payload = dict(values)
+        remote_trade_id = self._remote_repository.create_trade(remote_payload)
+        remote_trade = self._remote_repository.get_trade(remote_trade_id) or {**remote_payload, "id": remote_trade_id}
+        return self._upsert_local_from_remote(remote_trade)
+
+    def get_trade(self, trade_id: int) -> Dict[str, Any] | None:
+        return self._local_repository.get_trade(trade_id)
+
+    def get_trade_by_number(self, trade_number: int) -> Dict[str, Any] | None:
+        return self._local_repository.get_trade_by_number(trade_number)
+
+    def update_trade(self, trade_id: int, values: Dict[str, Any]) -> None:
+        local_trade = self._require_local_trade(trade_id)
+        remote_trade = self._ensure_remote_trade_for_local_trade(local_trade)
+        remote_values = self._translate_close_event_ids_for_remote(local_trade, remote_trade, values)
+        self._remote_repository.update_trade(int(remote_trade["id"]), remote_values)
+        refreshed_remote_trade = self._remote_repository.get_trade(int(remote_trade["id"])) or remote_trade
+        self._synchronize_local_trade(trade_id, refreshed_remote_trade)
+
+    def delete_trade(self, trade_id: int) -> None:
+        local_trade = self._require_local_trade(trade_id)
+        remote_trade = self._find_remote_trade_by_number(local_trade.get("trade_number"))
+        if remote_trade is not None:
+            self._remote_repository.delete_trade(int(remote_trade["id"]))
+        self._local_repository.delete_trade(trade_id)
+
+    def reduce_trade(self, trade_id: int, values: Dict[str, Any]) -> None:
+        local_trade = self._require_local_trade(trade_id)
+        remote_trade = self._ensure_remote_trade_for_local_trade(local_trade)
+        self._remote_repository.reduce_trade(int(remote_trade["id"]), values)
+        refreshed_remote_trade = self._remote_repository.get_trade(int(remote_trade["id"])) or remote_trade
+        self._synchronize_local_trade(trade_id, refreshed_remote_trade)
+
+    def expire_trade(self, trade_id: int, values: Dict[str, Any]) -> None:
+        local_trade = self._require_local_trade(trade_id)
+        remote_trade = self._ensure_remote_trade_for_local_trade(local_trade)
+        self._remote_repository.expire_trade(int(remote_trade["id"]), values)
+        refreshed_remote_trade = self._remote_repository.get_trade(int(remote_trade["id"])) or remote_trade
+        self._synchronize_local_trade(trade_id, refreshed_remote_trade)
+
+    def find_duplicate_trade(self, values: Dict[str, Any]) -> Dict[str, Any] | None:
+        duplicate = self._remote_repository.find_duplicate_trade(values)
+        if duplicate is not None:
+            return duplicate
+        return self._local_repository.find_duplicate_trade(values)
+
+    def list_trades(self, trade_mode: str) -> List[Dict[str, Any]]:
+        return self._local_repository.list_trades(trade_mode)
+
+    def summarize(self, trade_mode: str) -> Dict[str, Any]:
+        return self._local_repository.summarize(trade_mode)
+
+    def build_real_trade_outcome_profile(self) -> Dict[str, Any]:
+        return self._local_repository.build_real_trade_outcome_profile()
+
+    def _require_local_trade(self, trade_id: int) -> Dict[str, Any]:
+        trade = self._local_repository.get_trade(trade_id)
+        if trade is None:
+            raise ValueError("Trade not found.")
+        return trade
+
+    def _upsert_local_from_remote(self, remote_trade: Dict[str, Any]) -> int:
+        trade_number = to_int(remote_trade.get("trade_number"))
+        if trade_number is None:
+            raise ValueError("Mirrored trade is missing a trade number.")
+        existing_local_trade = self._local_repository.get_trade_by_number(trade_number)
+        if existing_local_trade is not None:
+            self._synchronize_local_trade(int(existing_local_trade["id"]), remote_trade)
+            return int(existing_local_trade["id"])
+
+        create_payload = _build_trade_sync_payload(remote_trade)
+        close_events = create_payload.pop("close_events", [])
+        local_trade_id = self._local_repository.create_trade(create_payload)
+        if close_events:
+            self._local_repository.update_trade(local_trade_id, {**create_payload, "close_events": close_events})
+        return local_trade_id
+
+    def _synchronize_local_trade(self, local_trade_id: int, remote_trade: Dict[str, Any]) -> None:
+        payload = _build_trade_sync_payload(remote_trade)
+        self._local_repository.update_trade(local_trade_id, payload)
+
+    def _ensure_remote_trade_for_local_trade(self, local_trade: Dict[str, Any]) -> Dict[str, Any]:
+        remote_trade = self._find_remote_trade_by_number(local_trade.get("trade_number"))
+        if remote_trade is not None:
+            return remote_trade
+
+        payload = _build_trade_sync_payload(local_trade)
+        close_events = payload.pop("close_events", [])
+        remote_trade_id = self._remote_repository.create_trade(payload)
+        if close_events:
+            self._remote_repository.update_trade(remote_trade_id, {**payload, "close_events": close_events})
+        return self._remote_repository.get_trade(remote_trade_id) or {**payload, "id": remote_trade_id}
+
+    def _find_remote_trade_by_number(self, trade_number: Any) -> Dict[str, Any] | None:
+        normalized_trade_number = to_int(trade_number)
+        if normalized_trade_number is None:
+            return None
+        remote_lookup = getattr(self._remote_repository, "get_trade_by_number", None)
+        if callable(remote_lookup):
+            return remote_lookup(normalized_trade_number)
+        for mode in ("real", "simulated", "talos"):
+            for trade in self._remote_repository.list_trades(mode):
+                if to_int(trade.get("trade_number")) == normalized_trade_number:
+                    return trade
+        return None
+
+    def _translate_close_event_ids_for_remote(
+        self,
+        local_trade: Dict[str, Any],
+        remote_trade: Dict[str, Any],
+        values: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        close_events = values.get("close_events") if "close_events" in values else None
+        if close_events is None:
+            return dict(values)
+
+        local_events = list(local_trade.get("close_events") or [])
+        remote_events = list(remote_trade.get("close_events") or [])
+        local_to_remote_id: dict[int, int] = {}
+        for local_event, remote_event in zip(local_events, remote_events):
+            local_event_id = to_int((local_event or {}).get("id"))
+            remote_event_id = to_int((remote_event or {}).get("id"))
+            if local_event_id is None or remote_event_id is None:
+                continue
+            local_to_remote_id[local_event_id] = remote_event_id
+
+        remote_values = dict(values)
+        remote_values["close_events"] = []
+        for row in close_events or []:
+            translated_row = dict(row or {})
+            local_event_id = to_int(translated_row.get("id"))
+            if local_event_id is not None and local_event_id in local_to_remote_id:
+                translated_row["id"] = local_to_remote_id[local_event_id]
+            remote_values["close_events"].append(translated_row)
+        return remote_values
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._local_repository, name)
+
+
+def _build_trade_sync_payload(trade: Dict[str, Any]) -> Dict[str, Any]:
+    payload = {
+        field: trade.get(field)
+        for field in EDITABLE_FIELDS
+        if field in trade
+    }
+    payload["close_events"] = [_build_trade_close_event_sync_payload(event) for event in (trade.get("close_events") or [])]
+    return payload
+
+
+def _build_trade_close_event_sync_payload(event: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "contracts_closed": event.get("contracts_closed"),
+        "actual_exit_value": event.get("actual_exit_value"),
+        "event_datetime": event.get("event_datetime") or event.get("created_at"),
+        "close_method": event.get("close_method"),
+        "notes_exit": event.get("notes_exit"),
+    }
+
+
 class SupabaseTradeRepository:
     """Supabase-backed trade repository for hosted Delphi runtime composition."""
 
@@ -134,6 +333,8 @@ class SupabaseTradeRepository:
     CLOSE_EVENTS_TABLE = "journal_trade_close_events"
     TRADE_IDENTITY_REPAIR_RPC = "sync_journal_trade_identity_sequence"
     CLOSE_EVENT_IDENTITY_REPAIR_RPC = "sync_journal_trade_close_event_identity_sequence"
+    TALOS_COMPATIBLE_TRADE_MODE = "simulated"
+    TALOS_JOURNAL_PREFIX = "Talos::"
 
     def __init__(
         self,
@@ -148,6 +349,10 @@ class SupabaseTradeRepository:
         self._database_path = str(database_path)
         self.market_data_service = market_data_service
         self._trade_storage_available: bool | None = None
+        self._unsupported_columns_by_table: dict[str, set[str]] = {
+            self.TRADES_TABLE: set(),
+            self.CLOSE_EVENTS_TABLE: set(),
+        }
 
     @property
     def database_path(self) -> str:
@@ -180,11 +385,12 @@ class SupabaseTradeRepository:
         threshold = parse_datetime_value(timestamp_seconds_ago(window_seconds))
         rows = self._select_rows(
             self.TRADES_TABLE,
-            filters={"trade_mode": f"eq.{normalized.get('trade_mode')}"},
+            filters={"trade_mode": f"eq.{self._encode_trade_mode_filter(normalized.get('trade_mode'))}"},
             order="id.desc",
             limit=25,
         )
         for row in rows:
+            row = self._decode_trade_row(dict(row))
             created_at = parse_datetime_value(row.get("created_at"))
             if threshold is not None and (created_at is None or created_at < threshold):
                 continue
@@ -195,6 +401,7 @@ class SupabaseTradeRepository:
 
     def create_trade(self, values: Dict[str, Any]) -> int:
         normalized = normalize_trade_payload(values)
+        normalized = self._encode_trade_payload(normalized)
         timestamp = current_timestamp()
         normalized["created_at"] = timestamp
         normalized["updated_at"] = timestamp
@@ -209,7 +416,7 @@ class SupabaseTradeRepository:
         return int(inserted[0]["id"])
 
     def _insert_trade_row(self, normalized: Dict[str, Any]) -> list[dict[str, Any]]:
-        serialized = self._serialize_payload(normalized)
+        serialized = self._serialize_payload(self.TRADES_TABLE, normalized)
         return self._insert_with_identity_recovery(
             table=self.TRADES_TABLE,
             payload=serialized,
@@ -226,14 +433,14 @@ class SupabaseTradeRepository:
         resolve_next_id,
     ) -> list[dict[str, Any]]:
         try:
-            return self.gateway.insert(table, payload)
+            return self._insert_table_payload(table, payload)
         except SupabaseRequestError as exc:
             if not self._is_duplicate_primary_key_error(exc, table=table):
                 raise
             LOGGER.warning("Supabase %s identity sequence appears out of sync. Attempting repair RPC.", table)
             try:
                 self.gateway.rpc(repair_rpc, {})
-                return self.gateway.insert(table, payload)
+                return self._insert_table_payload(table, payload)
             except SupabaseRequestError as repair_exc:
                 LOGGER.warning(
                     "Supabase %s repair RPC was unavailable. Falling back to an explicit id insert. Details: %s",
@@ -242,7 +449,7 @@ class SupabaseTradeRepository:
                 )
                 fallback_payload = dict(payload)
                 fallback_payload["id"] = resolve_next_id()
-                return self.gateway.insert(table, fallback_payload)
+                return self._insert_table_payload(table, fallback_payload)
 
     def _resolve_next_trade_id(self) -> int:
         rows = self._select_rows(self.TRADES_TABLE, order="id.desc", limit=1, columns="id")
@@ -256,7 +463,11 @@ class SupabaseTradeRepository:
 
     def get_trade(self, trade_id: int) -> Dict[str, Any] | None:
         rows = self._select_rows(self.TRADES_TABLE, filters={"id": f"eq.{int(trade_id)}"}, limit=1)
-        return self._attach_trade_state(dict(rows[0])) if rows else None
+        return self._attach_trade_state(self._decode_trade_row(dict(rows[0]))) if rows else None
+
+    def get_trade_by_number(self, trade_number: int) -> Dict[str, Any] | None:
+        rows = self._select_rows(self.TRADES_TABLE, filters={"trade_number": f"eq.{int(trade_number)}"}, limit=1)
+        return self._attach_trade_state(self._decode_trade_row(dict(rows[0]))) if rows else None
 
     def update_trade(self, trade_id: int, values: Dict[str, Any]) -> None:
         existing = self.get_trade(trade_id)
@@ -264,6 +475,7 @@ class SupabaseTradeRepository:
             raise ValueError("Trade not found.")
         close_events_payload = values.get("close_events") if "close_events" in values else None
         normalized = normalize_trade_payload(values, existing=existing)
+        normalized = self._encode_trade_payload(normalized)
         normalized["updated_at"] = current_timestamp()
         if close_events_payload is not None:
             normalized.update(
@@ -280,9 +492,9 @@ class SupabaseTradeRepository:
             trade_number = self.next_trade_number()
         self._ensure_trade_number_available(int(trade_number), exclude_id=int(trade_id))
         normalized["trade_number"] = int(trade_number)
-        self.gateway.update(
+        self._update_table_payload(
             self.TRADES_TABLE,
-            self._serialize_payload(normalized),
+            normalized,
             filters={"id": f"eq.{int(trade_id)}"},
         )
         if close_events_payload is not None:
@@ -353,14 +565,15 @@ class SupabaseTradeRepository:
     def find_duplicate_trade(self, values: Dict[str, Any]) -> Dict[str, Any] | None:
         normalized = normalize_trade_payload(values)
         target_signature = build_trade_duplicate_signature(normalized, already_normalized=True)
-        for row in self._select_rows(self.TRADES_TABLE, filters={"trade_mode": f"eq.{normalized['trade_mode']}"}, order="id.desc"):
-            candidate = dict(row)
+        for row in self._select_rows(self.TRADES_TABLE, filters={"trade_mode": f"eq.{self._encode_trade_mode_filter(normalized['trade_mode'])}"}, order="id.desc"):
+            candidate = self._decode_trade_row(dict(row))
             if build_trade_duplicate_signature(candidate, already_normalized=True) == target_signature:
                 return candidate
         return None
 
     def list_trades(self, trade_mode: str) -> List[Dict[str, Any]]:
-        rows = self._select_rows(self.TRADES_TABLE, filters={"trade_mode": f"eq.{normalize_trade_mode(trade_mode)}"})
+        normalized_trade_mode = normalize_trade_mode(trade_mode)
+        rows = self._select_rows(self.TRADES_TABLE, filters={"trade_mode": f"eq.{self._encode_trade_mode_filter(normalized_trade_mode)}"})
         close_events_by_trade_id = self._select_close_events_for_trade_ids(
             int(row.get("id") or 0)
             for row in rows
@@ -368,10 +581,11 @@ class SupabaseTradeRepository:
         )
         trades = [
             self._attach_trade_state(
-                dict(row),
+                self._decode_trade_row(dict(row)),
                 close_events=close_events_by_trade_id.get(int(row.get("id") or 0), []),
             )
             for row in rows
+            if self._matches_requested_trade_mode(dict(row), normalized_trade_mode)
         ]
         trades.sort(key=self._sort_key, reverse=True)
         return trades
@@ -533,7 +747,7 @@ class SupabaseTradeRepository:
                     raise ValueError("One or more close events could not be matched to this trade.")
                 retained_ids.add(int(event_id))
                 parsed_event_datetime = parse_datetime_value(row.get("event_datetime"))
-                self.gateway.update(
+                self._update_table_payload(
                     self.CLOSE_EVENTS_TABLE,
                     {
                         "event_type": row["event_type"],
@@ -568,7 +782,7 @@ class SupabaseTradeRepository:
             return
         events = self._list_close_events(trade_id)
         summary = summarize_trade_close_events(trade, events)
-        self.gateway.update(
+        self._update_table_payload(
             self.TRADES_TABLE,
             {
                 "updated_at": current_timestamp(),
@@ -590,7 +804,7 @@ class SupabaseTradeRepository:
 
     def _get_trade_row(self, trade_id: int) -> Dict[str, Any] | None:
         rows = self.gateway.select(self.TRADES_TABLE, filters={"id": f"eq.{int(trade_id)}"}, limit=1)
-        return dict(rows[0]) if rows else None
+        return self._decode_trade_row(dict(rows[0])) if rows else None
 
     def _ensure_trade_number_available(self, trade_number: int, exclude_id: int | None = None) -> None:
         rows = self.gateway.select(self.TRADES_TABLE, filters={"trade_number": f"eq.{int(trade_number)}"})
@@ -599,9 +813,86 @@ class SupabaseTradeRepository:
                 continue
             raise ValueError("Trade number already exists.")
 
+    def _encode_trade_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        encoded = dict(payload)
+        if normalize_trade_mode(encoded.get("trade_mode") or "") != "talos":
+            return encoded
+        original_journal_name = str(encoded.get("journal_name") or JOURNAL_NAME_DEFAULT).strip() or JOURNAL_NAME_DEFAULT
+        encoded["trade_mode"] = self.TALOS_COMPATIBLE_TRADE_MODE
+        encoded["journal_name"] = f"{self.TALOS_JOURNAL_PREFIX}{original_journal_name}"
+        return encoded
+
+    def _decode_trade_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        decoded = dict(row)
+        journal_name = str(decoded.get("journal_name") or "")
+        if str(decoded.get("trade_mode") or "").strip().lower() == self.TALOS_COMPATIBLE_TRADE_MODE and journal_name.startswith(self.TALOS_JOURNAL_PREFIX):
+            decoded["trade_mode"] = "talos"
+            decoded["journal_name"] = journal_name[len(self.TALOS_JOURNAL_PREFIX) :] or JOURNAL_NAME_DEFAULT
+        return decoded
+
+    def _encode_trade_mode_filter(self, trade_mode: Any) -> str:
+        normalized_trade_mode = normalize_trade_mode(str(trade_mode or ""))
+        if normalized_trade_mode == "talos":
+            return self.TALOS_COMPATIBLE_TRADE_MODE
+        return normalized_trade_mode
+
+    def _matches_requested_trade_mode(self, row: Dict[str, Any], requested_trade_mode: str) -> bool:
+        journal_name = str(row.get("journal_name") or "")
+        is_talos_encoded = journal_name.startswith(self.TALOS_JOURNAL_PREFIX)
+        if requested_trade_mode == "talos":
+            return is_talos_encoded
+        if requested_trade_mode == "simulated":
+            return not is_talos_encoded
+        return True
+
+    def _insert_table_payload(self, table: str, payload: Dict[str, Any]) -> list[dict[str, Any]]:
+        serialized = self._serialize_payload(table, payload)
+        while True:
+            try:
+                return self.gateway.insert(table, serialized)
+            except SupabaseRequestError as exc:
+                missing_column = self._extract_missing_column(exc, table)
+                if missing_column is None or missing_column not in serialized:
+                    raise
+                self._mark_column_unsupported(table, missing_column)
+                serialized.pop(missing_column, None)
+
+    def _update_table_payload(self, table: str, payload: Dict[str, Any], *, filters: dict[str, str]) -> None:
+        serialized = self._serialize_payload(table, payload)
+        while serialized:
+            try:
+                self.gateway.update(table, serialized, filters=filters)
+                return
+            except SupabaseRequestError as exc:
+                missing_column = self._extract_missing_column(exc, table)
+                if missing_column is None or missing_column not in serialized:
+                    raise
+                self._mark_column_unsupported(table, missing_column)
+                serialized.pop(missing_column, None)
+
+    def _serialize_payload(self, table: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        unsupported_columns = self._unsupported_columns_by_table.setdefault(table, set())
+        return {
+            key: value
+            for key, value in payload.items()
+            if key not in unsupported_columns
+        }
+
+    def _mark_column_unsupported(self, table: str, column_name: str) -> None:
+        self._unsupported_columns_by_table.setdefault(table, set()).add(column_name)
+
     @staticmethod
-    def _serialize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-        return {key: value for key, value in payload.items() if key not in {"id", "trade_id"}}
+    def _extract_missing_column(error: SupabaseRequestError, table: str) -> str | None:
+        detail = str(error or "")
+        if "PGRST204" not in detail:
+            return None
+        match = re.search(r"Could not find the '([^']+)' column of '([^']+)' in the schema cache", detail)
+        if not match:
+            return None
+        column_name, table_name = match.groups()
+        if table_name not in {table, f"public.{table}"}:
+            return None
+        return column_name
 
     @staticmethod
     def _is_duplicate_primary_key_error(error: SupabaseRequestError, *, table: str) -> bool:

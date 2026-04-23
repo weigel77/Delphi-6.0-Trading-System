@@ -44,11 +44,14 @@ class TradeRoutesTest(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_database_auto_creates_and_header_buttons_render(self):
-        response = self.client.get("/")
+        redirect_response = self.client.get("/", follow_redirects=False)
+        response = self.client.get("/", follow_redirects=True)
 
+        self.assertEqual(redirect_response.status_code, 302)
+        self.assertEqual(redirect_response.headers["Location"], "/management/open-trades")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(self.database_path.exists())
-        self.assertIn(b"Delphi", response.data)
+        self.assertIn(b"Open Trade Management", response.data)
         self.assertIn(b"delphi-shared-header", response.data)
         self.assertIn(b"Research", response.data)
         self.assertIn(b"Run Apollo", response.data)
@@ -624,10 +627,182 @@ class TradeRoutesTest(unittest.TestCase):
         self.assertIn(b"Remaining Contracts", detail_response.data)
         self.assertIn(b"Realized P/L", detail_response.data)
         self.assertIn(b'id="status_display"', detail_response.data)
-        self.assertIn(b'value="Open"', detail_response.data)
+        self.assertIn(b'value="Reduced"', detail_response.data)
         self.assertNotIn(b'name="status"', detail_response.data)
         self.assertIn(b'value="2"', detail_response.data)
         self.assertIn(b'value="4.70"', detail_response.data)
+
+    def test_edit_trade_can_reduce_again_and_expire_remaining_after_partial_reduction(self):
+        create_payload = {
+            "trade_mode": "real",
+            "system_name": "Apollo",
+            "journal_name": "Apollo Main",
+            "candidate_profile": "Standard",
+            "status": "open",
+            "trade_date": "2026-04-03",
+            "entry_datetime": "2026-04-03T09:35",
+            "expiration_date": "2026-04-06",
+            "underlying_symbol": "SPX",
+            "short_strike": "6505",
+            "long_strike": "6480",
+            "spread_width": "25",
+            "contracts": "7",
+            "actual_entry_credit": "1.60",
+            "distance_to_short": "102.49",
+        }
+        self.client.post("/trades/real/new", data=create_payload, follow_redirects=True)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            trade_id = connection.execute("SELECT id FROM trades WHERE trade_number = 1").fetchone()["id"]
+
+        first_reduction = self.client.post(
+            f"/trades/real/{trade_id}/edit",
+            data={
+                **create_payload,
+                "trade_number": "1",
+                "notes_entry": "",
+                "notes_exit": "",
+                "close_reason": "",
+                "close_events_present": "1",
+                "prefill_source": "",
+                "system_version": "",
+                "close_event_id": [""],
+                "close_event_contracts_closed": ["2"],
+                "close_event_actual_exit_value": ["4.70"],
+                "close_event_method": ["Reduce"],
+            },
+            follow_redirects=True,
+        )
+
+        self.assertEqual(first_reduction.status_code, 200)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            persisted_event = connection.execute(
+                "SELECT * FROM trade_close_events WHERE trade_id = ? ORDER BY id ASC",
+                (trade_id,),
+            ).fetchone()
+
+        expire_response = self.client.post(
+            f"/trades/real/{trade_id}/edit",
+            data={
+                **create_payload,
+                "trade_number": "1",
+                "notes_entry": "",
+                "notes_exit": "",
+                "close_reason": "",
+                "close_events_present": "1",
+                "prefill_source": "",
+                "system_version": "",
+                "close_event_id": [str(persisted_event["id"]), ""],
+                "close_event_contracts_closed": ["2", "5"],
+                "close_event_actual_exit_value": ["4.70", "0.00"],
+                "close_event_method": ["Reduce", "Expire"],
+            },
+            follow_redirects=True,
+        )
+
+        self.assertEqual(expire_response.status_code, 200)
+        self.assertIn(b">Expired<", expire_response.data)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute("SELECT * FROM trades WHERE id = ?", (trade_id,)).fetchone()
+            events = connection.execute(
+                "SELECT * FROM trade_close_events WHERE trade_id = ? ORDER BY id ASC",
+                (trade_id,),
+            ).fetchall()
+
+        self.assertEqual(row["status"], "expired")
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]["event_type"], "reduce")
+        self.assertEqual(events[1]["event_type"], "expire")
+        self.assertEqual(events[1]["contracts_closed"], 5)
+
+    def test_edit_trade_can_reduce_again_and_fully_close_remaining_after_partial_reduction(self):
+        create_payload = {
+            "trade_mode": "real",
+            "system_name": "Apollo",
+            "journal_name": "Apollo Main",
+            "candidate_profile": "Standard",
+            "status": "open",
+            "trade_date": "2026-04-03",
+            "entry_datetime": "2026-04-03T09:35",
+            "expiration_date": "2026-04-06",
+            "underlying_symbol": "SPX",
+            "short_strike": "6450",
+            "long_strike": "6445",
+            "spread_width": "5",
+            "contracts": "3",
+            "actual_entry_credit": "1.20",
+            "distance_to_short": "50",
+        }
+        self.client.post("/trades/real/new", data=create_payload, follow_redirects=True)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            trade_id = connection.execute("SELECT id FROM trades WHERE trade_number = 1").fetchone()["id"]
+
+        self.client.post(
+            f"/trades/real/{trade_id}/edit",
+            data={
+                **create_payload,
+                "trade_number": "1",
+                "notes_entry": "",
+                "notes_exit": "",
+                "close_reason": "",
+                "close_events_present": "1",
+                "prefill_source": "",
+                "system_version": "",
+                "close_event_id": [""],
+                "close_event_contracts_closed": ["1"],
+                "close_event_actual_exit_value": ["0.40"],
+                "close_event_method": ["Reduce"],
+            },
+            follow_redirects=True,
+        )
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            persisted_event = connection.execute(
+                "SELECT * FROM trade_close_events WHERE trade_id = ? ORDER BY id ASC",
+                (trade_id,),
+            ).fetchone()
+
+        close_response = self.client.post(
+            f"/trades/real/{trade_id}/edit",
+            data={
+                **create_payload,
+                "trade_number": "1",
+                "notes_entry": "",
+                "notes_exit": "",
+                "close_reason": "",
+                "close_events_present": "1",
+                "prefill_source": "",
+                "system_version": "",
+                "close_event_id": [str(persisted_event["id"]), ""],
+                "close_event_contracts_closed": ["1", "2"],
+                "close_event_actual_exit_value": ["0.40", "0.80"],
+                "close_event_method": ["Reduce", "Close"],
+            },
+            follow_redirects=True,
+        )
+
+        self.assertEqual(close_response.status_code, 200)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute("SELECT * FROM trades WHERE id = ?", (trade_id,)).fetchone()
+            events = connection.execute(
+                "SELECT * FROM trade_close_events WHERE trade_id = ? ORDER BY id ASC",
+                (trade_id,),
+            ).fetchall()
+
+        self.assertEqual(row["status"], "closed")
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[1]["event_type"], "close")
+        self.assertEqual(events[1]["contracts_closed"], 2)
 
     def test_manage_trades_notification_settings_persist_per_trade(self):
         create_payload = {
@@ -1179,7 +1354,7 @@ class TradeRoutesTest(unittest.TestCase):
         response = self.client.post("/apollo")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Version 6.4", response.data)
+        self.assertIn(b"Version 7.2.9", response.data)
         self.assertIn(b"Apollo: Greek God of Prophecy and Part-Time Options Trader", response.data)
         self.assertIn(b"Base Structure", response.data)
         self.assertIn(b"RSI Modifier", response.data)

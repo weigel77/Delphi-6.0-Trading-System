@@ -35,7 +35,7 @@
             <div class="result-header">
                 <div>
                     <h2>Management Engine</h2>
-                    <p class="subtle">{% if hosted_mode %}Hosted Delphi 6.4.1 pulls the same live open-trade evaluation data into a Supabase-backed board with the same send-to-close controls used on the local workflow. Global alert preferences now live in the header Notifications panel.{% else %}Real open trades are evaluated for morning snapshot, status change, action, and end-of-day Pushover notifications. Simulated and Talos open trades remain visible on this board for management review, and manual status updates stay limited to real and simulated positions. Global alert preferences now live in the header Notifications panel.{% endif %}</p>
+                    <p class="subtle">Real open trades are evaluated for morning snapshot, status change, action, and end-of-day Pushover notifications. Simulated and Talos open trades remain visible on this board for management review, and manual status updates stay limited to real and simulated positions. Global alert preferences now live in the header Notifications panel.</p>
                 </div>
                 {% if management_actions_enabled %}
                     <div class="actions trade-actions">
@@ -86,7 +86,7 @@
                 <div>
                     <h2>Open Positions</h2>
                     {% if not suppress_open_positions_copy %}
-                        <p class="subtle">{% if hosted_mode %}Statuses and action recommendations use the current live option-chain expected move. Hosted Delphi 6.4.1 alert delivery only applies to real trades, but both real and simulated open positions are listed here.{% else %}Statuses and action recommendations use the current live option-chain expected move. Delphi 7.0 local alert delivery only applies to real trades, while real, simulated, and Talos open positions are listed here.{% endif %}</p>
+                        <p class="subtle">Statuses and action recommendations use the current live option-chain expected move. Delphi 7.2.9 local alert delivery only applies to real trades, while real, simulated, and Talos open positions are listed here.</p>
                     {% endif %}
                 </div>
             </div>
@@ -126,10 +126,10 @@
                         </thead>
                         <tbody>
                             {% for item in management_payload.records %}
-                                <tr>
+                                <tr class="management-row management-row-{{ item.trade_mode|lower }}">
                                     <td>{{ item.trade_number }}</td>
                                     <td>{{ item.system_name }}</td>
-                                    <td>{{ 'SubPrime' if hosted_mode and item.profile_label == 'Subprime' else item.profile_label }}</td>
+                                    <td>{{ item.profile_label }}</td>
                                     <td>{{ item.contracts_display }}</td>
                                     <td><strong>{{ item.total_premium_display }}</strong></td>
                                     <td>{{ item.current_total_close_cost_display }}</td>

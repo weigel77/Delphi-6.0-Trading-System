@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import date
+import inspect
+import logging
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List
+from zoneinfo import ZoneInfo
 
 from config import AppConfig, get_app_config
 
@@ -17,11 +20,15 @@ from .providers.base_provider import ProviderError
 from .providers.schwab_provider import SchwabProvider
 
 
+LOGGER = logging.getLogger(__name__)
+
+
 class OptionsChainService:
     """Retrieve and summarize SPX option-chain data for Apollo."""
 
     PREVIEW_WIDTHS = (5.0, 10.0, 15.0, 20.0, 25.0, 30.0)
     MIN_PREVIEW_NET_CREDIT = 1.0
+    SUMMARY_CACHE_TTL_SECONDS = 30
 
     def __init__(
         self,
@@ -35,46 +42,31 @@ class OptionsChainService:
         self.auth_composer = auth_composer or LocalAuthComposer(self.config)
         self.provider_composer = provider_composer or LocalProviderComposer(self.config, self.auth_composer)
         self.market_calendar_service = MarketCalendarService(self.config)
+        self.display_timezone = ZoneInfo(self.config.app_timezone)
+        self._summary_cache: Dict[tuple[str, str], Dict[str, Any]] = {}
+        self._normalization_log_cache: Dict[tuple[str, str, str, str], datetime] = {}
 
     def get_spx_option_chain_summary(self, expiration_date: date) -> Dict[str, Any]:
         """Return a compact normalized next-market-day SPX option-chain summary."""
         provider = None
+        requested_expiration = expiration_date
+        resolved_expiration, normalization_reason = self._normalize_requested_expiration_date(expiration_date)
+        caller_context = self._describe_option_chain_request_caller()
+        cache_key = ("spx", resolved_expiration.isoformat())
+        cached_summary = self._get_cached_summary(cache_key)
+        if cached_summary is not None:
+            return cached_summary
         try:
-            if not self.market_calendar_service.is_tradable_market_day(expiration_date):
-                holiday_name = self.market_calendar_service.get_holiday_name(expiration_date) or "Weekend"
-                return {
-                    "success": False,
-                    "source_name": "Schwab",
-                    "failure_category": "exchange-closed",
-                    "failure_label": "Exchange closed",
-                    "failure_status_class": "neutral",
-                    "symbol_requested": self.config.schwab_spx_option_chain_symbol,
-                    "expiration_target": expiration_date,
-                    "expiration_date": expiration_date,
-                    "expiration_count": 0,
-                    "underlying_price": None,
-                    "puts_count": 0,
-                    "calls_count": 0,
-                    "rows_displayed": 0,
-                    "strike_range": "—",
-                    "puts": [],
-                    "calls": [],
-                    "preview_rows": [],
-                    "request_diagnostics": {
-                        "final_symbol": self.config.schwab_spx_option_chain_symbol,
-                        "final_expiration": expiration_date.isoformat(),
-                        "attempt_used": "Skipped",
-                        "raw_params_sent": {},
-                        "error_detail": f"Exchange closed ({holiday_name})",
-                        "failure_category": "exchange-closed",
-                        "failure_label": "Exchange closed",
-                        "attempts": [],
-                    },
-                    "message": f"Skipped SPX option-chain request because {expiration_date.isoformat()} is exchange-closed ({holiday_name}).",
-                }
+            if normalization_reason:
+                self._log_normalization_once(
+                    caller_context=caller_context,
+                    requested_expiration=requested_expiration,
+                    resolved_expiration=resolved_expiration,
+                    normalization_reason=normalization_reason,
+                )
 
             provider = self._resolve_provider()
-            chain = provider.get_option_chain("^GSPC", target_date=expiration_date)
+            chain = provider.get_option_chain("^GSPC", target_date=resolved_expiration)
             request_diagnostics = chain.get("request_diagnostics") or getattr(provider, "last_option_chain_diagnostics", {})
             calls = list(chain.get("calls") or [])
             puts = list(chain.get("puts") or [])
@@ -88,15 +80,15 @@ class OptionsChainService:
             )
 
             if not calls and not puts:
-                return {
+                summary = {
                     "success": False,
                     "source_name": getattr(provider, "provider_name", "Unknown Provider"),
                     "failure_category": "empty-response",
                     "failure_label": "Empty response",
                     "failure_status_class": "not-available",
                     "symbol_requested": chain.get("requested_symbol", self.config.schwab_spx_option_chain_symbol),
-                    "expiration_target": chain.get("expiration_target") or expiration_date,
-                    "expiration_date": expiration_date,
+                    "expiration_target": chain.get("expiration_target") or requested_expiration,
+                    "expiration_date": chain.get("expiration_date") or resolved_expiration,
                     "expiration_count": chain.get("expiration_count", 0),
                     "underlying_price": chain.get("underlying_price"),
                     "puts_count": 0,
@@ -109,21 +101,23 @@ class OptionsChainService:
                     "request_diagnostics": request_diagnostics,
                     "message": "Schwab returned a response, but no usable SPX option contracts were available for the requested expiration.",
                 }
+                self._store_cached_summary(cache_key, summary)
+                return summary
 
             strike_range = (
                 f"{min(strikes):,.0f} to {max(strikes):,.0f}"
                 if strikes
                 else "—"
             )
-            return {
+            summary = {
                 "success": True,
                 "source_name": getattr(provider, "provider_name", "Unknown Provider"),
                 "failure_category": "",
                 "failure_label": "",
                 "failure_status_class": "good",
                 "symbol_requested": chain.get("requested_symbol", self.config.schwab_spx_option_chain_symbol),
-                "expiration_target": chain.get("expiration_target") or expiration_date,
-                "expiration_date": chain.get("expiration_date") or expiration_date,
+                "expiration_target": chain.get("expiration_target") or requested_expiration,
+                "expiration_date": chain.get("expiration_date") or resolved_expiration,
                 "expiration_count": chain.get("expiration_count", 0),
                 "underlying_price": chain.get("underlying_price"),
                 "puts_count": len(puts),
@@ -136,21 +130,23 @@ class OptionsChainService:
                 "request_diagnostics": request_diagnostics,
                 "message": "SPX option chain retrieved successfully.",
             }
+            self._store_cached_summary(cache_key, summary)
+            return summary
         except Exception as exc:
             request_diagnostics = getattr(provider, "last_option_chain_diagnostics", {}) if provider is not None else {}
             failure_category, failure_label, failure_status_class = self._resolve_failure_metadata(
                 request_diagnostics=request_diagnostics,
                 message=str(exc),
             )
-            return {
+            summary = {
                 "success": False,
                 "source_name": "Schwab",
                 "failure_category": failure_category,
                 "failure_label": failure_label,
                 "failure_status_class": failure_status_class,
                 "symbol_requested": self.config.schwab_spx_option_chain_symbol,
-                "expiration_target": expiration_date,
-                "expiration_date": expiration_date,
+                "expiration_target": requested_expiration,
+                "expiration_date": resolved_expiration,
                 "expiration_count": 0,
                 "underlying_price": None,
                 "puts_count": 0,
@@ -163,6 +159,89 @@ class OptionsChainService:
                 "request_diagnostics": request_diagnostics,
                 "message": str(exc),
             }
+            self._store_cached_summary(cache_key, summary)
+            return summary
+
+    def _get_cached_summary(self, cache_key: tuple[str, str]) -> Dict[str, Any] | None:
+        cached_entry = self._summary_cache.get(cache_key)
+        if not cached_entry:
+            return None
+        cached_at = cached_entry.get("cached_at")
+        if not isinstance(cached_at, datetime):
+            self._summary_cache.pop(cache_key, None)
+            return None
+        if (self._now() - cached_at) > timedelta(seconds=self.SUMMARY_CACHE_TTL_SECONDS):
+            self._summary_cache.pop(cache_key, None)
+            return None
+        return dict(cached_entry.get("summary") or {})
+
+    def _store_cached_summary(self, cache_key: tuple[str, str], summary: Dict[str, Any]) -> None:
+        self._summary_cache[cache_key] = {
+            "cached_at": self._now(),
+            "summary": dict(summary),
+        }
+
+    def _log_normalization_once(
+        self,
+        *,
+        caller_context: str,
+        requested_expiration: date,
+        resolved_expiration: date,
+        normalization_reason: str,
+    ) -> None:
+        log_key = (
+            caller_context,
+            requested_expiration.isoformat(),
+            resolved_expiration.isoformat(),
+            normalization_reason,
+        )
+        now = self._now()
+        prior_logged_at = self._normalization_log_cache.get(log_key)
+        if prior_logged_at is not None and (now - prior_logged_at) <= timedelta(seconds=self.SUMMARY_CACHE_TTL_SECONDS):
+            return
+        self._normalization_log_cache[log_key] = now
+        LOGGER.warning(
+            "Apollo option-chain expiration normalized | caller=%s | requested_expiration=%s | resolved_expiration=%s | reason=%s",
+            caller_context,
+            requested_expiration.isoformat(),
+            resolved_expiration.isoformat(),
+            normalization_reason,
+        )
+
+    def _normalize_requested_expiration_date(self, expiration_date: date) -> tuple[date, str | None]:
+        local_now = self._now()
+        resolved_expiration = expiration_date
+        reasons: list[str] = []
+        session_date = local_now.date()
+
+        if resolved_expiration < session_date:
+            resolved_expiration = session_date
+            reasons.append(f"requested expiration was before the current session date {session_date.isoformat()}")
+
+        if not self.market_calendar_service.is_tradable_market_day(resolved_expiration):
+            closure_reason = self.market_calendar_service.get_holiday_name(resolved_expiration) or "weekend"
+            rolled_expiration = self.market_calendar_service.get_next_or_same_tradable_market_day(resolved_expiration)
+            reasons.append(
+                f"requested expiration {resolved_expiration.isoformat()} was {closure_reason}; rolled forward to {rolled_expiration.isoformat()}"
+            )
+            resolved_expiration = rolled_expiration
+
+        return resolved_expiration, "; ".join(reasons) if reasons else None
+
+    def _describe_option_chain_request_caller(self) -> str:
+        for frame in inspect.stack()[2:]:
+            normalized_path = frame.filename.replace("\\", "/")
+            if normalized_path.endswith("/services/options_chain_service.py"):
+                continue
+            if "/site-packages/" in normalized_path:
+                continue
+            if "Delphi-5.0-Web-Dev/" in normalized_path:
+                normalized_path = normalized_path.split("Delphi-5.0-Web-Dev/", 1)[1]
+            return f"{normalized_path}:{frame.lineno}:{frame.function}"
+        return "unknown"
+
+    def _now(self) -> datetime:
+        return datetime.now(self.display_timezone)
 
     @staticmethod
     def _resolve_failure_metadata(

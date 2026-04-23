@@ -247,13 +247,45 @@ class OpenTradeManagerTest(unittest.TestCase):
                 "notes_entry": "Simulated review trade",
             }
         )
+        self.talos_apollo_trade_id = self.trade_store.create_trade(
+            {
+                "trade_mode": "talos",
+                "system_name": "Apollo",
+                "candidate_profile": "Standard",
+                "system_version": "7.0",
+                "status": "open",
+                "trade_date": "2026-04-10",
+                "entry_datetime": "2026-04-10T11:15",
+                "expiration_date": "2026-04-10",
+                "underlying_symbol": "SPX",
+                "spx_at_entry": 6812.0,
+                "vix_at_entry": 18.4,
+                "structure_grade": "Good",
+                "macro_grade": "None",
+                "expected_move": 32.0,
+                "expected_move_used": 32.0,
+                "option_type": "Put Credit Spread",
+                "short_strike": 6745.0,
+                "long_strike": 6735.0,
+                "spread_width": 10.0,
+                "contracts": 1,
+                "actual_entry_credit": 1.3,
+                "distance_to_short": 67.0,
+                "actual_distance_to_short": 67.0,
+                "actual_em_multiple": 2.09,
+                "fallback_used": "no",
+                "fallback_rule_name": "",
+                "notes_entry": "Talos autonomous trade",
+            }
+        )
 
     def test_simulated_trades_still_appear_in_management_list(self):
         payload = self.manager.evaluate_open_trades(send_alerts=False)
 
-        self.assertEqual(payload["open_trade_count"], 3)
+        self.assertEqual(payload["open_trade_count"], 4)
         trade_modes = {item["trade_number"]: item["trade_mode"] for item in payload["records"]}
         self.assertIn("Simulated", trade_modes.values())
+        self.assertIn("Talos", trade_modes.values())
 
     def test_plain_board_uses_minimal_kairos_management_context(self):
         def fail_dashboard_call():
@@ -275,6 +307,7 @@ class OpenTradeManagerTest(unittest.TestCase):
 
         joined_messages = "\n\n".join(item["message"] for item in self.pushover_service.sent)
         self.assertNotIn("Simulated", joined_messages)
+        self.assertNotIn("Talos", joined_messages)
 
     def _set_runtime_field(self, column_name, value):
         with closing(sqlite3.connect(self.database_path)) as connection:
@@ -334,6 +367,7 @@ class OpenTradeManagerTest(unittest.TestCase):
         self.assertIn("Apollo | Standard | Watch", self.pushover_service.sent[0]["message"])
         self.assertIn("Kairos | Strict Pass | Healthy", self.pushover_service.sent[0]["message"])
         self.assertNotIn("Simulated", self.pushover_service.sent[0]["message"])
+        self.assertNotIn("Talos", self.pushover_service.sent[0]["message"])
 
     def test_manual_real_status_update_matches_open_positions_snapshot_format(self):
         result = self.manager.send_manual_status_update(trade_mode="real")
@@ -346,15 +380,12 @@ class OpenTradeManagerTest(unittest.TestCase):
         self.assertIn("Kairos | Strict Pass | Healthy", self.pushover_service.sent[0]["message"])
         self.assertNotIn("Fortress", self.pushover_service.sent[0]["message"])
 
-    def test_manual_simulated_status_update_uses_same_snapshot_format(self):
+    def test_manual_simulated_status_update_is_suppressed(self):
         result = self.manager.send_manual_status_update(trade_mode="simulated")
 
-        self.assertTrue(result["sent"])
-        self.assertEqual(result["record_count"], 1)
-        self.assertEqual(len(self.pushover_service.sent), 1)
-        self.assertEqual(self.pushover_service.sent[0]["title"], "DELPHI — OPEN POSITIONS")
-        self.assertIn("Apollo | Fortress | Healthy", self.pushover_service.sent[0]["message"])
-        self.assertNotIn("Standard", self.pushover_service.sent[0]["message"])
+        self.assertFalse(result["sent"])
+        self.assertEqual(result["record_count"], 0)
+        self.assertEqual(len(self.pushover_service.sent), 0)
 
     def test_manual_status_update_can_send_when_notifications_are_off(self):
         self.manager.set_notifications_enabled(False)
@@ -446,7 +477,7 @@ class OpenTradeManagerTest(unittest.TestCase):
 
         second_payload = self.manager.evaluate_open_trades(send_alerts=True)
 
-        self.assertEqual(first_payload["open_trade_count"], 3)
+        self.assertEqual(first_payload["open_trade_count"], 4)
         self.assertEqual(second_payload["alerts_sent"], 0)
         self.assertEqual(len(self.pushover_service.sent), 0)
 
@@ -476,7 +507,11 @@ class OpenTradeManagerTest(unittest.TestCase):
         self.market_data_service.current_spx = 6748.0
 
         payload = self.manager.evaluate_open_trades(send_alerts=False)
-        trade = next(item for item in payload["records"] if item["system_name"] == "Apollo")
+        trade = next(
+            item
+            for item in payload["records"]
+            if item["system_name"] == "Apollo" and item["trade_mode"] == "Real"
+        )
 
         expected_current_pl = round((1.8 - 3.9) * 2 * 100, 2)
         expected_pl_after_close = round((1.8 - 3.9) * 2 * 100, 2)

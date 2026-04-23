@@ -312,6 +312,13 @@ class OpenTradeManager:
         normalized_trade_mode = str(trade_mode or "").strip().lower()
         if normalized_trade_mode not in {"real", "simulated"}:
             raise ValueError(f"Unsupported trade mode for manual status update: {trade_mode}")
+        if normalized_trade_mode != "real":
+            return {
+                "sent": False,
+                "error": "",
+                "record_count": 0,
+                "notifications_enabled": bool(self.notifications_enabled()),
+            }
 
         payload = self.evaluate_open_trades(send_alerts=False)
         selected_records = [
@@ -597,8 +604,13 @@ class OpenTradeManager:
             "trade_mode": trade_mode,
             "profile_label": profile_label,
             "pass_type": self._coerce_text(trade.get("pass_type"), fallback="—"),
+            "short_strike": self._coerce_float(trade.get("short_strike")),
+            "short_strike_display": self._format_number(self._coerce_float(trade.get("short_strike"))),
+            "long_strike": self._coerce_float(trade.get("long_strike")),
+            "long_strike_display": self._format_number(self._coerce_float(trade.get("long_strike"))),
             "entry_timestamp": self._format_datetime(parse_datetime_value(trade.get("entry_datetime")) or now),
             "expiration": self._format_date(self._coerce_trade_expiration(trade)),
+            "expiration_display": self._format_expiration_label(self._coerce_trade_expiration(trade)),
             "underlying_symbol": self._coerce_text(trade.get("underlying_symbol"), fallback="SPX"),
             "option_type": option_type,
             "net_credit_per_contract": metrics["net_credit_per_contract"],
@@ -661,6 +673,8 @@ class OpenTradeManager:
             "status_reason_code": classification["status_reason_code"],
             "thesis_reason_code": classification["thesis_reason_code"],
             "next_trigger": classification["next_trigger"],
+            "exit_plan_summary": classification.get("exit_plan_summary") or classification["next_trigger"],
+            "exit_plan_gates": classification.get("exit_plan_gates") or [],
             "trigger_source": classification["trigger_source"],
             "structure_trigger_fired": classification["structure_trigger_fired"],
             "vwap_trigger_fired": classification["vwap_trigger_fired"],
@@ -781,6 +795,7 @@ class OpenTradeManager:
             "entry_vix": self._coerce_float(trade.get("vix_at_entry") or trade.get("vix_entry")),
             "expected_move_used": entry_expected_move,
             "actual_em_multiple": self._coerce_float(trade.get("actual_em_multiple")),
+            "short_delta": self._coerce_float(trade.get("short_delta")),
             "fallback_used": self._coerce_text(trade.get("fallback_used"), fallback="no"),
             "fallback_rule_name": self._coerce_text(trade.get("fallback_rule_name"), fallback="—"),
             "notes_entry": self._coerce_text(trade.get("notes_entry"), fallback="—"),
@@ -824,6 +839,7 @@ class OpenTradeManager:
 
         action_plan = self._build_action_plan(status, int(metrics.get("remaining_contracts") or 0), metrics)
         next_trigger, next_trigger_action = self._build_price_ladder_next_trigger(trade, metrics)
+        exit_plan_summary = self._build_exit_plan_summary(trade, metrics)
         return {
             "status": status,
             "thesis_status": "neutral",
@@ -831,6 +847,8 @@ class OpenTradeManager:
             "status_reason_code": status_reason_code,
             "thesis_reason_code": "apollo-thesis-neutral",
             "next_trigger": next_trigger,
+            "exit_plan_summary": exit_plan_summary,
+            "exit_plan_gates": self._build_exit_plan_gates(trade, metrics),
             "trigger_source": next_trigger_action,
             "current_structure_grade": current_structure,
             "status_em_multiple": em_multiple,
@@ -879,6 +897,7 @@ class OpenTradeManager:
 
         action_plan = self._build_action_plan(status, int(metrics.get("remaining_contracts") or 0), metrics)
         next_trigger, next_trigger_action = self._build_price_ladder_next_trigger(trade, metrics)
+        exit_plan_summary = self._build_exit_plan_summary(trade, metrics)
         return {
             "status": status,
             "thesis_status": thesis_status,
@@ -886,6 +905,8 @@ class OpenTradeManager:
             "status_reason_code": status_reason_code,
             "thesis_reason_code": thesis_reason_code,
             "next_trigger": next_trigger,
+            "exit_plan_summary": exit_plan_summary,
+            "exit_plan_gates": self._build_exit_plan_gates(trade, metrics),
             "trigger_source": next_trigger_action,
             "current_structure_grade": current_structure,
             "status_em_multiple": em_multiple,
@@ -963,7 +984,7 @@ class OpenTradeManager:
 
     def _load_open_trades(self) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
-        for trade_mode in ("real", "simulated"):
+        for trade_mode in ("real", "simulated", "talos"):
             rows.extend(
                 trade
                 for trade in self.trade_store.list_trades(trade_mode)
@@ -1049,6 +1070,77 @@ class OpenTradeManager:
             )
 
         return ("No future price trigger remains. Close the balance on the next manual risk signal.", "price-ladder-complete")
+
+    def _build_exit_plan_summary(self, trade: Dict[str, Any], metrics: Dict[str, Any]) -> str:
+        original_contracts = max(int(metrics.get("original_contracts") or 0), 0)
+        remaining_contracts = max(int(metrics.get("remaining_contracts") or 0), 0)
+        short_strike = self._coerce_float(trade.get("short_strike"), fallback=0.0) or 0.0
+        long_strike = self._coerce_float(trade.get("long_strike"), fallback=0.0) or 0.0
+        option_type = self._coerce_text(trade.get("option_type"), fallback="Put Credit Spread")
+        if original_contracts <= 0 or remaining_contracts <= 0 or short_strike <= 0 or long_strike <= 0:
+            return "No exit plan is available."
+
+        is_call = "call" in option_type.lower()
+        cumulative_targets = self._build_cumulative_exit_targets(original_contracts)
+        triggered_steps = self._build_trigger_steps(
+            short_strike=short_strike,
+            long_strike=long_strike,
+            is_call=is_call,
+            cumulative_targets=cumulative_targets,
+        )
+        actual_closed_contracts = max(original_contracts - remaining_contracts, 0)
+        future_steps = [step for step in triggered_steps if int(step["required_closed_contracts"]) > actual_closed_contracts and int(step["incremental_contracts"]) > 0]
+        if not future_steps:
+            return "No future trigger remains. Close the balance on the next manual risk signal."
+
+        next_step = future_steps[0]
+        detail = f"Next: {next_step['label']} close {next_step['incremental_contracts']} at SPX {next_step['comparison']} {self._format_number(next_step['trigger_level'])}."
+        later_steps = future_steps[1:]
+        if later_steps:
+            detail = f"{detail} Later: {'; '.join(f"{step['label']} close {step['incremental_contracts']}" for step in later_steps)}."
+        return detail
+
+    def _build_exit_plan_gates(self, trade: Dict[str, Any], metrics: Dict[str, Any]) -> list[Dict[str, Any]]:
+        original_contracts = max(int(metrics.get("original_contracts") or 0), 0)
+        short_strike = self._coerce_float(trade.get("short_strike"), fallback=0.0) or 0.0
+        long_strike = self._coerce_float(trade.get("long_strike"), fallback=0.0) or 0.0
+        option_type = self._coerce_text(trade.get("option_type"), fallback="Put Credit Spread")
+        current_spx = self._coerce_float(metrics.get("current_underlying_price"))
+        remaining_contracts = max(int(metrics.get("remaining_contracts") or 0), 0)
+        if original_contracts <= 0 or short_strike <= 0 or long_strike <= 0:
+            return []
+
+        is_call = "call" in option_type.lower()
+        cumulative_targets = self._build_cumulative_exit_targets(original_contracts)
+        triggered_steps = self._build_trigger_steps(
+            short_strike=short_strike,
+            long_strike=long_strike,
+            is_call=is_call,
+            cumulative_targets=cumulative_targets,
+        )
+        actual_closed_contracts = max(original_contracts - remaining_contracts, 0)
+        gates: list[Dict[str, Any]] = []
+        for step in triggered_steps:
+            incremental_contracts = int(step["incremental_contracts"])
+            executed = incremental_contracts > 0 and int(step["required_closed_contracts"]) <= actual_closed_contracts
+            due_now = False
+            if not executed and current_spx is not None:
+                due_now = self._is_trigger_crossed(current_spx, float(step["trigger_level"]), is_call=is_call)
+            gates.append(
+                {
+                    "label": step["label"],
+                    "trigger_value": float(step["trigger_level"]),
+                    "trigger_value_display": self._format_number(step["trigger_level"]),
+                    "comparison": step["comparison"],
+                    "quantity_to_close": incremental_contracts,
+                    "quantity_to_close_display": str(incremental_contracts),
+                    "executed": executed,
+                    "due_now": due_now,
+                    "state_key": "executed" if executed else ("due" if due_now else "pending"),
+                    "state_label": "Executed" if executed else ("Due Now" if due_now else "Pending"),
+                }
+            )
+        return gates
 
     @staticmethod
     def _build_cumulative_exit_targets(original_contracts: int) -> list[int]:
@@ -1511,6 +1603,15 @@ class OpenTradeManager:
     def _send_management_alert(
         self, trade: Dict[str, Any] | None, record: Dict[str, Any], payload: Dict[str, Any], now: datetime
     ) -> Dict[str, Any]:
+        trade_mode = str(record.get("trade_mode") or (trade or {}).get("trade_mode") or "real").strip().lower()
+        if trade_mode != "real":
+            return {
+                "sent": False,
+                "error": "",
+                "priority": int(payload.get("priority") or 0),
+                "alert_type": payload.get("alert_type"),
+                "sent_at": None,
+            }
         title = str(payload.get("title") or "").strip()
         message = str(payload.get("message") or "").strip()
         priority = int(payload.get("priority") or 0)
@@ -1657,6 +1758,11 @@ class OpenTradeManager:
 
     def _format_date(self, value: date | None) -> str:
         return value.isoformat() if value is not None else "—"
+
+    def _format_expiration_label(self, value: date | None) -> str:
+        if value is None:
+            return "—"
+        return value.strftime("%a %Y-%m-%d")
 
     def _format_datetime(self, value: datetime | None) -> str:
         if value is None:

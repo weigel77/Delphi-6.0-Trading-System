@@ -159,6 +159,10 @@ class ApolloService:
             "provider_name": provider_name,
             "spx": self._build_market_item("SPX", spx_data),
             "vix": self._build_market_item("VIX", vix_data),
+            "header_market_snapshots": {
+                "^GSPC": spx_data or {},
+                "^VIX": vix_data or {},
+            },
             "macro": macro_status,
             "structure": structure,
             "market_calendar": calendar_context,

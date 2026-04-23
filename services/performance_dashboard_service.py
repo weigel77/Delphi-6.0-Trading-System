@@ -31,7 +31,7 @@ PERFORMANCE_FILTER_GROUPS = {
     "system": ["Apollo", "Kairos", "Aegis"],
     "profile": ["Legacy", "Aggressive", "Fortress", "Standard", "Prime", "Subprime"],
     "result": ["Win", "Loss", "Black Swan", "Scratched"],
-    "trade_mode": ["Real", "Simulated"],
+    "trade_mode": ["Real", "Simulated", "Talos"],
     "macro_grade": ["None", "Minor", "Major"],
     "structure_grade": ["Good", "Neutral", "Poor"],
     "timeframe": ["All", "YTD", "Last Month", "Last Qtr", "Current Month", "1 Yr"],
@@ -125,7 +125,7 @@ class PerformanceDashboardService:
 
     def load_records(self) -> list[Dict[str, Any]]:
         records: list[Dict[str, Any]] = []
-        for trade_mode in ("real", "simulated"):
+        for trade_mode in ("real", "simulated", "talos"):
             for trade in self.store.list_trades(trade_mode):
                 records.append(build_performance_record(trade))
         return records
@@ -176,7 +176,13 @@ def normalize_performance_filters(filters: Optional[Dict[str, Iterable[str]]] = 
 
 
 def build_performance_record(trade: Dict[str, Any]) -> Dict[str, Any]:
-    trade_mode = "Real" if str(trade.get("trade_mode") or "").strip().lower() == "real" else "Simulated"
+    normalized_trade_mode = str(trade.get("trade_mode") or "").strip().lower()
+    if normalized_trade_mode == "real":
+        trade_mode = "Real"
+    elif normalized_trade_mode == "talos":
+        trade_mode = "Talos"
+    else:
+        trade_mode = "Simulated"
     profile = resolve_trade_candidate_profile(trade)
     system = normalize_system_name(trade.get("system_name"))
     result = classify_trade_result(trade)

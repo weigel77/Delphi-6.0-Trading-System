@@ -1176,117 +1176,28 @@ class KairosService:
                 current_time_label=current_time_label,
                 current_spx=current_spx,
             )
-            gate_state = trade_lock_in.exit_gate_states.get(recommendation["gate_key"], {})
+            gate_key = recommendation.get("gate_key") or ""
+            gate_state = trade_lock_in.exit_gate_states.get(gate_key, {})
             gate_state.update(
                 {
                     "status": "accepted",
-                    "contracts": recommendation["contracts_to_close"],
+                    "contracts": recommendation.get("contracts_to_close", 0),
                     "time_label": current_time_label,
-                    "note": recommendation.get("note") or "",
-                    "total_debit": recommendation["estimated_total_debit"],
+                    "note": recommendation.get("note") or trade_lock_in.pending_exit_gate_note,
+                    "total_debit": recommendation.get("estimated_total_debit", 0.0),
                 }
             )
+            trade_lock_in.exit_status_summary = gate_state.get("label", "Exit Managed")
             self._clear_pending_exit_gate_locked(trade_lock_in)
-            self._update_trade_mark_to_market_locked(
-                trade_lock_in,
-                current_spx=current_spx,
-                current_time_label=current_time_label,
-                current_vwap=current_vwap,
-                structure_status=structure_status,
-                time_remaining_ratio=time_remaining_ratio,
-                current_bar_number=bar_number,
-            )
-            self._session.status_note = f"Accepted live Kairos exit: {recommendation['title']}."
-            return self._build_payload_locked(now)
 
-    def skip_live_exit_recommendation(self) -> Dict[str, Any]:
-        """Skip the pending live Kairos exit recommendation."""
-        now = self._now()
-        with self._lock:
-            self._refresh_session_locked(now)
-            trade_lock_in = self._live_active_trade
-            if trade_lock_in is None or trade_lock_in.pending_exit_recommendation is None:
-                self._session.status_note = "No pending live Kairos exit recommendation is available to skip."
-                return self._build_payload_locked(now)
-
-            recommendation = dict(trade_lock_in.pending_exit_recommendation)
-            gate_state = trade_lock_in.exit_gate_states.get(recommendation["gate_key"], {})
-            gate_state.update(
-                {
-                    "status": "skipped",
-                    "contracts": recommendation["contracts_to_close"],
-                    "time_label": recommendation.get("current_time_label") or format_display_time(now, self.display_timezone),
-                    "note": recommendation.get("note") or "",
-                    "total_debit": 0.0,
-                }
-            )
-            trade_lock_in.exit_management_note = f"Skipped {recommendation['title']} at {recommendation.get('current_time_label') or format_display_time(now, self.display_timezone)}."
-            trade_lock_in.exit_events.append(
-                self._build_trade_event(
-                    event_key="live-exit-skipped",
-                    label=f"Skipped {recommendation['title']}",
-                    kind="trade-skip",
-                    time_label=recommendation.get("current_time_label") or format_display_time(now, self.display_timezone),
-                    current_spx=recommendation.get("current_spx"),
-                    bar_number=recommendation.get("bar_number"),
-                    timestamp=now,
-                    detail=recommendation.get("note") or "",
-                )
-            )
-            self._clear_pending_exit_gate_locked(trade_lock_in)
-            self._session.status_note = trade_lock_in.exit_management_note
-            return self._build_payload_locked(now)
-
-    def import_historical_replay_template(self, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
-        """Import a real 1-minute SPY day into Kairos Sim via Schwab-first fetch or JSON fallback."""
-        payload = payload or {}
-        now = self._now()
-
-        try:
-            session_date = self._coerce_historical_replay_date(payload.get("session_date"))
-            requested_source = self._coerce_historical_replay_source(payload.get("source"))
-            raw_json = str(payload.get("json_payload") or "").strip()
-            scenario, template = self._resolve_historical_replay_import(
-                session_date=session_date,
-                requested_source=requested_source,
-                raw_json=raw_json,
-            )
-        except (ValueError, MarketDataError, MarketDataAuthenticationError, MarketDataReauthenticationRequired) as exc:
-            with self._lock:
-                self._session.status_note = str(exc)
-                return self._build_payload_locked(now)
-
-        with self._lock:
-            self._refresh_session_locked(now)
-            runner_was_active = self._runner.status in {KairosRunnerStatus.RUNNING, KairosRunnerStatus.PAUSED}
-            was_duplicate = bool(self._scenario_repository and self._scenario_repository.load_bundle_payload(scenario.key) is not None)
-            self._end_runner_locked(now, note="", keep_log=False)
-            self._session = KairosSessionRecord(
-                session_date=now.date(),
-                current_state=KairosState.STOPPED.value,
-            )
-            self._historical_replay_scenarios[scenario.key] = scenario
-            self._historical_replay_templates[scenario.key] = template
-            self._persist_historical_replay_locked(scenario, template)
-            self._runtime.mode = KairosMode.SIMULATION
-            self._clear_live_trade_state_locked()
-            self._runtime.simulation_scenario_name = template.scenario_name
-            self._runtime.simulated_market_session_status = "Open"
-            if scenario.bars:
-                self._runtime.simulated_spx_value = scenario.bars[0].close
-            if scenario.vix_series:
-                self._runtime.simulated_vix_value = scenario.vix_series[0]
-            self._live_best_trade_override_requested = False
-            self._session.status_note = (
-                f"Historical replay ready: {template.scenario_name} {'updated from' if was_duplicate else 'imported from'} {template.source_label}. "
-                f"Select it in the scenario menu to run the real-day session."
-            )
-            if runner_was_active:
-                self._session.status_note = (
-                    f"Historical replay template imported; the active runner was ended so Kairos can use the new day template. "
-                    f"{self._session.status_note}"
-                )
-            return self._build_payload_locked(now)
+            payload = self._build_payload_locked(now)
+            if trade_lock_in.fully_closed:
+                self._session.status_note = f"Live Kairos exit accepted: {gate_state.get('label', 'Kairos exit')}. The trade is fully closed."
+                self._clear_live_trade_state_locked()
+                payload = self._build_payload_locked(now)
+            else:
+                self._session.status_note = f"Live Kairos exit accepted: {gate_state.get('label', 'Kairos exit')}."
+            return payload
 
     def configure_runtime(self, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
         """Update Kairos live or simulation controls."""
@@ -2269,23 +2180,8 @@ class KairosService:
         return evaluator(now, trigger_reason=trigger_reason)
 
     def _send_window_open_notification_locked(self, now: datetime, scan_result: KairosScanResult) -> None:
-        """Send one live Pushover notification when Kairos transitions into a tradable window with a ready candidate."""
-        if self.notification_delivery is None:
-            return
-        if not scan_result.is_window_open or not scan_result.state_transition.is_transition:
-            return
-
-        best_trade_payload = self._build_live_best_trade_override_payload_locked(now)
-        if best_trade_payload.get("status") != "ready" or not best_trade_payload.get("candidate"):
-            return
-
-        result = self.notification_delivery.send_kairos_window_open_alert(
-            scan_result=scan_result,
-            best_trade_payload=best_trade_payload,
-            generated_at=now,
-        )
-        if not result.get("ok"):
-            LOGGER.warning("Kairos window-open Pushover alert failed: %s", result.get("error") or "Unknown error")
+        """Non-trade Kairos notifications are suppressed so only real-trade alerts remain."""
+        return
 
     def _evaluate_scan(self, now: datetime, *, trigger_reason: str, force_refresh: bool = False) -> KairosScanResult:
         session_status = self._get_effective_market_session_status(now)
@@ -5634,8 +5530,10 @@ class KairosService:
         target_distance = float(hybrid_boundary["hybrid_threshold"])
         rejection_reasons: List[str] = []
 
+        conservative_credit = max(0.0, (short_put.get("bid") or 0.0) - (long_put.get("ask") or 0.0))
         credit = self._calculate_live_credit(short_put, long_put)
         credit_dollars = round(max(0.0, credit * 100.0), 2)
+        conservative_credit_dollars = round(max(0.0, conservative_credit * 100.0), 2)
         distance_points = max(0.0, spot - short_put["strike"])
         distance_percent = (distance_points / spot) * 100.0 if spot else 0.0
         distance_ratio = (distance_points / daily_move_anchor) if daily_move_anchor > 0 else 0.0
@@ -5659,7 +5557,7 @@ class KairosService:
 
         available = not rejection_reasons
         rationale = (
-            f"Same-day Schwab chain selected the {int(short_put['strike'])} / {int(long_put['strike'])} spread using live bid/ask pricing with a midpoint sanity floor."
+            f"Same-day Schwab chain selected the {int(short_put['strike'])} / {int(long_put['strike'])} spread. Talos entry pricing uses conservative short bid minus long ask, while Kairos ranking keeps the midpoint sanity floor."
             if available
             else rejection_reasons[0]
         )
@@ -5679,6 +5577,7 @@ class KairosService:
             "spread_width_display": f"{spread_width} pts",
             "simulated_time": format_simulated_clock(simulated_time),
             "credit_estimate_dollars": credit_dollars,
+            "conservative_credit_dollars": conservative_credit_dollars,
             "credit_estimate_display": format_currency_value(credit_dollars),
             "premium_received_dollars": total_credit,
             "premium_received_display": format_currency_value(total_credit),
@@ -5706,6 +5605,8 @@ class KairosService:
             "actual_em_multiple": round(distance_ratio, 2),
             "fallback_used": "no",
             "fallback_rule_name": "",
+            "short_leg_bid": round(float(short_put.get("bid") or 0.0), 2),
+            "long_leg_ask": round(float(long_put.get("ask") or 0.0), 2),
             "estimated_short_delta": estimated_short_delta,
             "estimated_short_delta_display": f"{estimated_short_delta:.2f}",
             "estimated_otm_probability": round(estimated_otm_probability, 2),
