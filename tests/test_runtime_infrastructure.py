@@ -28,11 +28,11 @@ class RuntimeInfrastructureTest(unittest.TestCase):
             self.assertEqual(infrastructure.storage.import_preview_root, Path(app.instance_path))
             self.assertEqual(app.config["TRADE_DATABASE"], str(database_path))
             self.assertEqual(app.config["KAIROS_REPLAY_STORAGE_DIR"], str(replay_path))
-            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 7.2.0 Local")
-            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 7.2.0")
+            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 7.2.9 Local")
+            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 7.2.9")
             self.assertIn("talos_service", app.extensions)
 
-    def test_unified_runtime_ignores_hosted_overrides_and_keeps_local_surface(self):
+    def test_hosted_runtime_uses_hosted_surface_when_explicitly_requested(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = Path(temp_dir) / "unified-infra.db"
             app = create_app(
@@ -40,6 +40,7 @@ class RuntimeInfrastructureTest(unittest.TestCase):
                     "TESTING": True,
                     "RUNTIME_TARGET": "hosted",
                     "HOSTED_PUBLIC_BASE_URL": "https://hosted.example.test",
+                    "SCHWAB_REDIRECT_URI": "https://hosted.example.test/callback",
                     "SUPABASE_URL": "https://project.supabase.co",
                     "SUPABASE_PUBLISHABLE_KEY": "publishable-key",
                     "SUPABASE_SECRET_KEY": "secret-key",
@@ -50,20 +51,15 @@ class RuntimeInfrastructureTest(unittest.TestCase):
             infrastructure = app.extensions["host_infrastructure"]
             profile = app.extensions["runtime_profile"]
 
-            self.assertEqual(infrastructure.host_kind, "local")
-            self.assertEqual(infrastructure.settings.runtime_target, "local")
-            self.assertEqual(app.config["RUNTIME_TARGET"], "local")
-            self.assertEqual(app.config["HOSTED_PUBLIC_BASE_URL"], "")
-            self.assertEqual(app.config["APP_PORT"], 5001)
-            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 7.2.0 Local")
-            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 7.2.0")
+            self.assertEqual(infrastructure.host_kind, "hosted")
+            self.assertEqual(infrastructure.settings.runtime_target, "hosted")
+            self.assertEqual(app.config["RUNTIME_TARGET"], "hosted")
+            self.assertEqual(app.config["HOSTED_PUBLIC_BASE_URL"], "https://hosted.example.test")
+            self.assertEqual(app.config["SCHWAB_REDIRECT_URI"], "https://hosted.example.test/callback")
             self.assertEqual(profile.host, "127.0.0.1")
-            self.assertEqual(profile.port, 5001)
+            self.assertEqual(profile.port, app.config["APP_PORT"])
             self.assertTrue(profile.use_https)
+            self.assertEqual(profile.launch_url, "https://hosted.example.test")
 
             client = app.test_client()
             self.assertEqual(client.get("/").status_code, 302)
-            self.assertEqual(client.get("/hosted").status_code, 404)
-            self.assertEqual(client.get("/hosted/manage-trades").status_code, 404)
-            self.assertEqual(client.get("/hosted/kairos/live").status_code, 404)
-            self.assertEqual(client.get("/sign-in").status_code, 404)

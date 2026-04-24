@@ -509,6 +509,27 @@ def mask_oauth_state(value: Any) -> str:
     return f"{text[:6]}...{text[-4:]}"
 
 
+LOCAL_SCHWAB_REDIRECT_URI = "https://127.0.0.1:5001/callback"
+
+
+def resolve_schwab_redirect_uri(*, runtime_target: str, hosted_public_base_url: str, configured_redirect_uri: str) -> str:
+    """Resolve the active Schwab OAuth callback URI for the current runtime."""
+    normalized_runtime_target = str(runtime_target or "local").strip().lower() or "local"
+    normalized_hosted_public_base_url = str(hosted_public_base_url or "").strip()
+    normalized_configured_redirect_uri = str(configured_redirect_uri or "").strip()
+
+    if normalized_runtime_target == "hosted":
+        if normalized_configured_redirect_uri:
+            return normalized_configured_redirect_uri
+        if normalized_hosted_public_base_url:
+            return f"{normalized_hosted_public_base_url.rstrip('/')}/callback"
+        return ""
+
+    if normalized_configured_redirect_uri:
+        return normalized_configured_redirect_uri
+    return LOCAL_SCHWAB_REDIRECT_URI
+
+
 RUNTIME_APP_CONFIG_MAP = {
     "RUNTIME_TARGET": "runtime_target",
     "HOSTED_PUBLIC_BASE_URL": "hosted_public_base_url",
@@ -569,8 +590,14 @@ def resolve_runtime_app_config(app: Flask, base_config: AppConfig) -> AppConfig:
 
     runtime_target = str(config_payload.get("runtime_target") or "local").strip().lower() or "local"
     hosted_public_base_url = str(config_payload.get("hosted_public_base_url") or "").strip()
-    if runtime_target == "hosted" and hosted_public_base_url:
-        config_payload["schwab_redirect_uri"] = f"{hosted_public_base_url.rstrip('/')}/callback"
+    config_payload["runtime_target"] = runtime_target
+    config_payload["hosted_public_base_url"] = hosted_public_base_url
+    config_payload["schwab_redirect_uri"] = resolve_schwab_redirect_uri(
+        runtime_target=runtime_target,
+        hosted_public_base_url=hosted_public_base_url,
+        configured_redirect_uri=str(config_payload.get("schwab_redirect_uri") or ""),
+    )
+    if runtime_target == "hosted":
         config_payload["schwab_token_path"] = "supabase://hosted_runtime_state/schwab_oauth_token/default"
 
     return AppConfig(**config_payload)
@@ -598,11 +625,6 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         normalized_test_config = dict(test_config)
         normalized_test_config.setdefault("RUNTIME_TARGET", "local")
         app.config.update(normalized_test_config)
-    app.config["RUNTIME_TARGET"] = "local"
-    app.config["APP_HOST"] = "127.0.0.1"
-    app.config["HOSTED_PUBLIC_BASE_URL"] = ""
-    app.config["APP_PORT"] = 5001
-    app.config["SCHWAB_REDIRECT_URI"] = "https://127.0.0.1:5001/callback"
     runtime_app_config = resolve_runtime_app_config(app, APP_CONFIG)
     apply_runtime_app_config_to_flask_config(app, runtime_app_config)
     host_infrastructure_assembler = select_host_infrastructure_assembler(app, runtime_app_config)
@@ -610,6 +632,12 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     configure_logging(app, host_infrastructure)
     runtime_app_config = resolve_runtime_app_config(app, APP_CONFIG)
     apply_runtime_app_config_to_flask_config(app, runtime_app_config)
+    app.logger.info(
+        "Runtime callback config | runtime_target=%s | hosted_public_base_url=%s | schwab_redirect_uri=%s",
+        runtime_app_config.runtime_target,
+        runtime_app_config.hosted_public_base_url or "missing",
+        runtime_app_config.schwab_redirect_uri or "missing",
+    )
     runtime_profile = select_runtime_profile(app, runtime_app_config)
     launch_behavior = WebBrowserLaunchBehavior()
     lifecycle_coordinator = LocalRuntimeLifecycleCoordinator(
@@ -2590,8 +2618,10 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         workflow_state.put(oauth_session_keys["connected"], False)
         workflow_state.put(oauth_session_keys["authorized"], False)
         app.logger.info(
-            "OAuth state created | env=%s | port=%s | redirect_uri=%s | token_target_path=%s | session_cookie=%s | oauth_namespace=%s | oauth_state=%s",
+            "OAuth state created | runtime_target=%s | env=%s | hosted_public_base_url=%s | port=%s | redirect_uri=%s | token_target_path=%s | session_cookie=%s | oauth_namespace=%s | oauth_state=%s",
+            runtime_app_config.runtime_target,
             runtime_app_config.app_display_name,
+            runtime_app_config.hosted_public_base_url or "missing",
             runtime_app_config.app_port,
             runtime_app_config.schwab_redirect_uri,
             getattr(auth_service.token_store, "file_path", runtime_app_config.schwab_token_path),
@@ -2602,7 +2632,13 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
         try:
             authorize_url = auth_service.build_authorization_url(state=state)
-            app.logger.info("Schwab authorize URL | %s", authorize_url)
+            app.logger.info(
+                "Schwab authorize URL | runtime_target=%s | hosted_public_base_url=%s | redirect_uri=%s | authorize_url=%s",
+                runtime_app_config.runtime_target,
+                runtime_app_config.hosted_public_base_url or "missing",
+                runtime_app_config.schwab_redirect_uri,
+                authorize_url,
+            )
             return redirect(authorize_url)
         except Exception as exc:
             workflow_state.put(oauth_session_keys["login_in_progress"], False)
