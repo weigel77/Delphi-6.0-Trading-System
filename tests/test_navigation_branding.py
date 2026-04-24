@@ -231,14 +231,14 @@ class DelphiNavigationBrandingTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["message"], "Pushover test alert sent.")
-        self.assertEqual(payload["title"], "Delphi 7.2.10 Local Test Alert")
+        self.assertEqual(payload["title"], "Delphi 7.2.11 Local Test Alert")
         self.assertEqual(len(pushover_calls), 1)
         self.assertEqual(pushover_calls[0]["api_url"], "https://api.pushover.net/1/messages.json")
-        self.assertEqual(pushover_calls[0]["payload"]["title"], "Delphi 7.2.10 Local Test Alert")
+        self.assertEqual(pushover_calls[0]["payload"]["title"], "Delphi 7.2.11 Local Test Alert")
         self.assertIn("SPX Update", pushover_calls[0]["payload"]["message"])
         self.assertIn("SPX: 6,123.45", pushover_calls[0]["payload"]["message"])
         self.assertIn("VIX: 18.76", pushover_calls[0]["payload"]["message"])
-        self.assertIn("Source: Delphi 7.2.10 Local Pushover test", pushover_calls[0]["payload"]["message"])
+        self.assertIn("Source: Delphi 7.2.11 Local Pushover test", pushover_calls[0]["payload"]["message"])
 
     def test_manual_text_status_endpoint_surfaces_missing_pushover_credentials(self):
         pushover_service = self.app.extensions["pushover_service"]

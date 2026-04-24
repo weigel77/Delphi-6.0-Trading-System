@@ -856,6 +856,15 @@
                     {% endif %}
                 </section>
             </section>
+        {% elif active_page == 'apollo' %}
+            <section class="panel apollo-panel">
+                <div class="message message-warning message-inline">
+                    Apollo output is unavailable for this request. Run Apollo to load Gate 1, Gate 2, and Gate 3 details.
+                </div>
+                <div class="actions" style="margin-top: 1rem;">
+                    <a class="button-link" href="{{ routes.get('apollo', url_for('run_apollo', autorun=1)) }}">Run Apollo</a>
+                </div>
+            </section>
         {% endif %}
     </main>
 

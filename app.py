@@ -640,9 +640,9 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     app.config["APP_HOST"] = "127.0.0.1"
     app.config["HOSTED_PUBLIC_BASE_URL"] = ""
     app.config["APP_PORT"] = 5001
-    app.config["APP_DISPLAY_NAME"] = "Delphi 7.2.10 Local"
-    app.config["APP_PAGE_KICKER"] = "Delphi 7.2.10 Local"
-    app.config["APP_VERSION_LABEL"] = "Version 7.2.10"
+    app.config["APP_DISPLAY_NAME"] = "Delphi 7.2.11 Local"
+    app.config["APP_PAGE_KICKER"] = "Delphi 7.2.11 Local"
+    app.config["APP_VERSION_LABEL"] = "Version 7.2.11"
     runtime_app_config = resolve_runtime_app_config(app, APP_CONFIG)
     apply_runtime_app_config_to_flask_config(app, runtime_app_config)
     host_infrastructure_assembler = select_host_infrastructure_assembler(app, runtime_app_config)
@@ -2033,6 +2033,9 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
                     app.logger.exception("Unexpected hosted Apollo autorun error: %s", exc)
         apollo_render_state = resolve_hosted_apollo_render_state(app=app)
         apollo_result = apollo_render_state["payload"]
+        diagnostic_message = None
+        if apollo_result is None and error_message is None:
+            diagnostic_message = "Apollo output is not available yet. Use Run Apollo to execute a live pass."
         app.logger.info(
             "Hosted Apollo desktop render | route_entered=%s | payload_source=%s | payload_id=%s | cache_key=%s | source_object=%s",
             request.path,
@@ -2048,7 +2051,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             apollo_result=apollo_result,
             error_message=error_message,
             info_message=info_message,
-            diagnostic_message=None,
+            diagnostic_message=diagnostic_message,
             active_page="apollo",
             page_browser_title="Apollo | Delphi",
             page_heading="Apollo",
@@ -2532,6 +2535,12 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             except Exception as exc:  # pragma: no cover - defensive logging
                 error_message = "An unexpected error occurred while running Apollo. Check the log for details."
                 app.logger.exception("Unexpected Apollo error: %s", exc)
+
+        if apollo_result is None and error_message is None:
+            diagnostic_message = (
+                "Apollo output is not available yet for this request. "
+                "Use /apollo?autorun=1 or run Apollo from the page action to load Gate output."
+            )
 
         response = render_research_page(
             form_data=form_data,
@@ -6496,7 +6505,7 @@ def get_apollo_trigger_source() -> Optional[str]:
     """Return the Apollo trigger source for the current request."""
     if request.method == "POST":
         return "button"
-    if is_local_dev_request() and str(request.args.get("autorun", "")).strip().lower() in {"1", "true", "yes", "on"}:
+    if str(request.args.get("autorun", "")).strip().lower() in {"1", "true", "yes", "on"}:
         return "autorun URL"
     return None
 

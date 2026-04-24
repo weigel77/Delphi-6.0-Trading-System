@@ -1354,7 +1354,7 @@ class TradeRoutesTest(unittest.TestCase):
         response = self.client.post("/apollo")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Version 7.2.10", response.data)
+        self.assertIn(b"Version 7.2.11", response.data)
         self.assertIn(b"Apollo: Greek God of Prophecy and Part-Time Options Trader", response.data)
         self.assertIn(b"Base Structure", response.data)
         self.assertIn(b"RSI Modifier", response.data)
@@ -1372,6 +1372,23 @@ class TradeRoutesTest(unittest.TestCase):
         self.assertNotIn(b"Target next market day", response.data)
         self.assertNotIn(b"Checked at", response.data)
         self.assertIn(b"/apollo/prefill-candidate", response.data)
+
+    @patch("app.execute_apollo_precheck")
+    def test_apollo_get_autorun_executes_for_non_local_host(self, execute_apollo_precheck):
+        execute_apollo_precheck.return_value = self._apollo_render_payload()
+
+        response = self.client.get("/apollo?autorun=1", headers={"Host": "eigeltrade.com"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Apollo Gate 3 -- Engine", response.data)
+        execute_apollo_precheck.assert_called_once()
+
+    def test_apollo_get_without_autorun_shows_diagnostic_panel(self):
+        response = self.client.get("/apollo", headers={"Host": "eigeltrade.com"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Apollo output is unavailable for this request", response.data)
+        self.assertIn(b"Run Apollo", response.data)
 
     @staticmethod
     def _apollo_render_payload():
