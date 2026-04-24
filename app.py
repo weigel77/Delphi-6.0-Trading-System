@@ -584,17 +584,24 @@ RUNTIME_APP_CONFIG_MAP = {
 def resolve_runtime_app_config(app: Flask, base_config: AppConfig) -> AppConfig:
     """Merge Flask app overrides into the cached environment config for runtime composition."""
     config_payload = asdict(base_config)
+    requested_runtime_config = dict(app.extensions.get("requested_runtime_config") or {})
     for app_key, config_key in RUNTIME_APP_CONFIG_MAP.items():
         if app_key in app.config and app.config.get(app_key) is not None:
             config_payload[config_key] = app.config.get(app_key)
 
     runtime_target = str(config_payload.get("runtime_target") or "local").strip().lower() or "local"
     hosted_public_base_url = str(config_payload.get("hosted_public_base_url") or "").strip()
+    callback_runtime_target = str(
+        requested_runtime_config.get("runtime_target") or base_config.runtime_target or runtime_target or "local"
+    ).strip().lower() or "local"
+    callback_hosted_public_base_url = str(
+        requested_runtime_config.get("hosted_public_base_url") or base_config.hosted_public_base_url or hosted_public_base_url or ""
+    ).strip()
     config_payload["runtime_target"] = runtime_target
     config_payload["hosted_public_base_url"] = hosted_public_base_url
     config_payload["schwab_redirect_uri"] = resolve_schwab_redirect_uri(
-        runtime_target=runtime_target,
-        hosted_public_base_url=hosted_public_base_url,
+        runtime_target=callback_runtime_target,
+        hosted_public_base_url=callback_hosted_public_base_url,
         configured_redirect_uri=str(config_payload.get("schwab_redirect_uri") or ""),
     )
     if runtime_target == "hosted":
@@ -625,6 +632,14 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         normalized_test_config = dict(test_config)
         normalized_test_config.setdefault("RUNTIME_TARGET", "local")
         app.config.update(normalized_test_config)
+    app.extensions["requested_runtime_config"] = {
+        "runtime_target": str(app.config.get("RUNTIME_TARGET") or APP_CONFIG.runtime_target or "local").strip().lower() or "local",
+        "hosted_public_base_url": str(app.config.get("HOSTED_PUBLIC_BASE_URL") or APP_CONFIG.hosted_public_base_url or "").strip(),
+    }
+    app.config["RUNTIME_TARGET"] = "local"
+    app.config["APP_HOST"] = "127.0.0.1"
+    app.config["HOSTED_PUBLIC_BASE_URL"] = ""
+    app.config["APP_PORT"] = 5001
     runtime_app_config = resolve_runtime_app_config(app, APP_CONFIG)
     apply_runtime_app_config_to_flask_config(app, runtime_app_config)
     host_infrastructure_assembler = select_host_infrastructure_assembler(app, runtime_app_config)

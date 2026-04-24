@@ -3896,7 +3896,7 @@ class TalosService:
         return sum(items) / len(items)
 
     def _version_number(self) -> str:
-        return str(self.config.app_version_label or "Version 7.2.9").replace("Version", "").strip() or "7.2.9"
+        return str(self.config.app_version_label or "Version 7.2.10").replace("Version", "").strip() or "7.2.10"
 
     def _format_currency(self, value: float) -> str:
         return f"${value:,.2f}"

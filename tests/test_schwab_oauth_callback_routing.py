@@ -39,7 +39,7 @@ class SchwabOauthCallbackRoutingTest(unittest.TestCase):
             SCHWAB_REDIRECT_URI="https://eigeltrade.com/callback",
         )
 
-        self.assertEqual(runtime_config.runtime_target, "hosted")
+        self.assertEqual(runtime_config.runtime_target, "local")
         self.assertEqual(runtime_config.schwab_redirect_uri, "https://eigeltrade.com/callback")
         self.assertIn("redirect_uri=https%3A%2F%2Feigeltrade.com%2Fcallback", authorize_url)
 
