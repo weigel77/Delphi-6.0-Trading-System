@@ -116,6 +116,14 @@
                     {% endfor %}
                 </div>
             {% endif %}
+
+            <div class="hosted-shell-toolbar">
+                <div class="hosted-shell-toolbar-actions">
+                    <form method="post" action="{{ url_for('hosted_home_refresh_from_supabase') }}">
+                        <button type="submit" class="button-link">Refresh from Supabase Truth</button>
+                    </form>
+                </div>
+            </div>
         </section>
     </main>
 </body>

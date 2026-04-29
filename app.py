@@ -640,9 +640,9 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     app.config["APP_HOST"] = "127.0.0.1"
     app.config["HOSTED_PUBLIC_BASE_URL"] = ""
     app.config["APP_PORT"] = 5001
-    app.config["APP_DISPLAY_NAME"] = "Delphi 7.2.12 Local"
-    app.config["APP_PAGE_KICKER"] = "Delphi 7.2.12 Local"
-    app.config["APP_VERSION_LABEL"] = "Version 7.2.12"
+    app.config["APP_DISPLAY_NAME"] = "Delphi 7.2.13 Local"
+    app.config["APP_PAGE_KICKER"] = "Delphi 7.2.13 Local"
+    app.config["APP_VERSION_LABEL"] = "Version 7.2.13"
     runtime_app_config = resolve_runtime_app_config(app, APP_CONFIG)
     apply_runtime_app_config_to_flask_config(app, runtime_app_config)
     host_infrastructure_assembler = select_host_infrastructure_assembler(app, runtime_app_config)
@@ -1840,6 +1840,17 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         except Exception as exc:
             set_status_message(f"Supabase refresh failed: {exc}", level="warning")
         return redirect(url_for("hosted_shell_manage_trades"))
+
+    @app.post("/hosted/home/refresh-from-supabase")
+    def hosted_home_refresh_from_supabase() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        try:
+            _execute_supabase_refresh(app)
+        except Exception as exc:
+            set_status_message(f"Supabase refresh failed: {exc}", level="warning")
+        return redirect(url_for("hosted_shell_home"))
 
     @app.route("/hosted/open-trades", methods=["GET"])
     def hosted_shell_open_trades() -> Any:

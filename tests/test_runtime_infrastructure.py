@@ -28,8 +28,8 @@ class RuntimeInfrastructureTest(unittest.TestCase):
             self.assertEqual(infrastructure.storage.import_preview_root, Path(app.instance_path))
             self.assertEqual(app.config["TRADE_DATABASE"], str(database_path))
             self.assertEqual(app.config["KAIROS_REPLAY_STORAGE_DIR"], str(replay_path))
-            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 7.2.12 Local")
-            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 7.2.12")
+            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 7.2.13 Local")
+            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 7.2.13")
             self.assertIn("talos_service", app.extensions)
 
     def test_unified_runtime_ignores_hosted_overrides_and_keeps_local_surface(self):
@@ -55,8 +55,8 @@ class RuntimeInfrastructureTest(unittest.TestCase):
             self.assertEqual(app.config["RUNTIME_TARGET"], "local")
             self.assertEqual(app.config["HOSTED_PUBLIC_BASE_URL"], "")
             self.assertEqual(app.config["APP_PORT"], 5001)
-            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 7.2.12 Local")
-            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 7.2.12")
+            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 7.2.13 Local")
+            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 7.2.13")
             self.assertEqual(profile.host, "127.0.0.1")
             self.assertTrue(profile.use_https)
 
