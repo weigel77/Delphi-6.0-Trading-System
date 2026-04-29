@@ -1190,6 +1190,61 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         set_status_message("Trade not found.", level="error")
         return redirect(url_for("hosted_shell_journal", trade_mode=normalized_mode))
 
+    @app.post("/hosted/journal/refresh-from-supabase")
+    def hosted_journal_refresh_from_supabase() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        trade_mode = resolve_trade_mode(request.form.get("trade_mode") or "real")
+        try:
+            _clear_hosted_payload_cache(app=app)
+            trade_store = get_trade_store(app)
+            real_trades = trade_store.list_trades("real")
+            sim_trades = trade_store.list_trades("simulated")
+            all_trades = real_trades + sim_trades
+            journal_count = len(all_trades)
+            max_trade_number = max((int(t.get("trade_number") or 0) for t in all_trades), default=0)
+            active_states = get_open_trade_manager(app).state_repository.load_management_states()
+            active_count = len(active_states)
+            set_status_message(
+                f"Refreshed from Supabase: {journal_count} journal row(s) loaded, "
+                f"max trade # {max_trade_number}, {active_count} active_trades row(s).",
+                level="info",
+            )
+        except Exception as exc:
+            set_status_message(
+                f"Supabase refresh failed: {exc}",
+                level="warning",
+            )
+        return redirect(url_for("hosted_shell_journal", trade_mode=trade_mode))
+
+    @app.post("/hosted/manage-trades/refresh-from-supabase")
+    def hosted_manage_trades_refresh_from_supabase() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        try:
+            _clear_hosted_payload_cache(app=app)
+            trade_store = get_trade_store(app)
+            real_trades = trade_store.list_trades("real")
+            sim_trades = trade_store.list_trades("simulated")
+            all_trades = real_trades + sim_trades
+            journal_count = len(all_trades)
+            max_trade_number = max((int(t.get("trade_number") or 0) for t in all_trades), default=0)
+            active_states = get_open_trade_manager(app).state_repository.load_management_states()
+            active_count = len(active_states)
+            set_status_message(
+                f"Refreshed from Supabase: {journal_count} journal row(s) loaded, "
+                f"max trade # {max_trade_number}, {active_count} active_trades row(s).",
+                level="info",
+            )
+        except Exception as exc:
+            set_status_message(
+                f"Supabase refresh failed: {exc}",
+                level="warning",
+            )
+        return redirect(url_for("hosted_shell_manage_trades"))
+
     @app.route("/hosted/open-trades", methods=["GET"])
     def hosted_shell_open_trades() -> Any:
         identity, error_response = authorize_hosted_private_browser_request(app)
@@ -1224,6 +1279,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
                 "real_status_update": url_for("hosted_open_trade_management_status_update", trade_mode="real"),
                 "simulated_status_update": url_for("hosted_open_trade_management_status_update", trade_mode="simulated"),
                 "prefill_close": "hosted_open_trade_management_prefill_close",
+                "refresh_supabase": url_for("hosted_manage_trades_refresh_from_supabase"),
             },
             suppress_open_positions_copy=True,
             hosted_admin_error=admin_error,
@@ -3009,6 +3065,7 @@ def render_hosted_journal_page(
         hosted_edit_enabled=True,
         hosted_delete_enabled=True,
         hosted_admin_error=admin_error,
+        supabase_refresh_url=url_for("hosted_journal_refresh_from_supabase"),
         **context,
         **build_hosted_template_context(identity, app=app),
     )
