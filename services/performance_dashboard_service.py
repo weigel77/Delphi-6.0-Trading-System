@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 import math
 from typing import Any, Dict, Iterable, Optional
 
@@ -17,6 +18,7 @@ from .trade_store import (
     classify_expected_move_usage,
     expected_move_learning_weight,
     normalize_expected_move_source,
+    parse_datetime_value,
     normalize_system_name,
     resolve_trade_candidate_profile,
     resolve_trade_credit_model,
@@ -29,13 +31,15 @@ PERFORMANCE_FILTER_GROUPS = {
     "system": ["Apollo", "Kairos", "Aegis"],
     "profile": ["Legacy", "Aggressive", "Fortress", "Standard", "Prime", "Subprime"],
     "result": ["Win", "Loss", "Black Swan", "Scratched"],
-    "trade_mode": ["Real", "Simulated"],
+    "trade_mode": ["Real", "Simulated", "Talos"],
     "macro_grade": ["None", "Minor", "Major"],
     "structure_grade": ["Good", "Neutral", "Poor"],
+    "timeframe": ["All", "YTD", "Last Month", "Last Qtr", "Current Month", "1 Yr"],
 }
 
 PERFORMANCE_DEFAULT_FILTERS = {
     "trade_mode": ("real",),
+    "timeframe": ("all",),
 }
 
 VIX_BUCKETS = ["<18", "18-22", "22-26", "26+"]
@@ -49,13 +53,9 @@ SAFETY_RATIO_BUCKETS = [
     {"key": "2.0-2.2", "label": "2.0-2.2x EM", "minimum": 2.0, "maximum": 2.2},
     {"key": "2.2+", "label": "2.2+x EM", "minimum": 2.2, "maximum": None},
 ]
-PROFILE_EM_VIX_REGIMES = [
-    {"key": "vix_ge_19", "label": "VIX >= 19", "minimum": 19.0, "maximum": None},
-    {"key": "vix_lt_19", "label": "VIX < 19", "minimum": None, "maximum": 19.0},
-]
-PROFILE_EM_VIEW_REAL_ONLY = "real_only"
-PROFILE_EM_VIEW_REAL_PLUS_SIMULATED = "real_plus_simulated"
-MIN_PROFILE_EM_RECOMMENDATION_SCORED_TRADES = 2
+DEFAULT_VIX_REGIME_EDGES = [18.0, 22.0, 28.0]
+RISK_EXIT_REASON_KEYWORDS = ("risk", "defense", "defence", "stop", "breach", "touch", "threat", "close now", "short strike", "long strike")
+MAX_ANALYTIC_EM_MULTIPLE = 10.0
 
 
 @dataclass(frozen=True)
@@ -66,6 +66,7 @@ class PerformanceFilters:
     trade_mode: tuple[str, ...]
     macro_grade: tuple[str, ...]
     structure_grade: tuple[str, ...]
+    timeframe: tuple[str, ...]
 
     def as_dict(self) -> Dict[str, list[str]]:
         return {
@@ -75,6 +76,7 @@ class PerformanceFilters:
             "trade_mode": list(self.trade_mode),
             "macro_grade": list(self.macro_grade),
             "structure_grade": list(self.structure_grade),
+            "timeframe": list(self.timeframe),
         }
 
 
@@ -123,7 +125,7 @@ class PerformanceDashboardService:
 
     def load_records(self) -> list[Dict[str, Any]]:
         records: list[Dict[str, Any]] = []
-        for trade_mode in ("real", "simulated"):
+        for trade_mode in ("real", "simulated", "talos"):
             for trade in self.store.list_trades(trade_mode):
                 records.append(build_performance_record(trade))
         return records
@@ -137,7 +139,13 @@ def build_dashboard_payload(records: list[Dict[str, Any]], filters: Optional[Dic
     metrics = build_metric_payload(filtered_records, outcomes=outcome_summary)
     chart_data = build_chart_payload(filtered_records, outcomes=outcome_summary, safety_optimization=safety_optimization)
     learning = build_learning_payload(filtered_records, outcomes=outcome_summary, safety_optimization=safety_optimization)
-    learning["profile_em_safety_distance"] = build_profile_em_safety_distance_payload(records, filters=normalized_filters)
+    learning["profile_em_performance"] = build_profile_em_performance_payload(filtered_records)
+    learning["distance_efficiency"] = build_distance_efficiency_payload(filtered_records)
+    learning["time_of_entry_edge"] = build_time_of_entry_edge_payload(filtered_records)
+    learning["exit_efficiency"] = build_exit_efficiency_payload(filtered_records)
+    learning["vix_regime_performance"] = build_vix_regime_performance_payload(filtered_records)
+    learning["expected_move_breach_analysis"] = build_expected_move_breach_analysis_payload(filtered_records)
+    learning["data_limitations"] = build_performance_data_limitations(learning)
     return {
         "filters": normalized_filters.as_dict(),
         "filter_groups": PERFORMANCE_FILTER_GROUPS,
@@ -168,12 +176,18 @@ def normalize_performance_filters(filters: Optional[Dict[str, Iterable[str]]] = 
 
 
 def build_performance_record(trade: Dict[str, Any]) -> Dict[str, Any]:
-    trade_mode = "Real" if str(trade.get("trade_mode") or "").strip().lower() == "real" else "Simulated"
+    normalized_trade_mode = str(trade.get("trade_mode") or "").strip().lower()
+    if normalized_trade_mode == "real":
+        trade_mode = "Real"
+    elif normalized_trade_mode == "talos":
+        trade_mode = "Talos"
+    else:
+        trade_mode = "Simulated"
     profile = resolve_trade_candidate_profile(trade)
     system = normalize_system_name(trade.get("system_name"))
     result = classify_trade_result(trade)
     gross_pnl = coerce_float(trade.get("gross_pnl") if trade.get("gross_pnl") is not None else trade.get("pnl"))
-    trade_date = pick_trade_date(trade)
+    trade_date = pick_performance_date(trade)
     derived_status = str(trade.get("derived_status_label") or trade.get("status") or "").strip().title() or "Open"
     expected_move_metadata = resolve_trade_expected_move(trade)
     expected_move = coerce_float(expected_move_metadata.get("value"))
@@ -211,6 +225,7 @@ def build_performance_record(trade: Dict[str, Any]) -> Dict[str, Any]:
     credit_efficiency_pct = (risk_efficiency * 100.0) if risk_efficiency is not None else None
     actual_distance_to_short = coerce_float(trade.get("actual_distance_to_short"))
     actual_em_multiple = coerce_float(trade.get("actual_em_multiple"))
+    close_events = [dict(item) for item in (trade.get("close_events") or []) if isinstance(item, dict)]
     return {
         "id": trade.get("id"),
         "trade_number": trade.get("trade_number"),
@@ -224,8 +239,12 @@ def build_performance_record(trade: Dict[str, Any]) -> Dict[str, Any]:
         "gross_pnl": gross_pnl,
         "trade_date": trade_date,
         "trade_date_label": trade_date or "—",
+        "entry_datetime": trade.get("entry_datetime"),
+        "expiration_date": trade.get("expiration_date"),
         "journal_name": str(trade.get("journal_name") or "Apollo Main"),
         "close_reason": str(trade.get("close_reason") or ""),
+        "close_method": str(trade.get("close_method") or ""),
+        "close_events": close_events,
         "spx_at_entry": coerce_float(trade.get("spx_at_entry") if trade.get("spx_at_entry") is not None else trade.get("spx_entry")),
         "short_strike": coerce_float(trade.get("short_strike")),
         "expected_move": expected_move,
@@ -256,6 +275,13 @@ def build_performance_record(trade: Dict[str, Any]) -> Dict[str, Any]:
         "boundary_rule_used": str(trade.get("boundary_rule_used") or ""),
         "actual_distance_to_short": actual_distance_to_short,
         "actual_em_multiple": actual_em_multiple,
+        "spx_at_exit": coerce_float(trade.get("spx_at_exit")),
+        "long_strike": coerce_float(trade.get("long_strike")),
+        "option_type": str(trade.get("option_type") or ""),
+        "has_partial_close": bool(trade.get("has_partial_close")),
+        "has_expire_event": bool(trade.get("has_expire_event")),
+        "original_contracts": to_int_or_none(trade.get("original_contracts") if trade.get("original_contracts") is not None else trade.get("contracts")),
+        "remaining_contracts": to_int_or_none(trade.get("remaining_contracts")),
         "fallback_used": str(trade.get("fallback_used") or "no").strip().lower() or "no",
         "fallback_rule_name": str(trade.get("fallback_rule_name") or ""),
         "realized_pnl": gross_pnl,
@@ -265,6 +291,8 @@ def build_performance_record(trade: Dict[str, Any]) -> Dict[str, Any]:
 
 def apply_performance_filters(records: list[Dict[str, Any]], filters: PerformanceFilters) -> list[Dict[str, Any]]:
     active = filters.as_dict()
+    timeframe_values = tuple(active.get("timeframe") or ["all"])
+    reference_date = date.today()
     filtered: list[Dict[str, Any]] = []
     for record in records:
         if normalize_filter_value("system", record.get("system")) not in active["system"]:
@@ -280,8 +308,62 @@ def apply_performance_filters(records: list[Dict[str, Any]], filters: Performanc
             continue
         if normalize_filter_value("structure_grade", record.get("structure_grade")) not in active["structure_grade"]:
             continue
+        if not record_matches_timeframe(record, timeframe_values, reference_date=reference_date):
+            continue
         filtered.append(record)
     return filtered
+
+
+def record_matches_timeframe(record: Dict[str, Any], timeframe_values: Iterable[str], *, reference_date: date) -> bool:
+    selected = [str(value or "").strip().lower() for value in timeframe_values if str(value or "").strip()]
+    if not selected or "all" in selected:
+        return True
+    trade_date = parse_trade_date(record.get("trade_date"))
+    if trade_date is None:
+        return False
+    return any(_date_in_timeframe(trade_date, timeframe_key=value, reference_date=reference_date) for value in selected)
+
+
+def parse_trade_date(value: Any) -> date | None:
+    if not value:
+        return None
+    if isinstance(value, date):
+        return value
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw[:10])
+    except ValueError:
+        return None
+
+
+def _date_in_timeframe(trade_date: date, *, timeframe_key: str, reference_date: date) -> bool:
+    normalized = str(timeframe_key or "all").strip().lower()
+    if normalized == "all":
+        return True
+    if normalized == "ytd":
+        return date(reference_date.year, 1, 1) <= trade_date <= reference_date
+    if normalized == "current-month":
+        return trade_date.year == reference_date.year and trade_date.month == reference_date.month
+    if normalized == "1-yr":
+        return (reference_date - timedelta(days=365)) <= trade_date <= reference_date
+    if normalized == "last-month":
+        first_day_current_month = date(reference_date.year, reference_date.month, 1)
+        last_day_previous_month = first_day_current_month - timedelta(days=1)
+        return trade_date.year == last_day_previous_month.year and trade_date.month == last_day_previous_month.month
+    if normalized == "last-qtr":
+        current_quarter = ((reference_date.month - 1) // 3) + 1
+        if current_quarter == 1:
+            year = reference_date.year - 1
+            quarter = 4
+        else:
+            year = reference_date.year
+            quarter = current_quarter - 1
+        start_month = ((quarter - 1) * 3) + 1
+        end_month = start_month + 2
+        return trade_date.year == year and start_month <= trade_date.month <= end_month
+    return True
 
 
 def summarize_outcomes(records: list[Dict[str, Any]]) -> OutcomeSummary:
@@ -492,6 +574,486 @@ def build_learning_payload(
             ],
         },
     }
+
+
+def build_profile_em_performance_payload(records: list[Dict[str, Any]]) -> Dict[str, Any]:
+    eligible_records: list[Dict[str, Any]] = []
+    excluded_trade_count = 0
+    for record in records:
+        if record.get("status") in {"Open", "Reduced"}:
+            excluded_trade_count += 1
+            continue
+        entry_em_multiple, source = resolve_profile_entry_em_multiple(record)
+        if entry_em_multiple is None or entry_em_multiple <= 0 or entry_em_multiple > MAX_ANALYTIC_EM_MULTIPLE:
+            excluded_trade_count += 1
+            continue
+        eligible_records.append({**record, "entry_em_multiple": entry_em_multiple, "entry_em_multiple_source": source})
+
+    profile_items = []
+    for profile_label in determine_profile_em_labels(eligible_records):
+        profile_records = [record for record in eligible_records if record.get("profile") == profile_label]
+        if not profile_records:
+            continue
+        intervals = build_distribution_intervals([record["entry_em_multiple"] for record in profile_records], round_step=0.1)
+        profile_items.append(
+            {
+                "profile": profile_label,
+                "qualified_trade_count": len(profile_records),
+                "interval_range": describe_numeric_span([record["entry_em_multiple"] for record in profile_records], suffix="x EM"),
+                "buckets": build_interval_performance_rows(profile_records, value_key="entry_em_multiple", intervals=intervals, value_suffix="x EM"),
+            }
+        )
+
+    return {
+        "qualified_trade_count": len(eligible_records),
+        "excluded_trade_count": excluded_trade_count,
+        "profiles": profile_items,
+        "method_note": "Buckets are derived from each profile's own stored EM-multiple distribution, not a universal ladder.",
+        "limitation_note": "Profiles without enough closed trades stay visible but may only show one low-confidence interval.",
+    }
+
+
+def build_distance_efficiency_payload(records: list[Dict[str, Any]]) -> Dict[str, Any]:
+    eligible_records = []
+    excluded_trade_count = 0
+    for record in records:
+        if record.get("status") in {"Open", "Reduced"}:
+            excluded_trade_count += 1
+            continue
+        distance_to_short = coerce_float(record.get("actual_distance_to_short"))
+        if distance_to_short is None or distance_to_short <= 0:
+            distance_to_short = coerce_float(record.get("distance_to_short"))
+        premium_per_contract = coerce_float(record.get("premium_per_contract"))
+        if distance_to_short is None or distance_to_short <= 0 or premium_per_contract is None:
+            excluded_trade_count += 1
+            continue
+        eligible_records.append({**record, "distance_efficiency_score": premium_per_contract / distance_to_short})
+
+    intervals = build_distribution_intervals([record["distance_efficiency_score"] for record in eligible_records], round_step=0.1)
+    return {
+        "qualified_trade_count": len(eligible_records),
+        "excluded_trade_count": excluded_trade_count,
+        "buckets": build_interval_performance_rows(eligible_records, value_key="distance_efficiency_score", intervals=intervals, value_suffix=" premium/point"),
+        "definition": "Premium per contract divided by short-strike distance at entry.",
+        "limitation_note": "Uses stored premium and distance only; it does not estimate unrecorded fill quality or intraday repricing.",
+    }
+
+
+def build_time_of_entry_edge_payload(records: list[Dict[str, Any]]) -> Dict[str, Any]:
+    systems = []
+    qualified_trade_count = 0
+    excluded_trade_count = 0
+    for system_label in PERFORMANCE_FILTER_GROUPS["system"]:
+        eligible_records = []
+        for record in records:
+            if record.get("system") != system_label or record.get("status") in {"Open", "Reduced"}:
+                continue
+            entry_minutes = parse_entry_minutes(record.get("entry_datetime"))
+            if entry_minutes is None:
+                continue
+            eligible_records.append({**record, "entry_minutes": entry_minutes})
+        missing_for_system = sum(
+            1
+            for record in records
+            if record.get("system") == system_label
+            and record.get("status") not in {"Open", "Reduced"}
+            and parse_entry_minutes(record.get("entry_datetime")) is None
+        )
+        excluded_trade_count += missing_for_system
+        qualified_trade_count += len(eligible_records)
+        if not eligible_records:
+            continue
+        intervals = build_distribution_intervals([record["entry_minutes"] for record in eligible_records], round_step=15.0)
+        systems.append(
+            {
+                "system": system_label,
+                "qualified_trade_count": len(eligible_records),
+                "buckets": build_interval_performance_rows(
+                    eligible_records,
+                    value_key="entry_minutes",
+                    intervals=intervals,
+                    label_builder=format_time_interval_label,
+                ),
+            }
+        )
+
+    return {
+        "qualified_trade_count": qualified_trade_count,
+        "excluded_trade_count": excluded_trade_count,
+        "systems": systems,
+        "method_note": "Entry windows are derived separately for each system from stored entry timestamps.",
+        "limitation_note": "Trades without stored entry timestamps are excluded from this block.",
+    }
+
+
+def build_exit_efficiency_payload(records: list[Dict[str, Any]]) -> Dict[str, Any]:
+    eligible_records = [record for record in records if record.get("status") not in {"Open", "Reduced"}]
+    categories = [
+        ("Full Hold to Expiration", lambda record: classify_exit_efficiency_category(record) == "full_hold_to_expiration"),
+        ("Partial Exit Used", lambda record: classify_exit_efficiency_category(record) == "partial_exit_used"),
+        ("Staged / Laddered Exit", lambda record: classify_exit_efficiency_category(record) == "staged_exit"),
+        ("Early Risk Exit", lambda record: classify_exit_efficiency_category(record) == "early_risk_exit"),
+        ("Early Non-Risk Close", lambda record: classify_exit_efficiency_category(record) == "early_non_risk_close"),
+    ]
+    rows = []
+    for label, predicate in categories:
+        grouped_records = [record for record in eligible_records if predicate(record)]
+        if not grouped_records:
+            continue
+        summary = summarize_bucket_performance(grouped_records)
+        rows.append(
+            {
+                "label": label,
+                "trade_count": len(grouped_records),
+                "win_rate": summary["win_rate"],
+                "expectancy": summary["expectancy"],
+                "average_pnl": summary["average_pnl"],
+                "average_realized_pnl": summary["average_pnl"],
+                "average_loss_avoided": round(average(compute_loss_avoided(record) for record in grouped_records if compute_loss_avoided(record) is not None), 2),
+                "confidence": confidence_label(len(grouped_records)),
+            }
+        )
+    return {
+        "qualified_trade_count": len(eligible_records),
+        "excluded_trade_count": max(len(records) - len(eligible_records), 0),
+        "categories": rows,
+        "limitation_note": "Loss avoided is only computed where stored max theoretical risk and realized P/L are both available; it does not reconstruct unrecorded alternate exits.",
+    }
+
+
+def build_vix_regime_performance_payload(records: list[Dict[str, Any]]) -> Dict[str, Any]:
+    eligible_records = [
+        record
+        for record in records
+        if record.get("status") not in {"Open", "Reduced"} and record.get("vix_at_entry") is not None
+    ]
+    intervals = build_vix_regime_intervals([coerce_float(record.get("vix_at_entry")) for record in eligible_records])
+    return {
+        "qualified_trade_count": len(eligible_records),
+        "excluded_trade_count": sum(1 for record in records if record.get("status") not in {"Open", "Reduced"} and record.get("vix_at_entry") is None),
+        "buckets": build_interval_performance_rows(eligible_records, value_key="vix_at_entry", intervals=intervals),
+        "method_note": "VIX regimes use stored VIX-at-entry values only and adapt to the observed range when the sample is narrow.",
+    }
+
+
+def build_expected_move_breach_analysis_payload(records: list[Dict[str, Any]]) -> Dict[str, Any]:
+    systems = []
+    qualified_trade_count = 0
+    excluded_trade_count = 0
+    for system_label in PERFORMANCE_FILTER_GROUPS["system"]:
+        eligible_records = []
+        for record in records:
+            if record.get("system") != system_label or record.get("status") in {"Open", "Reduced"}:
+                continue
+            entry_em_multiple, _ = resolve_profile_entry_em_multiple(record)
+            if entry_em_multiple is None or entry_em_multiple <= 0 or entry_em_multiple > MAX_ANALYTIC_EM_MULTIPLE:
+                continue
+            eligible_records.append({**record, "entry_em_multiple": entry_em_multiple})
+        excluded_trade_count += sum(
+            1
+            for record in records
+            if record.get("system") == system_label
+            and record.get("status") not in {"Open", "Reduced"}
+            and (
+                resolve_profile_entry_em_multiple(record)[0] is None
+                or resolve_profile_entry_em_multiple(record)[0] <= 0
+                or resolve_profile_entry_em_multiple(record)[0] > MAX_ANALYTIC_EM_MULTIPLE
+            )
+        )
+        qualified_trade_count += len(eligible_records)
+        if not eligible_records:
+            continue
+        intervals = build_distribution_intervals([record["entry_em_multiple"] for record in eligible_records], round_step=0.1)
+        bucket_rows = []
+        for interval in intervals:
+            grouped_records = [record for record in eligible_records if interval_contains_value(interval, record.get("entry_em_multiple"))]
+            if not grouped_records:
+                continue
+            summary = summarize_bucket_performance(grouped_records)
+            short_breaches = [record for record in grouped_records if is_short_strike_breached(record)]
+            long_breaches = [record for record in grouped_records if is_long_strike_breached(record)]
+            bucket_rows.append(
+                {
+                    "label": build_interval_label(interval, suffix="x EM"),
+                    "trade_count": len(grouped_records),
+                    "short_breach_rate": round((len(short_breaches) / len(grouped_records)) * 100, 2),
+                    "long_breach_rate": round((len(long_breaches) / len(grouped_records)) * 100, 2),
+                    "expectancy": summary["expectancy"],
+                    "average_pnl": summary["average_pnl"],
+                    "confidence": confidence_label(len(grouped_records)),
+                }
+            )
+        systems.append({"system": system_label, "buckets": bucket_rows, "qualified_trade_count": len(eligible_records)})
+
+    return {
+        "qualified_trade_count": qualified_trade_count,
+        "excluded_trade_count": excluded_trade_count,
+        "systems": systems,
+        "method_note": "Breach rates use recorded exit prices and close-event exit spots, so they reflect terminal breach evidence rather than full intraday pathing.",
+    }
+
+
+def build_performance_data_limitations(learning_payload: Dict[str, Any]) -> list[str]:
+    notes = []
+    if (learning_payload.get("time_of_entry_edge") or {}).get("excluded_trade_count"):
+        notes.append("Time of Entry Edge excludes trades missing stored entry timestamps.")
+    notes.append("Exit Efficiency uses current stored close-event history only and does not infer unlogged discretionary exits.")
+    notes.append("Expected Move Deviation / Breach Analysis uses recorded exit-time prices, not full intraday excursion data.")
+    if (learning_payload.get("vix_regime_performance") or {}).get("excluded_trade_count"):
+        notes.append("VIX Regime Performance excludes trades that do not have stored VIX-at-entry values.")
+    return notes
+
+
+def summarize_bucket_performance(records: list[Dict[str, Any]]) -> Dict[str, float]:
+    outcomes = summarize_outcomes(records)
+    scored_count = len(outcomes.scored_outcomes)
+    win_rate = (len(outcomes.wins) / scored_count) if scored_count else 0.0
+    loss_rate = (len(outcomes.loss_events) / scored_count) if scored_count else 0.0
+    average_win = average(record.get("gross_pnl") for record in outcomes.wins)
+    average_loss = abs(average(record.get("gross_pnl") for record in outcomes.loss_events))
+    expectancy = calculate_expectancy(
+        win_rate=win_rate,
+        average_win=average_win,
+        loss_rate=loss_rate,
+        average_loss=average_loss,
+    ) if scored_count else 0.0
+    return {
+        "win_rate": round(win_rate * 100, 2),
+        "expectancy": round(expectancy, 2),
+        "average_pnl": round(average(record.get("gross_pnl") for record in records), 2),
+    }
+
+
+def build_interval_performance_rows(
+    records: list[Dict[str, Any]],
+    *,
+    value_key: str,
+    intervals: list[Dict[str, Any]],
+    value_suffix: str = "",
+    label_builder=None,
+) -> list[Dict[str, Any]]:
+    rows = []
+    for interval in intervals:
+        grouped_records = [record for record in records if interval_contains_value(interval, record.get(value_key))]
+        if not grouped_records:
+            continue
+        summary = summarize_bucket_performance(grouped_records)
+        label = label_builder(interval) if callable(label_builder) else build_interval_label(interval, suffix=value_suffix)
+        rows.append(
+            {
+                "label": label,
+                "trade_count": len(grouped_records),
+                "win_rate": summary["win_rate"],
+                "expectancy": summary["expectancy"],
+                "average_pnl": summary["average_pnl"],
+                "confidence": confidence_label(len(grouped_records)),
+            }
+        )
+    return rows
+
+
+def build_distribution_intervals(values: Iterable[Optional[float]], *, round_step: float) -> list[Dict[str, Any]]:
+    numeric_values = sorted(value for value in (coerce_float(item) for item in values) if value is not None and math.isfinite(value))
+    if not numeric_values:
+        return []
+    bucket_count = determine_bucket_count(len(numeric_values))
+    minimum = round_down(numeric_values[0], round_step)
+    maximum = round_up(numeric_values[-1], round_step)
+    edges = [minimum]
+    for index in range(1, bucket_count):
+        quantile_index = min(max(math.ceil((len(numeric_values) * index) / bucket_count) - 1, 0), len(numeric_values) - 1)
+        candidate = round_down(numeric_values[quantile_index], round_step)
+        if candidate > edges[-1]:
+            edges.append(candidate)
+    if maximum <= edges[-1]:
+        maximum = round_up(edges[-1] + round_step, round_step)
+    edges.append(maximum)
+
+    intervals = []
+    for index in range(len(edges) - 1):
+        lower = edges[index]
+        upper = edges[index + 1]
+        if upper <= lower:
+            continue
+        intervals.append({
+            "minimum": lower,
+            "maximum": upper,
+            "inclusive_upper": index == len(edges) - 2,
+        })
+    return intervals or [{"minimum": minimum, "maximum": maximum, "inclusive_upper": True}]
+
+
+def build_vix_regime_intervals(values: Iterable[Optional[float]]) -> list[Dict[str, Any]]:
+    numeric_values = sorted(value for value in (coerce_float(item) for item in values) if value is not None and math.isfinite(value))
+    if not numeric_values:
+        return []
+    minimum = numeric_values[0]
+    maximum = numeric_values[-1]
+    edges = [minimum]
+    for edge in DEFAULT_VIX_REGIME_EDGES:
+        if minimum < edge < maximum:
+            edges.append(edge)
+    edges.append(maximum)
+    if len(edges) <= 2:
+        return build_distribution_intervals(numeric_values, round_step=1.0)
+    intervals = []
+    for index in range(len(edges) - 1):
+        lower = edges[index]
+        upper = edges[index + 1]
+        intervals.append({
+            "minimum": lower,
+            "maximum": upper,
+            "inclusive_upper": index == len(edges) - 2,
+        })
+    return intervals
+
+
+def determine_bucket_count(sample_size: int) -> int:
+    if sample_size >= 12:
+        return 4
+    if sample_size >= 6:
+        return 3
+    if sample_size >= 3:
+        return 2
+    return 1
+
+
+def interval_contains_value(interval: Dict[str, Any], value: Any) -> bool:
+    numeric_value = coerce_float(value)
+    if numeric_value is None:
+        return False
+    minimum = coerce_float(interval.get("minimum"))
+    maximum = coerce_float(interval.get("maximum"))
+    if minimum is None or maximum is None:
+        return False
+    if interval.get("inclusive_upper"):
+        return minimum <= numeric_value <= maximum
+    return minimum <= numeric_value < maximum
+
+
+def build_interval_label(interval: Dict[str, Any], *, suffix: str = "") -> str:
+    minimum = coerce_float(interval.get("minimum")) or 0.0
+    maximum = coerce_float(interval.get("maximum")) or minimum
+    suffix_text = f" {suffix}" if suffix else ""
+    if interval.get("inclusive_upper"):
+        return f"{minimum:.1f}-{maximum:.1f}{suffix_text}"
+    return f"{minimum:.1f}-{maximum:.1f}{suffix_text}"
+
+
+def describe_numeric_span(values: Iterable[Optional[float]], *, suffix: str = "") -> str:
+    numeric_values = sorted(value for value in (coerce_float(item) for item in values) if value is not None and math.isfinite(value))
+    if not numeric_values:
+        return "No range"
+    suffix_text = f" {suffix}" if suffix else ""
+    return f"{numeric_values[0]:.1f} to {numeric_values[-1]:.1f}{suffix_text}"
+
+
+def format_time_interval_label(interval: Dict[str, Any]) -> str:
+    minimum = int(coerce_float(interval.get("minimum")) or 0)
+    maximum = int(coerce_float(interval.get("maximum")) or minimum)
+    return f"{format_minutes_label(minimum)}-{format_minutes_label(maximum)}"
+
+
+def format_minutes_label(total_minutes: int) -> str:
+    hour = max(total_minutes, 0) // 60
+    minute = max(total_minutes, 0) % 60
+    return f"{hour:02d}:{minute:02d}"
+
+
+def parse_entry_minutes(value: Any) -> Optional[float]:
+    if value in {None, ""}:
+        return None
+    text = str(value).strip()
+    if "T" in text:
+        time_portion = text.split("T", 1)[1]
+        hour_text = time_portion[:2]
+        minute_text = time_portion[3:5] if len(time_portion) >= 5 else "00"
+        if hour_text.isdigit() and minute_text.isdigit():
+            return float((int(hour_text) * 60) + int(minute_text))
+    parsed = parse_datetime_value(value)
+    if parsed is None:
+        return None
+    return float((parsed.hour * 60) + parsed.minute)
+
+
+def classify_exit_efficiency_category(record: Dict[str, Any]) -> str:
+    close_events = [item for item in (record.get("close_events") or []) if isinstance(item, dict)]
+    reduce_events = [event for event in close_events if str(event.get("event_type") or "").strip().lower() == "reduce"]
+    if record.get("has_expire_event") and not reduce_events:
+        return "full_hold_to_expiration"
+    if len(reduce_events) >= 2:
+        return "staged_exit"
+    if len(reduce_events) == 1:
+        return "partial_exit_used"
+    if is_early_risk_exit(record):
+        return "early_risk_exit"
+    return "early_non_risk_close"
+
+
+def is_early_risk_exit(record: Dict[str, Any]) -> bool:
+    close_reason = str(record.get("close_reason") or "").strip().lower()
+    close_method = str(record.get("close_method") or "").strip().lower()
+    expiration_date = parse_trade_date(record.get("expiration_date"))
+    exit_datetime = parse_datetime_value(record.get("exit_datetime"))
+    exited_early = bool(expiration_date and exit_datetime and exit_datetime.date() < expiration_date)
+    keyword_match = any(keyword in close_reason for keyword in RISK_EXIT_REASON_KEYWORDS)
+    risk_result = str(record.get("result") or "").strip().lower() in {"loss", "black swan"}
+    return exited_early and (keyword_match or close_method == "close" or risk_result)
+
+
+def compute_loss_avoided(record: Dict[str, Any]) -> Optional[float]:
+    max_risk = coerce_float(record.get("max_theoretical_risk") if record.get("max_theoretical_risk") is not None else record.get("max_loss"))
+    realized_pnl = coerce_float(record.get("gross_pnl"))
+    if max_risk is None or realized_pnl is None or realized_pnl >= 0:
+        return None
+    realized_loss = abs(realized_pnl)
+    return round(max(max_risk - realized_loss, 0.0), 2)
+
+
+def is_short_strike_breached(record: Dict[str, Any]) -> bool:
+    exit_price = resolve_terminal_underlying_price(record)
+    short_strike = coerce_float(record.get("short_strike"))
+    option_type = str(record.get("option_type") or "").strip().lower()
+    if exit_price is None or short_strike is None:
+        return False
+    if "call" in option_type:
+        return exit_price >= short_strike
+    return exit_price <= short_strike
+
+
+def is_long_strike_breached(record: Dict[str, Any]) -> bool:
+    exit_price = resolve_terminal_underlying_price(record)
+    long_strike = coerce_float(record.get("long_strike"))
+    option_type = str(record.get("option_type") or "").strip().lower()
+    if exit_price is None or long_strike is None:
+        return False
+    if "call" in option_type:
+        return exit_price >= long_strike
+    return exit_price <= long_strike
+
+
+def resolve_terminal_underlying_price(record: Dict[str, Any]) -> Optional[float]:
+    close_events = [item for item in (record.get("close_events") or []) if isinstance(item, dict)]
+    for event in reversed(close_events):
+        event_price = coerce_float(event.get("spx_at_exit"))
+        if event_price is not None:
+            return event_price
+    return coerce_float(record.get("spx_at_exit"))
+
+
+def round_down(value: float, step: float) -> float:
+    return math.floor(value / step) * step
+
+
+def round_up(value: float, step: float) -> float:
+    return math.ceil(value / step) * step
+
+
+def to_int_or_none(value: Any) -> Optional[int]:
+    numeric = coerce_float(value)
+    if numeric is None:
+        return None
+    return int(numeric)
 
 
 def build_equity_curve(records: list[Dict[str, Any]]) -> Dict[str, Any]:
@@ -797,97 +1359,6 @@ def build_trade_mode_split(records: list[Dict[str, Any]]) -> Dict[str, Any]:
     return {"items": items}
 
 
-def build_profile_em_safety_distance_payload(records: list[Dict[str, Any]], *, filters: PerformanceFilters) -> Dict[str, Any]:
-    independent_mode_filters = PerformanceFilters(
-        system=filters.system,
-        profile=filters.profile,
-        result=filters.result,
-        trade_mode=tuple(normalize_filter_value("trade_mode", option) for option in PERFORMANCE_FILTER_GROUPS["trade_mode"]),
-        macro_grade=filters.macro_grade,
-        structure_grade=filters.structure_grade,
-    )
-    scoped_records = apply_performance_filters(records, independent_mode_filters)
-    return {
-        "default_view": PROFILE_EM_VIEW_REAL_ONLY,
-        "real_only": build_profile_em_safety_mode_payload(scoped_records, include_simulated=False),
-        "real_plus_simulated": build_profile_em_safety_mode_payload(scoped_records, include_simulated=True),
-    }
-
-
-def build_profile_em_safety_mode_payload(records: list[Dict[str, Any]], *, include_simulated: bool) -> Dict[str, Any]:
-    mode_records = list(records) if include_simulated else [record for record in records if str(record.get("trade_mode") or "").strip().lower() == "real"]
-    closed_records = [record for record in mode_records if record.get("status") not in {"Open", "Reduced"}]
-    eligible_records: list[Dict[str, Any]] = []
-    exclusion_summary = {
-        "open_trade_count": len(mode_records) - len(closed_records),
-        "em_multiple_missing_count": 0,
-        "vix_missing_count": 0,
-    }
-
-    for record in closed_records:
-        entry_em_multiple, entry_source = resolve_profile_entry_em_multiple(record)
-        if entry_em_multiple is None:
-            exclusion_summary["em_multiple_missing_count"] += 1
-            continue
-        regime_key = classify_profile_em_vix_regime(record.get("vix_at_entry"))
-        if regime_key is None:
-            exclusion_summary["vix_missing_count"] += 1
-            continue
-        eligible_records.append(
-            {
-                **record,
-                "entry_em_multiple": entry_em_multiple,
-                "entry_em_multiple_source": entry_source,
-                "profile_em_vix_regime": regime_key,
-            }
-        )
-
-    profile_items = []
-    for profile_label in determine_profile_em_labels(eligible_records):
-        profile_records = [record for record in eligible_records if record.get("profile") == profile_label]
-        if not profile_records:
-            continue
-        regime_items = []
-        for regime in PROFILE_EM_VIX_REGIMES:
-            regime_records = [record for record in profile_records if record.get("profile_em_vix_regime") == regime["key"]]
-            bucket_results = build_profile_entry_em_bucket_results(regime_records)
-            best_bucket = select_best_profile_em_bucket(bucket_results)
-            regime_items.append(
-                {
-                    "key": regime["key"],
-                    "label": regime["label"],
-                    "sample_size": len(regime_records),
-                    "recommended_range": best_bucket.get("label") if best_bucket else None,
-                    "confidence": best_bucket.get("confidence") if best_bucket else "No Confidence",
-                    "supporting_trade_count": best_bucket.get("trade_count") if best_bucket else 0,
-                    "weighted_supporting_trade_count": round(best_bucket.get("weighted_trade_count") or 0.0, 2) if best_bucket else 0.0,
-                    "expectancy": best_bucket.get("expectancy") if best_bucket else None,
-                    "win_rate": best_bucket.get("win_rate") if best_bucket else None,
-                    "status": "ready" if best_bucket else "insufficient",
-                    "bucket_results": bucket_results,
-                }
-            )
-        profile_items.append(
-            {
-                "profile": profile_label,
-                "qualified_trade_count": len(profile_records),
-                "regimes": regime_items,
-            }
-        )
-
-    excluded_trade_count = exclusion_summary["em_multiple_missing_count"] + exclusion_summary["vix_missing_count"]
-    return {
-        "mode_label": "Real + Simulated" if include_simulated else "Real Only",
-        "include_simulated": include_simulated,
-        "closed_trade_count": len(closed_records),
-        "qualified_trade_count": len(eligible_records),
-        "excluded_trade_count": excluded_trade_count,
-        "minimum_scored_trades": MIN_PROFILE_EM_RECOMMENDATION_SCORED_TRADES,
-        "profiles": profile_items,
-        "exclusion_summary": exclusion_summary,
-    }
-
-
 def determine_profile_em_labels(records: list[Dict[str, Any]]) -> list[str]:
     known_labels = PERFORMANCE_FILTER_GROUPS["profile"]
     observed_labels = {str(record.get("profile") or "").strip() for record in records if str(record.get("profile") or "").strip()}
@@ -904,68 +1375,6 @@ def resolve_profile_entry_em_multiple(record: Dict[str, Any]) -> tuple[Optional[
     if safety_ratio is not None and safety_ratio > 0:
         return safety_ratio, "safety_ratio"
     return None, "unavailable"
-
-
-def classify_profile_em_vix_regime(vix_at_entry: Optional[float]) -> Optional[str]:
-    if vix_at_entry is None:
-        return None
-    return "vix_ge_19" if float(vix_at_entry) >= 19.0 else "vix_lt_19"
-
-
-def build_profile_entry_em_bucket_results(records: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
-    items = []
-    for bucket_order, bucket in enumerate(SAFETY_RATIO_BUCKETS):
-        bucket_key = bucket["key"]
-        grouped_records = [record for record in records if classify_safety_ratio_bucket(record.get("entry_em_multiple")) == bucket_key]
-        grouped_outcomes = summarize_outcomes(grouped_records)
-        weighted_trade_count = sum(profile_em_sample_weight(record) for record in grouped_records)
-        weighted_scored_count = sum(profile_em_sample_weight(record) for record in grouped_outcomes.scored_outcomes)
-        average_win = weighted_average(grouped_outcomes.wins, value_key="gross_pnl", weight_resolver=profile_em_sample_weight)
-        average_loss = abs(weighted_average(grouped_outcomes.loss_events, value_key="gross_pnl", weight_resolver=profile_em_sample_weight))
-        win_rate = (sum(profile_em_sample_weight(record) for record in grouped_outcomes.wins) / weighted_scored_count) if weighted_scored_count else 0.0
-        loss_rate = (sum(profile_em_sample_weight(record) for record in grouped_outcomes.loss_events) / weighted_scored_count) if weighted_scored_count else 0.0
-        expectancy = calculate_expectancy(
-            win_rate=win_rate,
-            average_win=average_win,
-            loss_rate=loss_rate,
-            average_loss=average_loss,
-        ) if weighted_scored_count else 0.0
-        items.append(
-            {
-                "bucket_order": bucket_order,
-                "key": bucket_key,
-                "label": bucket["label"],
-                "trade_count": len(grouped_records),
-                "scored_trade_count": len(grouped_outcomes.scored_outcomes),
-                "weighted_trade_count": round(weighted_trade_count, 2),
-                "weighted_scored_trade_count": round(weighted_scored_count, 2),
-                "win_rate": round(win_rate * 100, 2),
-                "expectancy": round(expectancy, 2),
-                "confidence": confidence_label(weighted_trade_count),
-            }
-        )
-    return items
-
-
-def select_best_profile_em_bucket(bucket_results: list[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    candidates = [
-        item
-        for item in bucket_results
-        if (item.get("trade_count") or 0) >= MIN_PROFILE_EM_RECOMMENDATION_SCORED_TRADES
-        and (item.get("scored_trade_count") or 0) >= MIN_PROFILE_EM_RECOMMENDATION_SCORED_TRADES
-        and (item.get("weighted_scored_trade_count") or 0) > 0
-    ]
-    if not candidates:
-        return None
-    return max(
-        candidates,
-        key=lambda item: (
-            item.get("expectancy") or 0.0,
-            item.get("weighted_trade_count") or 0.0,
-            item.get("win_rate") or 0.0,
-            -(item.get("bucket_order") or 0),
-        ),
-    )
 
 
 def summarize_distance_sources(records: Iterable[Dict[str, Any]]) -> Dict[str, int]:
@@ -1099,12 +1508,6 @@ def weighted_average(
     return weighted_total / total_weight
 
 
-def profile_em_sample_weight(record: Dict[str, Any]) -> float:
-    if str(record.get("entry_em_multiple_source") or "").strip().lower() == "actual_em_multiple":
-        return 1.0
-    return expected_move_sample_weight(record)
-
-
 def build_outcome_composition(outcomes: OutcomeSummary) -> Dict[str, Any]:
     items = []
     for label in PERFORMANCE_FILTER_GROUPS["result"]:
@@ -1162,15 +1565,18 @@ def normalize_structure_grade(value: Any) -> str:
 
 def normalize_filter_value(group: str, value: Any) -> str:
     text = str(value or "").strip().lower()
-    if group in {"result", "trade_mode", "macro_grade", "structure_grade", "profile", "system"}:
+    if group in {"result", "trade_mode", "macro_grade", "structure_grade", "profile", "system", "timeframe"}:
         return text.replace(" ", "-")
     return text
 
 
-def pick_trade_date(trade: Dict[str, Any]) -> str:
+def pick_performance_date(trade: Dict[str, Any]) -> str:
+    expiration_date = str(trade.get("expiration_date") or "").strip()
+    if expiration_date:
+        return expiration_date.split("T", 1)[0]
     trade_date = str(trade.get("trade_date") or "").strip()
     if trade_date:
-        return trade_date
+        return trade_date.split("T", 1)[0]
     entry_datetime = str(trade.get("entry_datetime") or "").strip()
     if entry_datetime:
         return entry_datetime.split("T", 1)[0]

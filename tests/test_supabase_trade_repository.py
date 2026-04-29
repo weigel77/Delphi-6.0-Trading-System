@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from services.repositories.trade_repository import SQLiteTradeRepository, SupabaseTradeRepository
+from services.repositories.trade_repository import MirroredTradeRepository, SQLiteTradeRepository, SupabaseTradeRepository
 from services.runtime.supabase_integration import SupabaseConfig, SupabaseRequestError, SupabaseRuntimeContext
 from services.trade_store import TradeStore
 
@@ -160,6 +160,20 @@ class DuplicateCloseEventPrimaryKeyWithoutRpcGateway(DuplicateCloseEventPrimaryK
         )
 
 
+class MissingColumnSupabaseGateway(InMemorySupabaseGateway):
+    def __init__(self, *, missing_columns_by_table):
+        super().__init__()
+        self.missing_columns_by_table = {table: set(columns) for table, columns in (missing_columns_by_table or {}).items()}
+
+    def insert(self, table, payload):
+        for column_name in sorted(self.missing_columns_by_table.get(table, set())):
+            if column_name in payload:
+                raise SupabaseRequestError(
+                    f'Supabase HTTP error 400: {{"code":"PGRST204","details":null,"hint":null,"message":"Could not find the \'{column_name}\' column of \'{table}\' in the schema cache"}}'
+                )
+        return super().insert(table, payload)
+
+
 class SupabaseTradeRepositoryTest(unittest.TestCase):
     def _trade_payload(self):
         return {
@@ -256,6 +270,171 @@ class SupabaseTradeRepositoryTest(unittest.TestCase):
             self.assertEqual(local_summary["total_trades"], remote_summary["total_trades"])
             self.assertEqual(local_summary["closed_trades"], remote_summary["closed_trades"])
             self.assertAlmostEqual(local_summary["total_pnl"], remote_summary["total_pnl"], places=6)
+
+    def test_mirrored_update_translates_local_close_event_ids_before_remote_update(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "mirror.db"
+            local_backend = TradeStore(database_path)
+            local_repository = SQLiteTradeRepository(local_backend)
+            local_repository.initialize()
+
+            seed_trade_id = local_repository.create_trade(self._trade_payload() | {"trade_number": 1})
+            local_repository.reduce_trade(
+                seed_trade_id,
+                {
+                    "contracts_closed": 1,
+                    "actual_exit_value": 0.5,
+                    "event_datetime": "2026-04-10T10:00",
+                    "close_method": "Reduce",
+                },
+            )
+
+            context = SupabaseRuntimeContext(
+                config=SupabaseConfig(
+                    url="https://project.supabase.co",
+                    publishable_key="publishable-key",
+                    secret_key="secret-key",
+                ),
+                rest_url="https://project.supabase.co/rest/v1",
+                auth_url="https://project.supabase.co/auth/v1",
+                healthcheck_path="/auth/v1/settings",
+                configured=True,
+            )
+            remote_repository = SupabaseTradeRepository(
+                context=context,
+                gateway=InMemorySupabaseGateway(),
+                database_path=database_path,
+            )
+            mirrored_repository = MirroredTradeRepository(
+                local_repository=local_repository,
+                remote_repository=remote_repository,
+            )
+
+            trade_payload = self._trade_payload() | {
+                "trade_number": 100,
+                "trade_mode": "simulated",
+                "system_name": "Kairos",
+                "journal_name": "Horme",
+                "candidate_profile": "Subprime",
+                "contracts": 5,
+            }
+            local_trade_id = mirrored_repository.create_trade(trade_payload)
+            mirrored_repository.reduce_trade(
+                local_trade_id,
+                {
+                    "contracts_closed": 2,
+                    "actual_exit_value": 1.9,
+                    "event_datetime": "2026-04-21T05:01",
+                    "close_method": "Manage Trade Prefill",
+                    "notes_exit": "Prefilled from Manage Trades.",
+                },
+            )
+
+            local_trade = mirrored_repository.get_trade(local_trade_id)
+            self.assertIsNotNone(local_trade)
+            self.assertEqual(len(local_trade["close_events"]), 1)
+            local_event_id = int(local_trade["close_events"][0]["id"])
+
+            remote_trade = remote_repository.get_trade_by_number(100)
+            self.assertIsNotNone(remote_trade)
+            self.assertEqual(len(remote_trade["close_events"]), 1)
+            remote_event_id = int(remote_trade["close_events"][0]["id"])
+            self.assertNotEqual(local_event_id, remote_event_id)
+
+            mirrored_repository.update_trade(
+                local_trade_id,
+                trade_payload
+                | {
+                    "close_events": [
+                        {
+                            "id": str(local_event_id),
+                            "event_datetime": "2026-04-21T05:01",
+                            "notes_exit": "Prefilled from Manage Trades.",
+                            "contracts_closed": "2",
+                            "actual_exit_value": "1.90",
+                            "close_method": "Manage Trade Prefill",
+                        },
+                        {
+                            "id": "",
+                            "event_datetime": "",
+                            "notes_exit": "",
+                            "contracts_closed": "3",
+                            "actual_exit_value": "0.00",
+                            "close_method": "Expire",
+                        },
+                    ]
+                },
+            )
+
+            updated_local_trade = mirrored_repository.get_trade(local_trade_id)
+            updated_remote_trade = remote_repository.get_trade_by_number(100)
+            self.assertEqual(updated_local_trade["derived_status_raw"], "expired")
+            self.assertEqual(updated_remote_trade["derived_status_raw"], "expired")
+            self.assertEqual(updated_local_trade["remaining_contracts"], 0)
+            self.assertEqual(updated_remote_trade["remaining_contracts"], 0)
+            self.assertEqual(len(updated_remote_trade["close_events"]), 2)
+            self.assertEqual(updated_remote_trade["close_events"][0]["close_method"], "Manage Trade Prefill")
+            self.assertEqual(updated_remote_trade["close_events"][1]["close_method"], "Expire")
+
+    def test_supabase_repository_retries_insert_without_unsupported_columns(self):
+        repository = SupabaseTradeRepository(
+            context=SupabaseRuntimeContext(
+                config=SupabaseConfig(
+                    url="https://project.supabase.co",
+                    publishable_key="publishable-key",
+                    secret_key="secret-key",
+                ),
+                rest_url="https://project.supabase.co/rest/v1",
+                auth_url="https://project.supabase.co/auth/v1",
+                healthcheck_path="/auth/v1/settings",
+                configured=True,
+            ),
+            gateway=MissingColumnSupabaseGateway(
+                missing_columns_by_table={
+                    "journal_trades": {"automation_status", "fallback_rule_name"},
+                }
+            ),
+            database_path="instance/horme_trades.db",
+        )
+
+        trade_id = repository.create_trade(
+            self._trade_payload()
+            | {
+                "automation_status": "autonomous-entry-and-management",
+                "fallback_rule_name": "none",
+            }
+        )
+
+        inserted_trade = repository.get_trade(trade_id)
+        self.assertIsNotNone(inserted_trade)
+        self.assertEqual(inserted_trade["trade_number"], 1)
+
+    def test_supabase_repository_round_trips_talos_rows_through_simulated_compatibility_encoding(self):
+        repository = SupabaseTradeRepository(
+            context=SupabaseRuntimeContext(
+                config=SupabaseConfig(
+                    url="https://project.supabase.co",
+                    publishable_key="publishable-key",
+                    secret_key="secret-key",
+                ),
+                rest_url="https://project.supabase.co/rest/v1",
+                auth_url="https://project.supabase.co/auth/v1",
+                healthcheck_path="/auth/v1/settings",
+                configured=True,
+            ),
+            gateway=InMemorySupabaseGateway(),
+            database_path="instance/horme_trades.db",
+        )
+
+        trade_id = repository.create_trade(self._trade_payload() | {"trade_mode": "talos", "journal_name": "Horme"})
+
+        talos_rows = repository.list_trades("talos")
+        simulated_rows = repository.list_trades("simulated")
+        inserted_trade = repository.get_trade(trade_id)
+        self.assertEqual(len(talos_rows), 1)
+        self.assertEqual(len(simulated_rows), 0)
+        self.assertEqual(inserted_trade["trade_mode"], "talos")
+        self.assertEqual(inserted_trade["journal_name"], "Horme")
 
     def test_supabase_repository_finds_duplicate_trade_consistently(self):
         repository = SupabaseTradeRepository(

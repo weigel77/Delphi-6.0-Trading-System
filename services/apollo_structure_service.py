@@ -55,7 +55,22 @@ class ApolloStructureService:
         fallback_reason: str | None = None
         local_now = datetime.now(self.display_timezone)
         requested_session_date = local_now.date()
+        session_request_resolver = getattr(self.market_data_service, "resolve_intraday_session_request", None)
+        if callable(session_request_resolver):
+            session_request = session_request_resolver(requested_session_date, current_time=local_now)
+            normalized_session_date = session_request.get("resolved_session_date", requested_session_date)
+            normalization_reason = str(session_request.get("normalization_reason") or "")
+        else:
+            normalized_session_date = requested_session_date
+            normalization_reason = ""
         requested_status = self.market_calendar_service._get_market_day_status(requested_session_date)
+        if normalized_session_date != requested_session_date:
+            LOGGER.info(
+                "Apollo structure session normalized | requested_session_date=%s | resolved_session_date=%s | reason=%s",
+                requested_session_date.isoformat(),
+                normalized_session_date.isoformat(),
+                normalization_reason or "latest valid tradable session",
+            )
 
         last_error: str | None = None
         for source_key in self._get_source_sequence():
@@ -64,7 +79,7 @@ class ApolloStructureService:
                 source_key=source_key,
                 source_label=source_config["label"],
                 symbol=source_config["symbol"],
-                requested_session_date=requested_session_date,
+                requested_session_date=normalized_session_date,
                 attempted_sources=attempted_sources,
             )
             if session_result is None:

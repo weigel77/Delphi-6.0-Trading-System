@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import unittest
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from app import build_apollo_result_payload
 from config import AppConfig
@@ -37,6 +38,46 @@ class _StaticProvider:
 
     def get_option_chain(self, symbol: str, target_date: date | None = None):
         return self.payload
+
+
+class _CapturingProvider:
+    provider_name = "Schwab"
+
+    def __init__(self, requested_expiration: date) -> None:
+        self.requested_expiration = requested_expiration
+        self.captured_target_date: date | None = None
+        self.last_option_chain_diagnostics = {}
+
+    def get_option_chain(self, symbol: str, target_date: date | None = None):
+        self.captured_target_date = target_date
+        self.last_option_chain_diagnostics = {
+            "final_symbol": "$SPX",
+            "requested_expiration": self.requested_expiration.isoformat(),
+            "final_expiration": target_date.isoformat() if target_date is not None else "",
+            "attempt_used": "Attempt A",
+            "raw_params_sent": {"symbol": "$SPX", "fromDate": target_date.isoformat() if target_date else ""},
+            "attempts": [],
+        }
+        return {
+            "requested_symbol": "$SPX",
+            "expiration_target": self.requested_expiration,
+            "expiration_date": target_date,
+            "expiration_count": 1,
+            "underlying_price": 6500.0,
+            "calls": [{"strike": 6600.0, "bid": 1.0, "ask": 1.2}],
+            "puts": [{"strike": 6400.0, "bid": 1.0, "ask": 1.2}],
+            "request_diagnostics": self.last_option_chain_diagnostics,
+        }
+
+
+class _CountingProvider(_CapturingProvider):
+    def __init__(self, requested_expiration: date) -> None:
+        super().__init__(requested_expiration)
+        self.call_count = 0
+
+    def get_option_chain(self, symbol: str, target_date: date | None = None):
+        self.call_count += 1
+        return super().get_option_chain(symbol, target_date=target_date)
 
 
 class ApolloReliabilityTests(unittest.TestCase):
@@ -106,6 +147,34 @@ class ApolloReliabilityTests(unittest.TestCase):
         self.assertFalse(summary["success"])
         self.assertEqual(summary["failure_category"], "empty-response")
         self.assertEqual(summary["failure_label"], "Empty response")
+
+    def test_option_chain_service_normalizes_past_expiration_before_provider_call(self) -> None:
+        requested_expiration = date(2026, 4, 13)
+        provider = _CapturingProvider(requested_expiration)
+        service = self._build_service(provider)
+        service._now = lambda: datetime(2026, 4, 20, 13, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+        summary = service.get_spx_option_chain_summary(requested_expiration)
+
+        self.assertTrue(summary["success"])
+        self.assertEqual(provider.captured_target_date, date(2026, 4, 20))
+        self.assertEqual(summary["expiration_target"], requested_expiration)
+        self.assertEqual(summary["expiration_date"], date(2026, 4, 20))
+
+    def test_option_chain_service_caches_normalized_request_and_logs_once_per_window(self) -> None:
+        requested_expiration = date(2026, 4, 13)
+        provider = _CountingProvider(requested_expiration)
+        service = self._build_service(provider)
+        service._now = lambda: datetime(2026, 4, 20, 13, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+        with self.assertLogs("services.options_chain_service", level="WARNING") as captured_logs:
+            first_summary = service.get_spx_option_chain_summary(requested_expiration)
+            second_summary = service.get_spx_option_chain_summary(requested_expiration)
+
+        self.assertTrue(first_summary["success"])
+        self.assertTrue(second_summary["success"])
+        self.assertEqual(provider.call_count, 1)
+        self.assertEqual(len(captured_logs.output), 1)
 
     def test_payload_distinguishes_no_candidates_from_option_chain_failure(self) -> None:
         payload = build_apollo_result_payload(

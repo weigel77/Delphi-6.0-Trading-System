@@ -41,7 +41,7 @@ def select_runtime_profile(app: Flask, config: AppConfig) -> RuntimeProfile:
             if testing:
                 launch_url = HOSTED_RUNTIME_BASE_URL
             else:
-                raise RuntimeError("Hosted Delphi 5.4 requires HOSTED_PUBLIC_BASE_URL so browser clients do not depend on localhost assumptions.")
+                raise RuntimeError("Hosted Delphi 6.0 requires HOSTED_PUBLIC_BASE_URL so browser clients do not depend on localhost assumptions.")
         parsed = urlparse(launch_url)
         host = bind_host
         port = bind_port
