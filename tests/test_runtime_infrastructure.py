@@ -53,6 +53,7 @@ class RuntimeInfrastructureTest(unittest.TestCase):
             self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 7.2.12")
             self.assertEqual(app.config["SESSION_COOKIE_NAME"], "delphi5_hosted_session")
             self.assertEqual(app.config["OAUTH_SESSION_NAMESPACE"], "delphi5hosted")
+            self.assertIsNotNone(infrastructure.supabase_context)
             self.assertEqual(
                 infrastructure.supabase_context.configured,
                 bool(app.extensions["supabase_integration"] and app.extensions["supabase_integration"].config.is_configured),
