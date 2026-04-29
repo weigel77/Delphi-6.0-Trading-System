@@ -1197,25 +1197,9 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             return error_response
         trade_mode = resolve_trade_mode(request.form.get("trade_mode") or "real")
         try:
-            _clear_hosted_payload_cache(app=app)
-            trade_store = get_trade_store(app)
-            real_trades = trade_store.list_trades("real")
-            sim_trades = trade_store.list_trades("simulated")
-            all_trades = real_trades + sim_trades
-            journal_count = len(all_trades)
-            max_trade_number = max((int(t.get("trade_number") or 0) for t in all_trades), default=0)
-            active_states = get_open_trade_manager(app).state_repository.load_management_states()
-            active_count = len(active_states)
-            set_status_message(
-                f"Refreshed from Supabase: {journal_count} journal row(s) loaded, "
-                f"max trade # {max_trade_number}, {active_count} active_trades row(s).",
-                level="info",
-            )
+            _execute_supabase_refresh(app)
         except Exception as exc:
-            set_status_message(
-                f"Supabase refresh failed: {exc}",
-                level="warning",
-            )
+            set_status_message(f"Supabase refresh failed: {exc}", level="warning")
         return redirect(url_for("hosted_shell_journal", trade_mode=trade_mode))
 
     @app.post("/hosted/manage-trades/refresh-from-supabase")
@@ -1224,25 +1208,9 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         if error_response is not None:
             return error_response
         try:
-            _clear_hosted_payload_cache(app=app)
-            trade_store = get_trade_store(app)
-            real_trades = trade_store.list_trades("real")
-            sim_trades = trade_store.list_trades("simulated")
-            all_trades = real_trades + sim_trades
-            journal_count = len(all_trades)
-            max_trade_number = max((int(t.get("trade_number") or 0) for t in all_trades), default=0)
-            active_states = get_open_trade_manager(app).state_repository.load_management_states()
-            active_count = len(active_states)
-            set_status_message(
-                f"Refreshed from Supabase: {journal_count} journal row(s) loaded, "
-                f"max trade # {max_trade_number}, {active_count} active_trades row(s).",
-                level="info",
-            )
+            _execute_supabase_refresh(app)
         except Exception as exc:
-            set_status_message(
-                f"Supabase refresh failed: {exc}",
-                level="warning",
-            )
+            set_status_message(f"Supabase refresh failed: {exc}", level="warning")
         return redirect(url_for("hosted_shell_manage_trades"))
 
     @app.route("/hosted/open-trades", methods=["GET"])
@@ -2863,6 +2831,29 @@ def _clear_hosted_payload_cache(*prefixes: str, app: Optional[Flask] = None) -> 
     for cache_key in list(cache.keys()):
         if any(cache_key == prefix or cache_key.startswith(f"{prefix}:") for prefix in prefixes):
             cache.pop(cache_key, None)
+
+
+def _resolve_trade_number(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _execute_supabase_refresh(app: Optional[Flask] = None) -> None:
+    """Clear the payload cache and force a fresh read from Supabase, then set a status message."""
+    _clear_hosted_payload_cache(app=app)
+    trade_store = get_trade_store(app)
+    all_trades = trade_store.list_trades("real") + trade_store.list_trades("simulated")
+    journal_count = len(all_trades)
+    max_trade_number = max((_resolve_trade_number(t.get("trade_number")) for t in all_trades), default=0)
+    active_states = get_open_trade_manager(app).state_repository.load_management_states()
+    active_count = len(active_states)
+    set_status_message(
+        f"Refreshed from Supabase: {journal_count} journal row(s) loaded, "
+        f"max trade # {max_trade_number}, {active_count} active_trades row(s).",
+        level="info",
+    )
 
 
 def get_workflow_state(app: Optional[Flask] = None) -> WorkflowStateStore:
