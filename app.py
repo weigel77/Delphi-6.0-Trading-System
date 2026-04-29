@@ -640,9 +640,9 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     app.config["APP_HOST"] = "127.0.0.1"
     app.config["HOSTED_PUBLIC_BASE_URL"] = ""
     app.config["APP_PORT"] = 5001
-    app.config["APP_DISPLAY_NAME"] = "Delphi 7.2.11 Local"
-    app.config["APP_PAGE_KICKER"] = "Delphi 7.2.11 Local"
-    app.config["APP_VERSION_LABEL"] = "Version 7.2.11"
+    app.config["APP_DISPLAY_NAME"] = "Delphi 7.2.12 Local"
+    app.config["APP_PAGE_KICKER"] = "Delphi 7.2.12 Local"
+    app.config["APP_VERSION_LABEL"] = "Version 7.2.12"
     runtime_app_config = resolve_runtime_app_config(app, APP_CONFIG)
     apply_runtime_app_config_to_flask_config(app, runtime_app_config)
     host_infrastructure_assembler = select_host_infrastructure_assembler(app, runtime_app_config)
@@ -829,8 +829,6 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
     @app.route("/", methods=["GET", "POST"])
     def index() -> str:
-        if app.config.get("RUNTIME_TARGET") == "hosted":
-            return redirect(url_for("hosted_shell_home"))
         if request.method == "POST":
             return app.view_functions["research"]()
         return redirect(url_for("open_trade_management_page"))
@@ -869,10 +867,6 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
     @app.route("/research", methods=["GET", "POST"])
     def research() -> str:
-        if app.config.get("RUNTIME_TARGET") == "hosted":
-            if request.method == "POST":
-                return app.view_functions["hosted_research"]()
-            return redirect(url_for("hosted_research"))
         form_data = get_form_data(request.form if request.method == "POST" else None)
         result = None
         error_message = None
@@ -1824,6 +1818,29 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         set_status_message("Trade not found.", level="error")
         return redirect(url_for("hosted_shell_journal", trade_mode=normalized_mode))
 
+    @app.post("/hosted/journal/refresh-from-supabase")
+    def hosted_journal_refresh_from_supabase() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        trade_mode = resolve_trade_mode(request.form.get("trade_mode") or "real")
+        try:
+            _execute_supabase_refresh(app)
+        except Exception as exc:
+            set_status_message(f"Supabase refresh failed: {exc}", level="warning")
+        return redirect(url_for("hosted_shell_journal", trade_mode=trade_mode))
+
+    @app.post("/hosted/manage-trades/refresh-from-supabase")
+    def hosted_manage_trades_refresh_from_supabase() -> Any:
+        identity, error_response = authorize_hosted_private_browser_request(app)
+        if error_response is not None:
+            return error_response
+        try:
+            _execute_supabase_refresh(app)
+        except Exception as exc:
+            set_status_message(f"Supabase refresh failed: {exc}", level="warning")
+        return redirect(url_for("hosted_shell_manage_trades"))
+
     @app.route("/hosted/open-trades", methods=["GET"])
     def hosted_shell_open_trades() -> Any:
         identity, error_response = authorize_hosted_private_browser_request(app)
@@ -1857,6 +1874,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
                 "real_status_update": url_for("hosted_open_trade_management_status_update", trade_mode="real"),
                 "simulated_status_update": url_for("hosted_open_trade_management_status_update", trade_mode="simulated"),
                 "prefill_close": "hosted_open_trade_management_prefill_close",
+                "refresh_supabase": url_for("hosted_manage_trades_refresh_from_supabase"),
             },
             suppress_open_positions_copy=True,
             hosted_admin_error=admin_error,
@@ -2272,20 +2290,14 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
     @app.get("/kairos")
     def kairos_placeholder() -> Any:
-        if app.config.get("RUNTIME_TARGET") == "hosted":
-            return redirect(url_for("hosted_kairos_live_page"))
         return redirect(url_for("kairos_live_page"))
 
     @app.get("/kairos/live")
     def kairos_live_page() -> str:
-        if app.config.get("RUNTIME_TARGET") == "hosted":
-            return redirect(url_for("hosted_kairos_live_page"))
         return render_kairos_workspace(workspace="live", service=kairos_live_service)
 
     @app.get("/kairos/sim")
     def kairos_sim_page() -> str:
-        if app.config.get("RUNTIME_TARGET") == "hosted":
-            return redirect(url_for("hosted_kairos_sim_page"))
         return render_kairos_workspace(workspace="sim", service=kairos_sim_service)
 
     @app.get("/kairos/status")
@@ -2773,8 +2785,6 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     @app.get("/trades/<trade_mode>")
     def trade_dashboard(trade_mode: str):
         normalized_mode = resolve_trade_mode(trade_mode)
-        if app.config.get("RUNTIME_TARGET") == "hosted":
-            return redirect(url_for("hosted_shell_journal", trade_mode=normalized_mode, **request.args.to_dict(flat=False)))
         prefill_requested = str(request.args.get("prefill", "")).strip().lower() in {"1", "true", "yes", "on"}
         form_values = blank_trade_form(normalized_mode)
         form_values["trade_number"] = str(trade_store.next_trade_number())
@@ -3095,8 +3105,6 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
     @app.get("/performance")
     def performance_dashboard() -> str:
-        if app.config.get("RUNTIME_TARGET") == "hosted":
-            return redirect(url_for("hosted_shell_performance", **request.args.to_dict(flat=False)))
         dashboard_payload = performance_service.build_dashboard()
         return render_profiled_template(
             "performance.html",
@@ -3107,8 +3115,6 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
     @app.get("/management/open-trades")
     def open_trade_management_page() -> str:
-        if app.config.get("RUNTIME_TARGET") == "hosted":
-            return redirect(url_for("hosted_shell_manage_trades", **request.args.to_dict(flat=False)))
         management_payload = open_trade_manager.evaluate_open_trades(send_alerts=False)
         g.startup_menu_snapshot_overrides = dict(management_payload.get("header_market_snapshots") or {})
         response = render_profiled_template(
@@ -3257,8 +3263,6 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
     @app.get("/performance-summary")
     def performance_summary() -> str:
-        if app.config.get("RUNTIME_TARGET") == "hosted":
-            return redirect(url_for("hosted_shell_performance", **request.args.to_dict(flat=False)))
         enriched_trades = performance_engine.load_trades()
         return render_template(
             "performance_summary.html",
@@ -3839,6 +3843,29 @@ def _clear_hosted_payload_cache(*prefixes: str, app: Optional[Flask] = None) -> 
             cache.pop(cache_key, None)
 
 
+def _resolve_trade_number(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _execute_supabase_refresh(app: Optional[Flask] = None) -> None:
+    """Clear the payload cache and force a fresh read from Supabase, then set a status message."""
+    _clear_hosted_payload_cache(app=app)
+    trade_store = get_trade_store(app)
+    all_trades = trade_store.list_trades("real") + trade_store.list_trades("simulated")
+    journal_count = len(all_trades)
+    max_trade_number = max((_resolve_trade_number(t.get("trade_number")) for t in all_trades), default=0)
+    active_states = get_open_trade_manager(app).state_repository.load_management_states()
+    active_count = len(active_states)
+    set_status_message(
+        f"Refreshed from Supabase: {journal_count} journal row(s) loaded, "
+        f"max trade # {max_trade_number}, {active_count} active_trades row(s).",
+        level="info",
+    )
+
+
 def get_workflow_state(app: Optional[Flask] = None) -> WorkflowStateStore:
     container = app or current_app
     workflow_state = container.extensions.get("workflow_state")
@@ -4254,6 +4281,7 @@ def render_hosted_journal_page(
         hosted_edit_enabled=True,
         hosted_delete_enabled=True,
         hosted_admin_error=admin_error,
+        supabase_refresh_url=url_for("hosted_journal_refresh_from_supabase"),
         **hosted_context,
         **build_hosted_template_context(identity, app=app),
     )

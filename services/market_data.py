@@ -116,10 +116,6 @@ class MarketDataService:
             request_cache[request_cache_key] = self.cache_service.clone_payload(payload)
         return payload
 
-    def get_fresh_latest_snapshot(self, ticker: str, query_type: str = "latest") -> Dict[str, Any]:
-        """Force a fresh market snapshot by bypassing the short-lived cache key."""
-        return self.get_latest_snapshot(ticker, query_type=f"{query_type}:fresh:{self._current_time().isoformat()}")
-
     def get_history_with_changes(self, ticker: str, start_date: date, end_date: date, query_type: str = "history") -> pd.DataFrame:
         """Return daily history for a date range, including change columns."""
         provider = self._get_historical_provider(ticker)
@@ -203,19 +199,6 @@ class MarketDataService:
             interval_minutes=interval_minutes,
             query_type=query_type,
             fresh=True,
-        )
-
-    def get_fresh_same_day_intraday_candles(
-        self,
-        ticker: str,
-        interval_minutes: int = 5,
-        query_type: str = "intraday",
-    ) -> pd.DataFrame:
-        """Force a fresh same-day intraday request by bypassing the short-lived cache key."""
-        return self.get_same_day_intraday_candles(
-            ticker,
-            interval_minutes=interval_minutes,
-            query_type=f"{query_type}:fresh:{self._current_time().isoformat()}",
         )
 
     def get_intraday_candles_for_date(
