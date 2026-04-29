@@ -28,6 +28,9 @@ lookup_switch_validation.html
 # Parallel dev clone
 parallel/
 
+# Runtime state (local instance data)
+instance/
+
 # OS/editor noise
 .DS_Store
 Thumbs.db

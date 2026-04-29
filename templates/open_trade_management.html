@@ -49,6 +49,11 @@
                         <form method="post" action="{{ management_action_urls.get('simulated_status_update', url_for('open_trade_management_status_update', trade_mode='simulated')) }}">
                             <button type="submit" class="secondary">Send Simulated Status Update</button>
                         </form>
+                        {% if management_action_urls.get('refresh_supabase') %}
+                            <form method="post" action="{{ management_action_urls['refresh_supabase'] }}">
+                                <button type="submit" class="secondary">Refresh from Supabase Truth</button>
+                            </form>
+                        {% endif %}
                     </div>
                 {% endif %}
             </div>
