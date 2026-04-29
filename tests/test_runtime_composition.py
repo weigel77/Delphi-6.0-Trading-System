@@ -12,8 +12,9 @@ from services.runtime.auth_composition import HostedSupabaseAuthComposer, LocalA
 from services.runtime.hosted_composition import HostedRuntimeServiceComposerSkeleton
 from services.runtime.private_access import LocalPrivateAccessGate, LocalRequestIdentityResolver, NoopSessionInvalidator
 from services.runtime.provider_composition import LocalProviderComposer
-from services.repositories.trade_repository import SQLiteTradeRepository, SupabaseTradeRepository
+from services.repositories.trade_repository import MirroredTradeRepository, SQLiteTradeRepository, SupabaseTradeRepository
 from services.runtime.service_composition import LocalRuntimeServiceComposer
+from services.trade_store import TradeStore
 
 
 class RuntimeCompositionTest(unittest.TestCase):
@@ -62,6 +63,23 @@ class RuntimeCompositionTest(unittest.TestCase):
             self.assertIsInstance(app.extensions["request_identity_resolver"], LocalRequestIdentityResolver)
             self.assertIsInstance(app.extensions["private_access_gate"], LocalPrivateAccessGate)
             self.assertIsInstance(app.extensions["session_invalidator"], NoopSessionInvalidator)
+
+    def test_create_app_can_enable_local_supabase_mirroring_when_opted_in(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "mirrored-runtime.db"
+            app = create_app(
+                {
+                    "TESTING": True,
+                    "ENABLE_LOCAL_SUPABASE_MIRROR": True,
+                    "SUPABASE_URL": "https://project.supabase.co",
+                    "SUPABASE_PUBLISHABLE_KEY": "publishable-key",
+                    "SUPABASE_SECRET_KEY": "secret-key",
+                    "TRADE_DATABASE": str(database_path),
+                }
+            )
+
+            self.assertIsInstance(app.extensions["trade_store"], MirroredTradeRepository)
+            self.assertIsInstance(app.extensions["trade_store_backend"], TradeStore)
 
     def test_create_app_can_select_hosted_runtime_composer_skeleton(self):
         with tempfile.TemporaryDirectory() as temp_dir:

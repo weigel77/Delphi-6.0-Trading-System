@@ -94,6 +94,13 @@ class MarketCalendarService:
         """Return whether the exchange is open for a tradable market session."""
         return self._get_market_day_status(value)["is_tradable"]
 
+    def get_next_or_same_tradable_market_day(self, value: date) -> date:
+        """Roll forward to the next tradable market day, preserving valid inputs."""
+        candidate = value
+        while not self.is_tradable_market_day(candidate):
+            candidate += timedelta(days=1)
+        return candidate
+
     def get_holiday_name(self, value: date) -> str | None:
         """Return the observed holiday name for a closed exchange date."""
         return self._get_market_day_status(value)["holiday_name"]

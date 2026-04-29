@@ -18,12 +18,13 @@ from services.options_chain_service import OptionsChainService
 from services.performance_dashboard_service import PerformanceDashboardService
 from services.performance_engine import PerformanceEngine
 from services.pushover_service import PushoverService
+from services.talos_service import NoopTalosService, TalosService
 from services.repositories.apollo_snapshot_repository import ApolloSnapshotRepository, JsonFileApolloSnapshotRepository
 from services.repositories.import_preview_repository import FileSystemImportPreviewRepository, ImportPreviewRepository
 from services.repositories.kairos_snapshot_repository import JsonFileKairosSnapshotRepository, KairosSnapshotRepository
 from services.repositories.management_state_repository import OpenTradeManagementStateRepository
 from services.repositories.scenario_repository import FileSystemKairosScenarioRepository, KairosBundleRepository
-from services.repositories.trade_repository import SQLiteTradeRepository, TradeRepository
+from services.repositories.trade_repository import MirroredTradeRepository, SQLiteTradeRepository, SupabaseTradeRepository, TradeRepository
 from services.runtime.private_access import LocalPrivateAccessGate, LocalRequestIdentityResolver, NoopSessionInvalidator, PrivateAccessGate, RequestIdentityResolver, SessionInvalidator
 from services.runtime.notifications import PushoverNotificationDelivery
 from services.runtime.scheduler import ThreadingTimerScheduler
@@ -61,6 +62,7 @@ class RuntimeServiceBundle:
     performance_service: PerformanceDashboardService
     performance_engine: PerformanceEngine
     open_trade_manager: OpenTradeManager
+    talos_service: Any
     runtime_components: list[RuntimeComponent]
 
 
@@ -159,11 +161,30 @@ class LocalRuntimeServiceComposer:
             scheduler=runtime_scheduler,
         )
         open_trade_manager.initialize()
+        if self.config.runtime_target == "local":
+            talos_service = TalosService(
+                trade_store=trade_store,
+                market_data_service=market_data_service,
+                options_chain_service=apollo_service.options_chain_service,
+                open_trade_manager=open_trade_manager,
+                config=self.config,
+                scenario_repository=kairos_scenario_repository,
+                scheduler=runtime_scheduler,
+                state_path=storage.instance_path / "talos_state.json",
+            )
+            talos_service.initialize()
+        else:
+            talos_service = NoopTalosService()
         runtime_components = [
             RuntimeComponent(
                 name="open_trade_manager",
                 startup=open_trade_manager.start_background_monitoring,
                 shutdown=open_trade_manager.shutdown,
+            ),
+            RuntimeComponent(
+                name="talos_service",
+                startup=(None if app.testing else talos_service.start_background_monitoring),
+                shutdown=talos_service.shutdown,
             ),
             RuntimeComponent(name="kairos_live_service", shutdown=kairos_live_service.shutdown),
             RuntimeComponent(name="kairos_sim_service", shutdown=kairos_sim_service.shutdown),
@@ -192,13 +213,28 @@ class LocalRuntimeServiceComposer:
             performance_service=performance_service,
             performance_engine=performance_engine,
             open_trade_manager=open_trade_manager,
+            talos_service=talos_service,
             runtime_components=runtime_components,
         )
 
     def _create_trade_repository(self, market_data_service: MarketDataService) -> tuple[Any, TradeRepository]:
         storage = self.host_infrastructure.storage
         trade_store_backend = TradeStore(str(storage.trade_database_path), market_data_service=market_data_service)
-        return trade_store_backend, SQLiteTradeRepository(trade_store_backend)
+        local_repository = SQLiteTradeRepository(trade_store_backend)
+        supabase_context = self.host_infrastructure.supabase_context
+        supabase_integration = self.host_infrastructure.supabase_integration
+        if supabase_context is not None and supabase_integration is not None and supabase_context.configured:
+            remote_repository = SupabaseTradeRepository(
+                context=supabase_context,
+                gateway=supabase_integration.create_table_gateway(),
+                database_path="supabase://journal_trades",
+                market_data_service=market_data_service,
+            )
+            return trade_store_backend, MirroredTradeRepository(
+                local_repository=local_repository,
+                remote_repository=remote_repository,
+            )
+        return trade_store_backend, local_repository
 
     def _create_apollo_snapshot_repository(self, *, storage) -> ApolloSnapshotRepository:
         return JsonFileApolloSnapshotRepository(storage.instance_path / "apollo_last_run.json")

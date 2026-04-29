@@ -1,0 +1,95 @@
+{
+  "entries": [
+    {
+      "id": "live-spx-tape-2026-04-13",
+      "scenario_key": "live-spx-tape-2026-04-13",
+      "session_date": "2026-04-13",
+      "label": "Live SPX Tape 2026-04-13",
+      "source": "Live SPX 1m",
+      "source_family_tag": "LIVE TAPE",
+      "source_type": "live_spx_tape",
+      "created_at": "2026-04-13T15:00:00.015573-05:00",
+      "session_status": "complete",
+      "bar_count": 390,
+      "bundle_path": "live-spx-tape-2026-04-13.json"
+    },
+    {
+      "id": "live-spx-tape-2026-04-10",
+      "scenario_key": "live-spx-tape-2026-04-10",
+      "session_date": "2026-04-10",
+      "label": "Live SPX Tape 2026-04-10",
+      "source": "Live SPX 1m",
+      "source_family_tag": "LIVE TAPE",
+      "source_type": "live_spx_tape",
+      "created_at": "2026-04-10T16:37:24.289005-05:00",
+      "session_status": "complete",
+      "bar_count": 390,
+      "bundle_path": "live-spx-tape-2026-04-10.json"
+    },
+    {
+      "id": "live-spx-tape-2026-04-09",
+      "scenario_key": "live-spx-tape-2026-04-09",
+      "session_date": "2026-04-09",
+      "label": "Live SPX Tape 2026-04-09",
+      "source": "Live SPX 1m",
+      "source_family_tag": "LIVE TAPE",
+      "source_type": "live_spx_tape",
+      "created_at": "2026-04-10T08:37:04.927210-05:00",
+      "session_status": "recovered",
+      "bar_count": 390,
+      "bundle_path": "live-spx-tape-2026-04-09.json"
+    },
+    {
+      "id": "live-spx-tape-2026-04-08",
+      "scenario_key": "live-spx-tape-2026-04-08",
+      "session_date": "2026-04-08",
+      "label": "Live SPX Tape 2026-04-08",
+      "source": "Live SPX 1m",
+      "source_family_tag": "LIVE TAPE",
+      "source_type": "live_spx_tape",
+      "created_at": "2026-04-08T15:00:00.015121-05:00",
+      "session_status": "complete",
+      "bar_count": 390,
+      "bundle_path": "live-spx-tape-2026-04-08.json"
+    },
+    {
+      "id": "live-spx-tape-2026-04-07",
+      "scenario_key": "live-spx-tape-2026-04-07",
+      "session_date": "2026-04-07",
+      "label": "Live SPX Tape 2026-04-07",
+      "source": "Live SPX 1m",
+      "source_family_tag": "LIVE TAPE",
+      "source_type": "live_spx_tape",
+      "created_at": "2026-04-08T08:24:26.211479-05:00",
+      "session_status": "recovered",
+      "bar_count": 390,
+      "bundle_path": "live-spx-tape-2026-04-07.json"
+    },
+    {
+      "id": "live-spx-tape-2026-04-06",
+      "scenario_key": "live-spx-tape-2026-04-06",
+      "session_date": "2026-04-06",
+      "label": "Live SPX Tape 2026-04-06",
+      "source": "Live SPX 1m",
+      "source_family_tag": "LIVE TAPE",
+      "source_type": "live_spx_tape",
+      "created_at": "2026-04-07T00:00:43.324328-05:00",
+      "session_status": "recovered",
+      "bar_count": 390,
+      "bundle_path": "live-spx-tape-2026-04-06.json"
+    },
+    {
+      "id": "historical-spy-2026-03-13-schwab",
+      "scenario_key": "historical-spy-2026-03-13-schwab",
+      "session_date": "2026-03-13",
+      "label": "SPY Real Day 2026-03-13",
+      "source": "Schwab historical 1m",
+      "source_family_tag": "",
+      "source_type": "",
+      "created_at": "",
+      "session_status": "unknown",
+      "bar_count": 390,
+      "bundle_path": "historical-spy-2026-03-13-schwab.json"
+    }
+  ]
+}

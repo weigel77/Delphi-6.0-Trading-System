@@ -62,7 +62,18 @@ class LocalHostInfrastructureAssembler:
         settings.apply_to_app(app)
         storage = self.storage_composer.compose(app, settings)
         storage.apply_to_app(app)
-        return HostInfrastructure(host_kind="local", settings=settings, storage=storage)
+        mirror_enabled = bool(app.config.get("ENABLE_LOCAL_SUPABASE_MIRROR")) or not bool(app.testing)
+        if not mirror_enabled:
+            return HostInfrastructure(host_kind="local", settings=settings, storage=storage)
+        supabase_integration = SupabaseProjectIntegration(SupabaseConfig.resolve(app, self.config))
+        supabase_context = supabase_integration.initialize_context()
+        return HostInfrastructure(
+            host_kind="local",
+            settings=settings,
+            storage=storage,
+            supabase_integration=(supabase_integration if supabase_context.configured else None),
+            supabase_context=(supabase_context if supabase_context.configured else None),
+        )
 
 
 class HostedHostInfrastructureAssemblerSkeleton(LocalHostInfrastructureAssembler):
@@ -86,7 +97,7 @@ class HostedHostInfrastructureAssemblerSkeleton(LocalHostInfrastructureAssembler
         supabase_integration = SupabaseProjectIntegration(SupabaseConfig.resolve(app, self.config))
         supabase_context = supabase_integration.initialize_context()
         if not supabase_context.configured:
-            raise RuntimeError("Hosted Delphi 5.4 requires SUPABASE_URL and a Supabase API key. Local hosted fallback is disabled.")
+            raise RuntimeError("Hosted Delphi 6.0 requires SUPABASE_URL and a Supabase API key. Local hosted fallback is disabled.")
         return HostInfrastructure(
             host_kind="hosted",
             settings=infrastructure.settings,

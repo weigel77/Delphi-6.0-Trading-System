@@ -48,7 +48,7 @@
                 <article class="summary-card"><p class="summary-label">Recommendation</p><p id="hosted-kairos-recommendation" class="summary-value">{{ kairos_payload.hosted_recommendation }}</p></article>
                 <article class="summary-card"><p class="summary-label">SPX</p><p id="hosted-kairos-spx-value" class="summary-value">{{ kairos_payload.spx_value }}</p></article>
                 <article class="summary-card"><p class="summary-label">VIX</p><p id="hosted-kairos-vix-value" class="summary-value">{{ kairos_payload.vix_value }}</p></article>
-                <article class="summary-card"><p class="summary-label">Window Found</p><p id="hosted-kairos-window-found" class="summary-value">{{ 'Yes' if kairos_payload.window_found else 'No' }}</p></article>
+                <article class="summary-card"><p class="summary-label">Prime Reached</p><p id="hosted-kairos-window-found" class="summary-value">{{ 'Yes' if kairos_payload.window_found else 'No' }}</p></article>
                 <article class="summary-card"><p class="summary-label">Next Scan</p><p id="hosted-kairos-next-scan" class="summary-value">{{ kairos_payload.next_scan_display }}</p></article>
                 <article class="summary-card"><p class="summary-label">Total Scans</p><p id="hosted-kairos-total-scans" class="summary-value">{{ kairos_payload.total_scans_completed }}</p></article>
             </div>
@@ -74,7 +74,9 @@
             </div>
             <div class="apollo-diagnostic-chip-list" id="hosted-kairos-stamps">
                 {% for item in kairos_payload.stamps %}
+                    {% if item.label != 'Last Scan' %}
                     <div class="apollo-diagnostic-chip">{{ item.label }}: <strong>{{ item.value }}</strong></div>
+                    {% endif %}
                 {% else %}
                     <div class="message message-info message-inline">No Kairos workspace stamps are available yet.</div>
                 {% endfor %}
@@ -90,7 +92,7 @@
             <div class="result-header">
                 <div>
                     <h2>Kairos Candidates</h2>
-                    <p class="subtle">Hosted Delphi uses the same candidate card hierarchy so Bill can see immediately whether Kairos found a tradeable live window.</p>
+                    <p class="subtle">Hosted Delphi uses the same candidate card hierarchy so Bill can see immediately whether Kairos found a tradeable live candidate.</p>
                 </div>
             </div>
             <div id="hosted-kairos-candidate-cards" class="kairos-live-candidate-grid">
@@ -100,21 +102,45 @@
                             <div class="apollo-candidate-mode">
                                 <div>
                                     <p class="apollo-candidate-rank">{{ item.slot_label }}</p>
-                                    <h4>{{ item.headline or item.slot_label }}</h4>
                                     <p class="subtle">{{ item.descriptor or item.message }}</p>
                                 </div>
                             </div>
                             <div class="apollo-candidate-header-meta">
-                                <span class="kairos-runner-candidate-status kairos-runner-candidate-status-{{ 'qualified' if item.tradeable else 'did-not-qualify' }}">{{ 'Ready' if item.tradeable else 'Watch' if item.available else 'Unavailable' }}</span>
-                                <p class="subtle">{{ item.strike_label }}</p>
+                                <div class="apollo-candidate-score">{{ item.strike_label }}</div>
+                                <div class="apollo-candidate-stamp-row">
+                                    {% for stamp in item.header_stamps or [] %}
+                                    <div class="apollo-candidate-stamp"><span>{{ stamp.label }}</span><strong>{{ stamp.value }}</strong></div>
+                                    {% endfor %}
+                                </div>
                             </div>
                         </div>
                         <div class="apollo-candidate-stamp-row">
+                            <div class="apollo-candidate-stamp"><span>Structure</span><strong>{{ item.structure_label }}</strong></div>
                             <div class="apollo-candidate-stamp apollo-candidate-stamp-credit"><span>Net Credit</span><strong>{{ item.net_credit }}</strong></div>
+                            <div class="apollo-candidate-stamp"><span>Contract Size</span><strong>{{ item.contract_size }}</strong></div>
                             <div class="apollo-candidate-stamp"><span>Distance</span><strong>{{ item.distance_to_short }}</strong></div>
                             <div class="apollo-candidate-stamp"><span>EM Multiple</span><strong>{{ item.em_multiple }}</strong></div>
                         </div>
-                        <p class="kairos-runner-candidate-rationale">{{ item.message }}</p>
+                        <div class="apollo-candidate-stamp-row">
+                            <div class="apollo-candidate-stamp"><span>Status</span><strong>{{ item.status_label }}</strong></div>
+                        </div>
+                        <div class="apollo-payoff-grid">
+                            <article class="apollo-mini-card apollo-mini-card-highlight apollo-mini-card-highlight-premium">
+                                <p class="summary-label">Premium Received</p>
+                                <strong>{{ item.premium_received }}</strong>
+                                <p class="apollo-probability-text">Prob. Premium: {{ item.estimated_otm_probability }}</p>
+                            </article>
+                            <article class="apollo-mini-card apollo-mini-card-highlight apollo-mini-card-highlight-routine">
+                                <p class="summary-label">Routine Loss</p>
+                                <strong>{{ item.routine_loss }}</strong>
+                                <p class="apollo-probability-text">Prob. Routine: {{ item.routine_probability }}</p>
+                            </article>
+                            <article class="apollo-mini-card apollo-mini-card-highlight apollo-mini-card-highlight-tail apollo-mini-card-wide">
+                                <p class="summary-label">Black Swan Loss</p>
+                                <strong>{{ item.black_swan_loss }}</strong>
+                                <p class="apollo-probability-text">Prob. Tail: {{ item.tail_probability }}</p>
+                            </article>
+                        </div>
                     </article>
                 {% else %}
                     <div class="message message-info message-inline">No Kairos recommendation cards are available right now.</div>

@@ -84,6 +84,13 @@ For Schwab local OAuth, set:
 - `MARKET_DATA_PROVIDER=schwab`
 - `SCHWAB_REDIRECT_URI=https://127.0.0.1:5000/callback`
 
+For hosted production OAuth on eigeltrade.com, set:
+
+- `DELPHI_RUNTIME_TARGET=hosted`
+- `HOSTED_PUBLIC_BASE_URL=https://eigeltrade.com`
+
+When hosted runtime has `HOSTED_PUBLIC_BASE_URL` set, Delphi derives the Schwab redirect URI as `https://eigeltrade.com/callback` automatically.
+
 When Schwab is the active provider, the Flask app starts with a local HTTPS development certificate so the callback route can receive the authorization code.
 
 ### Windows PowerShell
@@ -233,3 +240,5 @@ The code is structured for later additions such as:
 5. The app exchanges the code for access and refresh tokens and stores them in the configured token file.
 6. Latest SPX and VIX queries use the Schwab quotes endpoint with automatic token refresh.
 7. Historical range and single-date SPX/VIX queries use the Schwab price-history endpoint and continue to export clean CSV/XLSX files.
+
+For Render hosted production, configure `HOSTED_PUBLIC_BASE_URL=https://eigeltrade.com` in the service environment. Hosted runtime will then build the Schwab authorize URL with `redirect_uri=https://eigeltrade.com/callback` while local `127.0.0.1` development callbacks remain unchanged.

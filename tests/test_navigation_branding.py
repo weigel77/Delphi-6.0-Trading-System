@@ -79,14 +79,18 @@ class DelphiNavigationBrandingTest(unittest.TestCase):
             "vix_historical_provider_name": "Schwab",
         }
 
-        response = self.client.get("/")
+        redirect_response = self.client.get("/", follow_redirects=False)
+        response = self.client.get("/", follow_redirects=True)
 
+        self.assertEqual(redirect_response.status_code, 302)
+        self.assertEqual(redirect_response.headers["Location"], "/management/open-trades")
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Delphi 4.3 Dev", response.data)
-        self.assertIn(b"Version 4.3 Dev", response.data)
+        self.assertIn(b"Open Trade Management", response.data)
+        self.assertIn(b">Home<", response.data)
         self.assertIn(b"Research", response.data)
         self.assertIn(b"Run Apollo", response.data)
         self.assertIn(b"Run Kairos", response.data)
+        self.assertIn(b"Talos", response.data)
         self.assertIn(b"Performance", response.data)
         self.assertIn(b"Journal", response.data)
         self.assertIn(b"Schwab connection", response.data)
@@ -98,12 +102,12 @@ class DelphiNavigationBrandingTest(unittest.TestCase):
         self.assertIn(b"delphi-status-card-value-negative", response.data)
         self.assertIn(b"+12.34 pts", response.data)
         self.assertIn(b"-1.23 pts", response.data)
-        self.assertIn(b"delphi-hero.svg", response.data)
         self.assertNotIn(b"Simulated Trades", response.data)
         self.assertNotIn(b"Live provider", response.data)
         self.assertNotIn(b"SPX history", response.data)
         self.assertNotIn(b"VIX history", response.data)
-        self.assertEqual(calls, [("^GSPC", "startup_spx"), ("^VIX", "startup_vix")])
+        self.assertLess(response.data.find(b">Home<"), response.data.find(b">Research<"))
+        self.assertEqual(calls, [("^GSPC", "open_trade_management_spx"), ("^VIX", "open_trade_management_vix")])
 
         stylesheet = (Path(self.app.root_path) / "static" / "styles.css").read_text(encoding="utf-8")
         self.assertIn("background: rgba(20, 40, 80, 0.85);", stylesheet)
@@ -134,16 +138,16 @@ class DelphiNavigationBrandingTest(unittest.TestCase):
             "vix_historical_provider_name": "Local",
         }
 
-        self.client.get("/")
-        self.client.get("/")
+        self.client.get("/", follow_redirects=True)
+        self.client.get("/", follow_redirects=True)
 
         self.assertEqual(
             calls,
             [
-                ("^GSPC", "startup_spx"),
-                ("^VIX", "startup_vix"),
-                ("^GSPC", "startup_spx"),
-                ("^VIX", "startup_vix"),
+                ("^GSPC", "open_trade_management_spx"),
+                ("^VIX", "open_trade_management_vix"),
+                ("^GSPC", "open_trade_management_spx"),
+                ("^VIX", "open_trade_management_vix"),
             ],
         )
 
@@ -191,16 +195,18 @@ class DelphiNavigationBrandingTest(unittest.TestCase):
                 "/",
                 "/research",
                 "/apollo?autorun=1",
+                "/talos",
                 "/management/open-trades",
                 "/performance",
                 "/trades/real",
                 "/trades/simulated",
+                "/trades/talos",
                 "/kairos/live",
             ]
 
             for route in routes:
                 with self.subTest(route=route):
-                    response = self.client.get(route)
+                    response = self.client.get(route, follow_redirects=(route == "/"))
                     self.assertEqual(response.status_code, 200)
                     self.assertIn(b"SPX", response.data)
                     self.assertIn(b"VIX", response.data)
@@ -225,14 +231,14 @@ class DelphiNavigationBrandingTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["message"], "Pushover test alert sent.")
-        self.assertEqual(payload["title"], "Delphi 4.3 Test Alert")
+        self.assertEqual(payload["title"], "Delphi 7.2.13 Local Test Alert")
         self.assertEqual(len(pushover_calls), 1)
         self.assertEqual(pushover_calls[0]["api_url"], "https://api.pushover.net/1/messages.json")
-        self.assertEqual(pushover_calls[0]["payload"]["title"], "Delphi 4.3 Test Alert")
+        self.assertEqual(pushover_calls[0]["payload"]["title"], "Delphi 7.2.13 Local Test Alert")
         self.assertIn("SPX Update", pushover_calls[0]["payload"]["message"])
         self.assertIn("SPX: 6,123.45", pushover_calls[0]["payload"]["message"])
         self.assertIn("VIX: 18.76", pushover_calls[0]["payload"]["message"])
-        self.assertIn("Source: Delphi 4.3 Dev Pushover test", pushover_calls[0]["payload"]["message"])
+        self.assertIn("Source: Delphi 7.2.13 Local Pushover test", pushover_calls[0]["payload"]["message"])
 
     def test_manual_text_status_endpoint_surfaces_missing_pushover_credentials(self):
         pushover_service = self.app.extensions["pushover_service"]
@@ -385,6 +391,64 @@ class DelphiNavigationBrandingTest(unittest.TestCase):
         self.assertNotIn(b"Main Menu", response.data)
         self.assertIn(b'data-delphi-nav="kairos" aria-current="page"', response.data)
 
+    @patch("app.execute_apollo_precheck")
+    def test_shared_header_uses_png_icons_for_local_pages(self, execute_apollo_precheck):
+        execute_apollo_precheck.return_value = {
+            "title": "Apollo Gate 1 -- SPX Structure",
+            "structure_grade": "Allowed",
+            "structure_grade_class": "allowed",
+            "structure_base_grade": "Allowed",
+            "structure_final_grade": "Allowed",
+            "structure_rsi_modifier": "None",
+            "structure_rsi_note": "Daily RSI unavailable; base structure kept.",
+            "structure_source_used": "Schwab",
+            "structure_preferred_source": "Schwab",
+            "structure_session_note": "",
+            "structure_trend_classification": "Balanced",
+            "structure_damage_classification": "Contained",
+            "structure_session_low": "5,000.00",
+            "structure_session_high": "5,100.00",
+            "structure_range_position": "50.00%",
+            "structure_ema8": "5,048.00",
+            "structure_ema21": "5,042.00",
+            "structure_recent_price_action": "Stable",
+            "structure_session_window": "09:30 to 16:00",
+            "structure_available": False,
+            "structure_chart": {"available": False, "points": []},
+            "structure_message": "Test structure",
+            "structure_rules": [],
+            "structure_attempted_sources": [],
+            "structure_fallback_reason": "",
+            "macro_grade": "None",
+            "macro_grade_class": "good",
+            "macro_major_events": [],
+            "macro_minor_events": [],
+            "macro_diagnostic": {},
+            "macro_source_attempts": [],
+            "trade_candidates_items": [],
+            "trade_candidates_diagnostics": {},
+            "reasons": [],
+            "local_datetime": "Fri 2026-04-03 10:00 AM CDT",
+        }
+
+        page_responses = {
+            b'/static/icons/delphi-icon.png': [
+                self.client.get("/management/open-trades"),
+                self.client.get("/research"),
+            ],
+            b'/static/icons/apollo-icon.png': [self.client.get("/apollo?autorun=1")],
+            b'/static/icons/kairos-icon.png': [self.client.get("/kairos/live")],
+            b'/static/icons/talos-icon.png': [self.client.get("/talos")],
+            b'/static/icons/journal-icon.png': [self.client.get("/trades/real")],
+            b'/static/icons/performance-icon.png': [self.client.get("/performance")],
+        }
+
+        for expected_icon, responses in page_responses.items():
+            for response in responses:
+                self.assertIn(expected_icon, response.data)
+                self.assertIn(b'delphi-header-emblem-image', response.data)
+                self.assertNotIn(b'.jpg', response.data)
+
     def test_open_trade_management_route_renders_shared_header_and_management_board(self):
         response = self.client.get("/management/open-trades")
 
@@ -393,8 +457,8 @@ class DelphiNavigationBrandingTest(unittest.TestCase):
         self.assertIn(b"Send Real Status Update", response.data)
         self.assertIn(b"Send Simulated Status Update", response.data)
         self.assertIn(b"Notifications: ON", response.data)
-        self.assertIn(b"both modes can send manual status updates", response.data)
-        self.assertIn(b"No open real or simulated trades are currently available for management.", response.data)
+        self.assertIn(b"manual status updates stay limited to real and simulated positions", response.data)
+        self.assertIn(b"No open real, simulated, or Talos trades are currently available for management.", response.data)
         self.assertIn(b'data-delphi-nav="management" aria-current="page"', response.data)
 
     def test_performance_page_uses_shared_header_and_active_nav_state(self):

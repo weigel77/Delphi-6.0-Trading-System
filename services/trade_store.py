@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Optional
 from zoneinfo import ZoneInfo
 
-VALID_TRADE_MODES = {"real", "simulated"}
+VALID_TRADE_MODES = {"real", "simulated", "talos"}
 VALID_STATUSES = {"open", "closed", "expired", "cancelled"}
 VALID_CLOSE_EVENT_TYPES = {"reduce", "close", "expire"}
 VALID_CLOSE_METHODS = {"Reduce", "Close", "Expire", "Manage Trade Prefill"}
@@ -143,6 +143,8 @@ EDITABLE_FIELDS = {
     "max_theoretical_risk",
     "risk_efficiency",
     "target_em",
+    "prefill_source",
+    "automation_status",
     "fallback_used",
     "fallback_rule_name",
     "short_delta",
@@ -161,7 +163,7 @@ CREATE TABLE IF NOT EXISTS trades (
     trade_number INTEGER,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    trade_mode TEXT NOT NULL CHECK (trade_mode IN ('real', 'simulated')),
+    trade_mode TEXT NOT NULL CHECK (trade_mode IN ('real', 'simulated', 'talos')),
     system_name TEXT NOT NULL,
     journal_name TEXT NOT NULL DEFAULT 'Apollo Main',
     system_version TEXT,
@@ -203,6 +205,8 @@ CREATE TABLE IF NOT EXISTS trades (
     total_max_loss REAL,
     risk_efficiency REAL,
     target_em REAL,
+    prefill_source TEXT,
+    automation_status TEXT,
     last_status TEXT,
     last_action_sent TEXT,
     last_alert_timestamp TEXT,
@@ -320,6 +324,7 @@ class TradeStore:
             )
             """
         )
+        self._ensure_trade_mode_schema(connection)
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(trades)").fetchall()}
         if "trade_number" not in columns:
             connection.execute("ALTER TABLE trades ADD COLUMN trade_number INTEGER")
@@ -365,6 +370,10 @@ class TradeStore:
             connection.execute("ALTER TABLE trades ADD COLUMN risk_efficiency REAL")
         if "target_em" not in columns:
             connection.execute("ALTER TABLE trades ADD COLUMN target_em REAL")
+        if "prefill_source" not in columns:
+            connection.execute("ALTER TABLE trades ADD COLUMN prefill_source TEXT")
+        if "automation_status" not in columns:
+            connection.execute("ALTER TABLE trades ADD COLUMN automation_status TEXT")
         if "last_status" not in columns:
             connection.execute("ALTER TABLE trades ADD COLUMN last_status TEXT")
         if "last_action_sent" not in columns:
@@ -386,6 +395,30 @@ class TradeStore:
         connection.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_trade_number ON trades(trade_number) WHERE trade_number IS NOT NULL"
         )
+
+    def _ensure_trade_mode_schema(self, connection: sqlite3.Connection) -> None:
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'trades'"
+        ).fetchone()
+        create_sql = str((dict(row) if row else {}).get("sql") or "")
+        if not create_sql or "'talos'" in create_sql:
+            return
+
+        migration_sql = SCHEMA.split("CREATE TABLE IF NOT EXISTS trade_close_events", 1)[0]
+        migration_sql = migration_sql.replace("CREATE TABLE IF NOT EXISTS trades", "CREATE TABLE trades__new", 1)
+        connection.execute("PRAGMA foreign_keys = OFF")
+        try:
+            connection.execute("DROP TABLE IF EXISTS trades__new")
+            connection.executescript(migration_sql)
+            old_columns = [row["name"] for row in connection.execute("PRAGMA table_info(trades)").fetchall()]
+            new_columns = [row["name"] for row in connection.execute("PRAGMA table_info(trades__new)").fetchall()]
+            common_columns = [column for column in old_columns if column in new_columns]
+            column_sql = ", ".join(common_columns)
+            connection.execute(f"INSERT INTO trades__new ({column_sql}) SELECT {column_sql} FROM trades")
+            connection.execute("DROP TABLE trades")
+            connection.execute("ALTER TABLE trades__new RENAME TO trades")
+        finally:
+            connection.execute("PRAGMA foreign_keys = ON")
 
     def _normalize_existing_rows(self, connection: sqlite3.Connection) -> None:
         rows = connection.execute("SELECT * FROM trades ORDER BY id ASC").fetchall()
@@ -1350,7 +1383,7 @@ class TradeStore:
 def normalize_trade_mode(value: Any) -> str:
     trade_mode = str(value or "").strip().lower()
     if trade_mode not in VALID_TRADE_MODES:
-        raise ValueError("Trade mode must be 'real' or 'simulated'.")
+        raise ValueError("Trade mode must be 'real', 'simulated', or 'talos'.")
     return trade_mode
 
 
@@ -1451,9 +1484,9 @@ def normalize_close_method(value: Any) -> str:
     text = str(value or "").strip().lower()
     if text == "reduce":
         return "Reduce"
-    if text == "close":
+    if text in {"close", "buy to close", "btc"}:
         return "Close"
-    if text == "expire":
+    if text in {"expire", "expiration"}:
         return "Expire"
     if text in {"manage trade prefill", "manage_trade_prefill"}:
         return "Manage Trade Prefill"
@@ -1509,9 +1542,7 @@ def normalize_trade_payload(
     if not normalized["journal_name"]:
         raise ValueError("Journal name is required.")
 
-    normalized["status"] = str(normalized.get("status") or "").strip().lower()
-    if normalized["status"] not in VALID_STATUSES:
-        raise ValueError("Status must be open, closed, expired, or cancelled.")
+    normalized["status"] = derive_trade_status(normalized, existing=existing)
 
     provided_expected_move_source = normalize_expected_move_source(combined.get("expected_move_source"))
     expected_move_metadata = resolve_trade_expected_move(
@@ -1601,12 +1632,15 @@ def calculate_trade_metrics(values: Dict[str, Any], distance_metadata: Optional[
                 entry_datetime = entry_datetime.replace(tzinfo=None)
         hours_held = (exit_datetime - entry_datetime).total_seconds() / 3600
 
-    win_loss_result = classify_closed_trade_outcome(
-        gross_pnl=gross_pnl,
-        max_theoretical_risk=max_risk,
-        explicit_result=values.get("win_loss_result") or values.get("result"),
-        close_reason=values.get("close_reason"),
-    )
+    derived_status = derive_trade_status(values)
+    win_loss_result = None
+    if derived_status in {"closed", "expired"}:
+        win_loss_result = classify_closed_trade_outcome(
+            gross_pnl=gross_pnl,
+            max_theoretical_risk=max_risk,
+            explicit_result=values.get("win_loss_result") or values.get("result"),
+            close_reason=values.get("close_reason"),
+        )
 
     return {
         "candidate_credit_estimate": credit_model.get("candidate_credit_estimate"),
@@ -1742,7 +1776,6 @@ def _normalize_credit_field_value(*, original_value: Optional[float], net_credit
 
 def summarize_trade_close_events(trade: Dict[str, Any], events: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     normalized_events = list(events or [])
-    stored_status = str(trade.get("status") or "open").strip().lower() or "open"
     original_contracts = to_int(trade.get("contracts")) or 0
     credit_model = resolve_trade_credit_model(trade)
     distance_metadata = resolve_trade_distance(trade)
@@ -1750,21 +1783,21 @@ def summarize_trade_close_events(trade: Dict[str, Any], events: Iterable[Dict[st
 
     if not normalized_events:
         base_metrics = calculate_trade_metrics(trade)
-        inferred_closed_contracts = original_contracts if stored_status in {"closed", "expired"} and original_contracts > 0 else 0
+        derived_status_raw = derive_trade_status(trade)
+        inferred_closed_contracts = original_contracts if derived_status_raw in {"closed", "expired"} and original_contracts > 0 else 0
         inferred_remaining_contracts = max(original_contracts - inferred_closed_contracts, 0) if original_contracts > 0 else None
-        if stored_status == "cancelled":
-            derived_status_raw = "cancelled"
+        if derived_status_raw == "cancelled":
             derived_status_label = "Cancelled"
+        elif derived_status_raw == "expired":
+            derived_status_label = "Expired"
         elif inferred_closed_contracts == 0:
-            derived_status_raw = "open"
             derived_status_label = "Open"
         else:
-            derived_status_raw = "closed"
             derived_status_label = "Closed"
-        win_loss_result = base_metrics.get("win_loss_result") if derived_status_raw == "closed" else None
+        win_loss_result = base_metrics.get("win_loss_result") if derived_status_raw in {"closed", "expired"} else None
         return {
             **base_metrics,
-            "status": derived_status_raw if derived_status_raw != "cancelled" else stored_status,
+            "status": derived_status_raw,
             "derived_status_raw": derived_status_raw,
             "derived_status_label": derived_status_label,
             "original_contracts": original_contracts,
@@ -1778,7 +1811,7 @@ def summarize_trade_close_events(trade: Dict[str, Any], events: Iterable[Dict[st
             "distance_display": distance_to_short,
             "distance_source": distance_metadata.get("source"),
             "distance_is_estimated": distance_metadata.get("estimated"),
-            "has_expire_event": stored_status == "expired",
+            "has_expire_event": derived_status_raw == "expired",
         }
 
     total_closed_contracts = 0
@@ -1796,8 +1829,8 @@ def summarize_trade_close_events(trade: Dict[str, Any], events: Iterable[Dict[st
     has_expire_event = any(str(event.get("event_type") or "").strip().lower() == "expire" for event in normalized_events)
     is_reduced = total_closed_contracts > 0 and remaining_contracts > 0
     is_closed = total_closed_contracts >= original_contracts > 0
-    derived_status_raw = "reduced" if is_reduced else "closed" if is_closed else "open"
-    stored_status = "closed" if is_closed else "open"
+    stored_status = "expired" if is_closed and has_expire_event else "closed" if is_closed else "open"
+    derived_status_raw = "reduced" if is_reduced else stored_status
     weighted_exit_value = (total_close_cost / total_closed_contracts / 100) if total_closed_contracts > 0 else to_float(trade.get("actual_exit_value"))
 
     gross_pnl = None
@@ -1834,7 +1867,7 @@ def summarize_trade_close_events(trade: Dict[str, Any], events: Iterable[Dict[st
     return {
         "status": stored_status,
         "derived_status_raw": derived_status_raw,
-        "derived_status_label": "Reduced" if derived_status_raw == "reduced" else derived_status_raw.title(),
+        "derived_status_label": "Reduced" if is_reduced else stored_status.title(),
         "original_contracts": original_contracts,
         "closed_contracts": total_closed_contracts,
         "contracts_closed": total_closed_contracts,
@@ -1864,7 +1897,38 @@ def summarize_trade_close_events(trade: Dict[str, Any], events: Iterable[Dict[st
         "distance_source": distance_metadata.get("source"),
         "distance_is_estimated": distance_metadata.get("estimated"),
         "has_expire_event": has_expire_event,
+        "has_partial_close": is_reduced,
     }
+
+
+def derive_trade_status(values: Dict[str, Any], existing: Optional[Dict[str, Any]] = None) -> str:
+    close_method_value = values.get("close_method")
+    close_method = normalize_close_method(close_method_value) if close_method_value not in {None, ""} else None
+    contracts = to_int(values.get("contracts")) or 0
+    has_exit_evidence = _trade_has_exit_evidence(values, close_method=close_method)
+    existing_status = str((existing or {}).get("status") or values.get("status") or "").strip().lower()
+    if close_method == "Expire":
+        return "expired"
+    if existing_status == "cancelled" and not has_exit_evidence:
+        return "cancelled"
+    if contracts > 0 and has_exit_evidence:
+        return "closed"
+    return "open"
+
+
+def _trade_has_exit_evidence(values: Dict[str, Any], *, close_method: Optional[str] = None) -> bool:
+    normalized_close_method = close_method
+    if normalized_close_method is None:
+        close_method_value = values.get("close_method")
+        if close_method_value not in {None, ""}:
+            normalized_close_method = normalize_close_method(close_method_value)
+    return any(
+        (
+            parse_datetime_value(values.get("exit_datetime")) is not None,
+            to_float(values.get("actual_exit_value")) is not None,
+            normalized_close_method is not None,
+        )
+    )
 
 
 def calculate_trade_distance(values: Dict[str, Any]) -> Optional[float]:
@@ -2510,6 +2574,8 @@ def blank_trade_form(trade_mode: str) -> Dict[str, Any]:
         "max_theoretical_risk": "",
         "risk_efficiency": "",
         "target_em": "",
+        "prefill_source": "",
+        "automation_status": "",
         "fallback_used": "no",
         "fallback_rule_name": "",
         "short_delta": "",
@@ -2525,6 +2591,8 @@ def blank_trade_form(trade_mode: str) -> Dict[str, Any]:
 
 def form_trade_record(trade: Dict[str, Any]) -> Dict[str, Any]:
     values = {field: format_form_value(trade.get(field)) for field in EDITABLE_FIELDS}
+    if trade.get("derived_status_label"):
+        values["status"] = format_form_value(trade.get("derived_status_label"))
     values["expected_move_source"] = trade.get("expected_move_source")
     values["distance_source"] = trade.get("distance_source")
     values["fallback_used"] = normalize_yes_no_flag(trade.get("fallback_used"))
