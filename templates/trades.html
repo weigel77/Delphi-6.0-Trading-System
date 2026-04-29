@@ -41,6 +41,12 @@
                 {% if not hosted_read_only or hosted_prefill_enabled %}
                     <a class="button-link button-link-secondary" href="{% if hosted_read_only %}{{ url_for('hosted_shell_journal', trade_mode=trade_mode, _anchor='trade-entry-form') }}{% else %}{{ url_for('trade_dashboard', trade_mode=trade_mode, _anchor='trade-entry-form') }}{% endif %}">{% if hosted_read_only %}Jump to Draft Form{% else %}Jump to Manual Entry Form{% endif %}</a>
                 {% endif %}
+                {% if hosted_read_only and supabase_refresh_url is defined and supabase_refresh_url %}
+                    <form method="post" action="{{ supabase_refresh_url }}" style="display:inline;">
+                        <input type="hidden" name="trade_mode" value="{{ trade_mode }}">
+                        <button type="submit" class="secondary">Refresh from Supabase Truth</button>
+                    </form>
+                {% endif %}
             </div>
         </section>
 
