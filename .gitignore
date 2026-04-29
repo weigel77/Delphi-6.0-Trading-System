@@ -1,8 +1,10 @@
 # Python environments
 venv/
 .venv/
+.python-version.txt
 __pycache__/
 *.py[cod]
+.pytest_cache/
 
 # Local secrets and auth
 .env
@@ -10,6 +12,8 @@ schwab_token.json
 
 # Local HTTPS certs
 *.pem
+*.crt
+*.key
 key.pem
 cert.pem
 
@@ -27,6 +31,11 @@ lookup_switch_validation.html
 
 # Parallel dev clone
 parallel/
+
+# Local runtime artifacts
+instance/
+artifacts/
+.vscode/
 
 # OS/editor noise
 .DS_Store

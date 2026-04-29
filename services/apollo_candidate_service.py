@@ -1705,18 +1705,24 @@ class ApolloCandidateService:
             adjusted_contract_size = min(original_contract_size, int(risk_cap_dollars // per_contract_max_loss))
 
         if adjusted_contract_size < 1:
+            adjusted_contract_size = 1
+            premium_received_dollars = credit * 100 * adjusted_contract_size
+            max_loss_dollars = per_contract_max_loss * adjusted_contract_size
             return {
-                "valid": False,
-                "adjusted_for_cap": False,
+                "valid": True,
+                "adjusted_for_cap": True,
                 "original_contract_size": original_contract_size,
-                "adjusted_contract_size": 0,
-                "contract_size_reason": f"{base_reason} Rejected: exceeds max loss cap even at 1 contract.",
+                "adjusted_contract_size": adjusted_contract_size,
+                "contract_size_reason": (
+                    f"{base_reason} Reduced to 1 contract because the configured max loss cap is below the minimum executable size. "
+                    "Review account sizing before execution."
+                ),
                 "risk_cap_dollars": risk_cap_dollars,
-                "risk_cap_status": "Rejected: exceeds max loss cap",
-                "premium_received_dollars": 0.0,
-                "max_loss_dollars": per_contract_max_loss,
-                "realistic_max_loss_dollars": self._estimate_realistic_max_loss(per_contract_max_loss),
-                "account_risk_percent": (per_contract_max_loss / self.account_value) * 100 if self.account_value else None,
+                "risk_cap_status": "Minimum size exceeds configured risk cap",
+                "premium_received_dollars": premium_received_dollars,
+                "max_loss_dollars": max_loss_dollars,
+                "realistic_max_loss_dollars": self._estimate_realistic_max_loss(max_loss_dollars),
+                "account_risk_percent": (max_loss_dollars / self.account_value) * 100 if self.account_value else None,
             }
 
         adjusted_for_cap = adjusted_contract_size < original_contract_size

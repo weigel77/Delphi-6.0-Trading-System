@@ -272,7 +272,7 @@ class ApolloCandidateServiceTests(unittest.TestCase):
         self.assertLessEqual(standard["max_loss"], 2250.0)
         self.assertEqual(standard["risk_cap_status"], "Adjusted for risk cap")
 
-    def test_trade_is_marked_invalid_when_one_contract_still_exceeds_cap(self) -> None:
+    def test_trade_stays_available_at_one_contract_when_minimum_size_exceeds_cap(self) -> None:
         service = ApolloCandidateService(AppConfig(apollo_account_value=1000.0))
         result = service.build_trade_candidates(
             option_chain=self.option_chain,
@@ -280,7 +280,17 @@ class ApolloCandidateServiceTests(unittest.TestCase):
             macro={"grade": "None"},
         )
 
+        standard = next(item for item in result["candidates"] if item["mode_key"] == "standard")
+        aggressive = next(item for item in result["candidates"] if item["mode_key"] == "aggressive")
         fortress = next(item for item in result["candidates"] if item["mode_key"] == "fortress")
+
+        self.assertTrue(standard["available"])
+        self.assertEqual(standard["adjusted_contract_size"], 1)
+        self.assertEqual(standard["risk_cap_status"], "Minimum size exceeds configured risk cap")
+        self.assertIn("Reduced to 1 contract", standard["recommended_contract_size_reason"])
+        self.assertTrue(aggressive["available"])
+        self.assertEqual(aggressive["adjusted_contract_size"], 1)
+        self.assertEqual(aggressive["risk_cap_status"], "Minimum size exceeds configured risk cap")
         self.assertTrue(fortress["available"])
         self.assertEqual(fortress["risk_cap_status"], "Within $15,000 max loss cap")
         self.assertEqual(fortress["adjusted_contract_size"], fortress["recommended_contract_size"])

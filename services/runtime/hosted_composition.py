@@ -49,7 +49,7 @@ class HostedRuntimeServiceComposer(LocalRuntimeServiceComposer):
         context = host_infrastructure.supabase_context
         integration = host_infrastructure.supabase_integration
         if context is None or integration is None or not context.configured:
-            raise RuntimeError("Hosted Delphi 5.4 requires a configured Supabase project. Local persistence is not allowed in hosted mode.")
+            raise RuntimeError("Hosted Delphi 6.0 requires a configured Supabase project. Local persistence is not allowed in hosted mode.")
         return context, integration
 
     def _create_hosted_auth_composer(self, host_infrastructure: HostInfrastructure) -> HostedSupabaseAuthComposer:

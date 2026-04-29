@@ -70,10 +70,17 @@
                         <legend>{{ group.replace('_', ' ')|title }}</legend>
                         <div class="performance-filter-options">
                             {% for option in options %}
+                                {% if group == 'timeframe' %}
+                                <label class="performance-filter-pill performance-filter-pill-timeframe">
+                                    <input type="radio" class="performance-filter-input performance-timeframe-input" name="performance_timeframe" data-filter-group="{{ group }}" value="{{ option|lower|replace(' ', '-') }}" {% if option|lower|replace(' ', '-') in active_filters.get(group, []) %}checked{% endif %}>
+                                    <span>{{ option }}</span>
+                                </label>
+                                {% else %}
                                 <label class="performance-filter-pill">
-                                    <input type="checkbox" class="performance-filter-checkbox" data-filter-group="{{ group }}" value="{{ option|lower|replace(' ', '-') }}" {% if option|lower|replace(' ', '-') in active_filters.get(group, []) %}checked{% endif %}>
+                                    <input type="checkbox" class="performance-filter-input performance-filter-checkbox" data-filter-group="{{ group }}" value="{{ option|lower|replace(' ', '-') }}" {% if option|lower|replace(' ', '-') in active_filters.get(group, []) %}checked{% endif %}>
                                     <span>{{ 'SubPrime' if hosted_mode and option == 'Subprime' else option }}</span>
                                 </label>
+                                {% endif %}
                             {% endfor %}
                         </div>
                     </fieldset>
@@ -113,8 +120,8 @@
 
         <section class="panel performance-learning-panel">
             <div class="performance-panel-header">
-                <h2>Delphi 4.3 Learning Metrics</h2>
-                <span class="subtle">Extends the existing performance engine with distance, credit, VIX, and historical EM safety learning views.</span>
+                <h2>{% if hosted_mode %}Delphi 7.2.11 Hosted Learning Metrics{% else %}Performance Learning Metrics{% endif %}</h2>
+                <span class="subtle">Decision-useful trade-quality analytics derived from current stored trade history, timestamps, close events, VIX, and EM metadata.</span>
             </div>
 
             <div class="performance-learning-overview" id="performance-learning-overview">
@@ -143,7 +150,7 @@
                 </article>
             </div>
 
-            <div class="performance-learning-grid">
+            <div class="performance-learning-grid performance-learning-grid-small">
                 <article class="panel performance-chart-panel">
                     <div class="performance-panel-header"><h2>Credit Efficiency by System</h2></div>
                     <div id="credit-efficiency-system-panel" class="performance-chart-canvas" aria-label="Credit Efficiency by System"></div>
@@ -158,19 +165,67 @@
                     <div class="performance-panel-header"><h2>Credit Efficiency by VIX Bucket</h2></div>
                     <div id="credit-efficiency-vix-panel" class="performance-chart-canvas" aria-label="Credit Efficiency by VIX Bucket"></div>
                 </article>
+            </div>
+
+            <div class="performance-learning-grid performance-learning-grid-large">
+                <article class="panel performance-chart-panel performance-chart-panel-feature performance-chart-panel-full">
+                    <div class="performance-panel-header performance-panel-header-stacked">
+                        <div>
+                            <h2>EM Performance by Profile</h2>
+                            <span id="profile-em-performance-caption" class="subtle">Profile-specific EM intervals are derived from each profile's own stored trade distribution.</span>
+                        </div>
+                    </div>
+                    <div id="profile-em-performance-panel" class="performance-profile-em-panel" aria-label="EM Performance by Profile"></div>
+                </article>
+
+                <article class="panel performance-chart-panel performance-chart-panel-feature">
+                    <div class="performance-panel-header performance-panel-header-stacked">
+                        <div>
+                            <h2>Distance Efficiency Score</h2>
+                            <span id="distance-efficiency-caption" class="subtle">Premium collected relative to stored entry distance.</span>
+                        </div>
+                    </div>
+                    <div id="distance-efficiency-panel" class="performance-chart-canvas" aria-label="Distance Efficiency Score"></div>
+                </article>
+
+                <article class="panel performance-chart-panel performance-chart-panel-feature">
+                    <div class="performance-panel-header performance-panel-header-stacked">
+                        <div>
+                            <h2>Time of Entry Edge</h2>
+                            <span id="time-of-entry-caption" class="subtle">Entry windows grouped from stored entry timestamps.</span>
+                        </div>
+                    </div>
+                    <div id="time-of-entry-edge-panel" class="performance-chart-canvas" aria-label="Time of Entry Edge"></div>
+                </article>
+
+                <article class="panel performance-chart-panel performance-chart-panel-feature">
+                    <div class="performance-panel-header performance-panel-header-stacked">
+                        <div>
+                            <h2>Exit Efficiency</h2>
+                            <span id="exit-efficiency-caption" class="subtle">Uses stored close-event history only.</span>
+                        </div>
+                    </div>
+                    <div id="exit-efficiency-panel" class="performance-chart-canvas" aria-label="Exit Efficiency"></div>
+                </article>
+
+                <article class="panel performance-chart-panel performance-chart-panel-feature">
+                    <div class="performance-panel-header performance-panel-header-stacked">
+                        <div>
+                            <h2>VIX Regime Performance</h2>
+                            <span id="vix-regime-caption" class="subtle">Performance across stored VIX-at-entry regimes.</span>
+                        </div>
+                    </div>
+                    <div id="vix-regime-performance-panel" class="performance-chart-canvas" aria-label="VIX Regime Performance"></div>
+                </article>
 
                 <article class="panel performance-chart-panel performance-chart-panel-feature performance-chart-panel-full">
                     <div class="performance-panel-header performance-panel-header-stacked">
                         <div>
-                            <h2>Best EM Safety Distance by Profile</h2>
-                            <span id="profile-em-safety-caption" class="subtle">Historical best EM-distance ranges by profile across VIX >= 19 and VIX < 19.</span>
-                        </div>
-                        <div class="performance-inline-toggle" role="group" aria-label="Best EM safety distance mode">
-                            <button type="button" id="profile-em-safety-real-only" class="performance-inline-toggle-button performance-inline-toggle-button-active" data-profile-em-view="real_only" aria-pressed="true">Real Only</button>
-                            <button type="button" id="profile-em-safety-real-plus-simulated" class="performance-inline-toggle-button" data-profile-em-view="real_plus_simulated" aria-pressed="false">Real + Simulated</button>
+                            <h2>Expected Move Deviation / Breach Analysis</h2>
+                            <span id="expected-move-breach-caption" class="subtle">Breach evidence is based on recorded exit prices, not full intraday pathing.</span>
                         </div>
                     </div>
-                    <div id="profile-em-safety-distance-panel" class="performance-profile-em-panel" aria-label="Best EM Safety Distance by Profile"></div>
+                    <div id="expected-move-breach-panel" class="performance-chart-canvas" aria-label="Expected Move Deviation and Breach Analysis"></div>
                 </article>
 
                 <details id="safety-ratio-summary-details" class="panel performance-chart-panel performance-chart-panel-compact performance-chart-panel-full performance-collapsible-panel">
@@ -208,7 +263,7 @@
         const performanceRoot = document.querySelector('.performance-shell');
         const performanceUrl = performanceRoot?.dataset.performanceUrl;
         const payloadElement = document.getElementById('performance-dashboard-payload');
-        const filterInputs = Array.from(document.querySelectorAll('.performance-filter-checkbox'));
+        const filterInputs = Array.from(document.querySelectorAll('.performance-filter-input'));
         const palette = {
             blue: '#1f6feb',
             blueSoft: '#d8e8ff',
@@ -372,34 +427,17 @@
                     },
                     trade_mode_split: safePayload.learning?.trade_mode_split || { items: [] },
                     result_audit: safePayload.learning?.result_audit || { counts: {}, rules: [] },
-                    profile_em_safety_distance: safePayload.learning?.profile_em_safety_distance || {
-                        default_view: 'real_only',
-                        real_only: {
-                            mode_label: 'Real Only',
-                            include_simulated: false,
-                            closed_trade_count: 0,
-                            qualified_trade_count: 0,
-                            excluded_trade_count: 0,
-                            minimum_scored_trades: 2,
-                            profiles: [],
-                            exclusion_summary: {},
-                        },
-                        real_plus_simulated: {
-                            mode_label: 'Real + Simulated',
-                            include_simulated: true,
-                            closed_trade_count: 0,
-                            qualified_trade_count: 0,
-                            excluded_trade_count: 0,
-                            minimum_scored_trades: 2,
-                            profiles: [],
-                            exclusion_summary: {},
-                        },
-                    },
+                    profile_em_performance: safePayload.learning?.profile_em_performance || { qualified_trade_count: 0, excluded_trade_count: 0, profiles: [], method_note: '', limitation_note: '' },
+                    distance_efficiency: safePayload.learning?.distance_efficiency || { qualified_trade_count: 0, excluded_trade_count: 0, buckets: [], definition: '', limitation_note: '' },
+                    time_of_entry_edge: safePayload.learning?.time_of_entry_edge || { qualified_trade_count: 0, excluded_trade_count: 0, systems: [], method_note: '', limitation_note: '' },
+                    exit_efficiency: safePayload.learning?.exit_efficiency || { qualified_trade_count: 0, excluded_trade_count: 0, categories: [], limitation_note: '' },
+                    vix_regime_performance: safePayload.learning?.vix_regime_performance || { qualified_trade_count: 0, excluded_trade_count: 0, buckets: [], method_note: '' },
+                    expected_move_breach_analysis: safePayload.learning?.expected_move_breach_analysis || { qualified_trade_count: 0, excluded_trade_count: 0, systems: [], method_note: '' },
+                    data_limitations: Array.isArray(safePayload.learning?.data_limitations) ? safePayload.learning.data_limitations : [],
                 },
             };
         };
 
-        let profileEmSafetyView = 'real_only';
         let latestDashboardPayload = normalizeDashboardPayload(readInitialPayload());
 
         const formatRatio = (value, decimals = 2) => {
@@ -885,22 +923,15 @@
                 target.innerHTML = '<div class="performance-empty-state">No credit-efficiency breakdown available.</div>';
                 return;
             }
-            target.innerHTML = `
-                <div class="performance-safety-table">
-                    <div class="performance-safety-row performance-safety-row-header">
-                        <span>Bucket</span>
-                        <span>Avg Credit Efficiency</span>
-                        <span>Sample</span>
-                    </div>
-                    ${items.map((item) => `
-                        <div class="performance-safety-row">
-                            <span>${escapeHtml(item.label || '—')}</span>
-                            <span>${Number(item.trade_count || 0) > 0 ? `${formatDecimal(item.avg_credit_efficiency_pct || 0, 1)}%` : '—'}</span>
-                            <span>n=${Number(item.trade_count || 0)}</span>
-                        </div>
-                    `).join('')}
-                </div>
-            `;
+            target.innerHTML = renderMetricTable(
+                ['Bucket', 'Avg Credit Efficiency', 'Sample'],
+                items.map((item) => [
+                    escapeHtml(item.label || '—'),
+                    Number(item.trade_count || 0) > 0 ? `${formatDecimal(item.avg_credit_efficiency_pct || 0, 1)}%` : '—',
+                    `n=${Number(item.trade_count || 0)}`,
+                ]),
+                { wrapClass: 'performance-table-wrap-compact' },
+            );
         };
 
         const renderTradeModeSplit = (payload) => {
@@ -973,50 +1004,69 @@
                 target.innerHTML = `<div class="performance-empty-state">Not enough qualified trades yet.<br>${exclusionLines.join(' · ')}</div>`;
                 return;
             }
-            target.innerHTML = `
-                <div class="performance-safety-table">
-                    <div class="performance-safety-row performance-safety-row-header">
-                        <span>Range</span>
-                        <span>Trades</span>
-                        <span>Win Rate</span>
-                        <span>Expectancy</span>
-                        <span>Confidence</span>
-                    </div>
-                    ${populatedItems.map((item) => `
-                        <div class="performance-safety-row">
-                            <span>${escapeHtml(item.label || '—')}</span>
-                            <span>${Number(item.trade_count || 0)}</span>
-                            <span>${formatPercent(item.win_rate || 0)}</span>
-                            <span>${formatCurrency(item.expectancy || 0)}</span>
-                            <span><span class="performance-confidence-badge performance-confidence-${String(item.confidence || 'No Confidence').toLowerCase().replaceAll(' ', '-')}">${escapeHtml(item.confidence || 'No Confidence')}</span></span>
-                        </div>
-                    `).join('')}
+            target.innerHTML = renderMetricTable(
+                ['Range', 'Trades', 'Win Rate', 'Expectancy', 'Confidence'],
+                populatedItems.map((item) => [
+                    escapeHtml(item.label || '—'),
+                    String(Number(item.trade_count || 0)),
+                    formatPercent(item.win_rate || 0),
+                    formatCurrency(item.expectancy || 0),
+                    renderConfidenceBadge(item.confidence),
+                ]),
+            );
+        };
+
+        const renderConfidenceBadge = (value) => `<span class="performance-confidence-badge performance-confidence-${String(value || 'No Confidence').toLowerCase().replaceAll(' ', '-')}">${escapeHtml(value || 'No Confidence')}</span>`;
+
+        const renderMetricTable = (headers, rows, options = {}) => {
+            const wrapClass = options.wrapClass ? ` ${options.wrapClass}` : '';
+            const tableClass = options.tableClass ? ` ${options.tableClass}` : '';
+            return `
+                <div class="performance-table-wrap${wrapClass}">
+                    <table class="performance-data-table${tableClass}">
+                        <thead>
+                            <tr>${headers.map((label) => `<th scope="col">${escapeHtml(label)}</th>`).join('')}</tr>
+                        </thead>
+                        <tbody>
+                            ${rows.map((cells) => `
+                                <tr>
+                                    ${cells.map((cell, index) => `<td data-label="${escapeHtml(headers[index] || '')}">${cell}</td>`).join('')}
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
                 </div>
             `;
         };
 
-        const syncProfileEmSafetyToggle = () => {
-            document.querySelectorAll('[data-profile-em-view]').forEach((button) => {
-                const isActive = button.dataset.profileEmView === profileEmSafetyView;
-                button.classList.toggle('performance-inline-toggle-button-active', isActive);
-                button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
-            });
+        const renderBucketSummaryTable = (rows, options = {}) => {
+            const header = options.header || ['Bucket', 'Trades', 'Win Rate', 'Expectancy', 'Avg P/L', 'Confidence'];
+            return renderMetricTable(
+                header,
+                rows.map((row) => [
+                    escapeHtml(row.label || '—'),
+                    String(Number(row.trade_count || 0)),
+                    formatPercent(row.win_rate || 0),
+                    formatCurrency(row.expectancy || 0),
+                    formatCurrency(row.average_pnl || 0),
+                    renderConfidenceBadge(row.confidence),
+                ]),
+                { wrapClass: 'performance-table-wrap-wide' },
+            );
         };
 
-        const renderProfileEmSafetyDistance = (payload) => {
-            const target = document.getElementById('profile-em-safety-distance-panel');
-            const caption = document.getElementById('profile-em-safety-caption');
+        const renderProfileEmPerformance = (payload) => {
+            const target = document.getElementById('profile-em-performance-panel');
+            const caption = document.getElementById('profile-em-performance-caption');
             if (!target) {
                 return;
             }
-            const activePayload = payload?.[profileEmSafetyView] || payload?.real_only || { profiles: [], qualified_trade_count: 0, excluded_trade_count: 0, mode_label: 'Real Only', minimum_scored_trades: 2 };
-            syncProfileEmSafetyToggle();
             if (caption) {
-                caption.textContent = `${activePayload.mode_label || 'Real Only'} · ${Number(activePayload.qualified_trade_count || 0)} qualified closed trade${Number(activePayload.qualified_trade_count || 0) === 1 ? '' : 's'} · ${Number(activePayload.excluded_trade_count || 0)} excluded.`;
+                caption.textContent = `${payload?.method_note || ''} ${Number(payload?.qualified_trade_count || 0)} qualified closed trades, ${Number(payload?.excluded_trade_count || 0)} excluded.`.trim();
             }
-            const profiles = Array.isArray(activePayload.profiles) ? activePayload.profiles : [];
+            const profiles = Array.isArray(payload?.profiles) ? payload.profiles : [];
             if (!profiles.length) {
-                target.innerHTML = `<div class="performance-empty-state">No profile/regime combinations have enough qualifying EM history yet. Minimum scored trades per recommendation: ${Number(activePayload.minimum_scored_trades || 2)}.</div>`;
+                target.innerHTML = '<div class="performance-empty-state">No closed trades with usable EM metadata match the current filters.</div>';
                 return;
             }
             target.innerHTML = `
@@ -1025,27 +1075,138 @@
                         <article class="performance-profile-em-card">
                             <div class="performance-panel-header">
                                 <h3>${escapeHtml(formatHostedLabel(profileItem.profile || 'Profile'))}</h3>
-                                <span class="subtle">${Number(profileItem.qualified_trade_count || 0)} qualified trade${Number(profileItem.qualified_trade_count || 0) === 1 ? '' : 's'}</span>
+                                <span class="subtle">${escapeHtml(profileItem.interval_range || 'No range')} · ${Number(profileItem.qualified_trade_count || 0)} trades</span>
                             </div>
-                            <div class="performance-profile-em-regimes">
-                                ${(Array.isArray(profileItem.regimes) ? profileItem.regimes : []).map((regime) => {
-                                    const isReady = regime.status === 'ready' && regime.recommended_range;
-                                    return `
-                                        <div class="performance-profile-em-row">
-                                            <div>
-                                                <strong>${escapeHtml(regime.label || 'Regime')}</strong>
-                                                <span class="subtle">${isReady ? `Best EM = ${escapeHtml(regime.recommended_range)}` : 'Not enough data'}</span>
-                                            </div>
-                                            <div class="performance-profile-em-row-meta">
-                                                ${isReady ? `<span class="performance-confidence-badge performance-confidence-${String(regime.confidence || 'No Confidence').toLowerCase().replaceAll(' ', '-')}">${escapeHtml(regime.confidence || 'No Confidence')}</span>` : ''}
-                                                <span>${isReady ? `n=${Number(regime.supporting_trade_count || 0)}` : `sample n=${Number(regime.sample_size || 0)}`}</span>
-                                                ${isReady ? `<span>Exp ${formatCurrency(regime.expectancy || 0)}</span>` : ''}
-                                                ${isReady ? `<span>Win ${formatPercent(regime.win_rate || 0)}</span>` : ''}
-                                            </div>
-                                        </div>
-                                    `;
-                                }).join('')}
+                            ${Array.isArray(profileItem.buckets) && profileItem.buckets.length
+                                ? renderBucketSummaryTable(profileItem.buckets)
+                                : '<div class="performance-empty-state">Not enough closed trades for profile-specific EM intervals.</div>'}
+                        </article>
+                    `).join('')}
+                </div>
+            `;
+        };
+
+        const renderDistanceEfficiency = (payload) => {
+            const target = document.getElementById('distance-efficiency-panel');
+            const caption = document.getElementById('distance-efficiency-caption');
+            if (!target) {
+                return;
+            }
+            if (caption) {
+                caption.textContent = `${payload?.definition || ''} ${payload?.limitation_note || ''}`.trim();
+            }
+            const rows = Array.isArray(payload?.buckets) ? payload.buckets : [];
+            target.innerHTML = rows.length ? renderBucketSummaryTable(rows) : '<div class="performance-empty-state">No trades have both stored premium and distance for distance-efficiency scoring.</div>';
+        };
+
+        const renderTimeOfEntryEdge = (payload) => {
+            const target = document.getElementById('time-of-entry-edge-panel');
+            const caption = document.getElementById('time-of-entry-caption');
+            if (!target) {
+                return;
+            }
+            if (caption) {
+                caption.textContent = `${payload?.method_note || ''} ${payload?.limitation_note || ''}`.trim();
+            }
+            const systems = Array.isArray(payload?.systems) ? payload.systems : [];
+            if (!systems.length) {
+                target.innerHTML = '<div class="performance-empty-state">No closed trades with entry timestamps match the current filters.</div>';
+                return;
+            }
+            target.innerHTML = `
+                <div class="performance-guidance-grid performance-guidance-grid-single-stack">
+                    ${systems.map((item) => `
+                        <article class="performance-guidance-card">
+                            <div class="performance-panel-header">
+                                <h3>${escapeHtml(item.system || 'System')}</h3>
+                                <span class="subtle">${Number(item.qualified_trade_count || 0)} trades</span>
                             </div>
+                            ${Array.isArray(item.buckets) && item.buckets.length ? renderBucketSummaryTable(item.buckets) : '<div class="performance-empty-state">No usable entry-time buckets.</div>'}
+                        </article>
+                    `).join('')}
+                </div>
+            `;
+        };
+
+        const renderExitEfficiency = (payload) => {
+            const target = document.getElementById('exit-efficiency-panel');
+            const caption = document.getElementById('exit-efficiency-caption');
+            if (!target) {
+                return;
+            }
+            if (caption) {
+                caption.textContent = payload?.limitation_note || 'Uses stored close-event history only.';
+            }
+            const rows = Array.isArray(payload?.categories) ? payload.categories : [];
+            if (!rows.length) {
+                target.innerHTML = '<div class="performance-empty-state">No closed trades are available for exit-efficiency analysis.</div>';
+                return;
+            }
+            target.innerHTML = renderMetricTable(
+                ['Category', 'Trades', 'Win Rate', 'Expectancy', 'Avg P/L', 'Loss Avoided', 'Confidence'],
+                rows.map((row) => [
+                    escapeHtml(row.label || '—'),
+                    String(Number(row.trade_count || 0)),
+                    formatPercent(row.win_rate || 0),
+                    formatCurrency(row.expectancy || 0),
+                    formatCurrency(row.average_realized_pnl || row.average_pnl || 0),
+                    Number.isFinite(Number(row.average_loss_avoided)) ? formatCurrency(row.average_loss_avoided) : '—',
+                    renderConfidenceBadge(row.confidence),
+                ]),
+                { wrapClass: 'performance-table-wrap-wide' },
+            );
+        };
+
+        const renderVixRegimePerformance = (payload) => {
+            const target = document.getElementById('vix-regime-performance-panel');
+            const caption = document.getElementById('vix-regime-caption');
+            if (!target) {
+                return;
+            }
+            if (caption) {
+                caption.textContent = payload?.method_note || 'Performance across stored VIX-at-entry regimes.';
+            }
+            const rows = Array.isArray(payload?.buckets) ? payload.buckets : [];
+            target.innerHTML = rows.length ? renderBucketSummaryTable(rows) : '<div class="performance-empty-state">No stored VIX-at-entry data is available for the current filters.</div>';
+        };
+
+        const renderExpectedMoveBreachAnalysis = (payload) => {
+            const target = document.getElementById('expected-move-breach-panel');
+            const caption = document.getElementById('expected-move-breach-caption');
+            if (!target) {
+                return;
+            }
+            if (caption) {
+                caption.textContent = payload?.method_note || 'Breach evidence is based on recorded exit prices.';
+            }
+            const systems = Array.isArray(payload?.systems) ? payload.systems : [];
+            if (!systems.length) {
+                target.innerHTML = '<div class="performance-empty-state">No closed trades with usable EM metadata match the current filters.</div>';
+                return;
+            }
+            target.innerHTML = `
+                <div class="performance-guidance-grid performance-guidance-grid-single-stack">
+                    ${systems.map((item) => `
+                        <article class="performance-guidance-card">
+                            <div class="performance-panel-header">
+                                <h3>${escapeHtml(item.system || 'System')}</h3>
+                                <span class="subtle">${Number(item.qualified_trade_count || 0)} trades</span>
+                            </div>
+                            ${Array.isArray(item.buckets) && item.buckets.length
+                                ? renderMetricTable(
+                                    ['EM Range', 'Trades', 'Short Breach', 'Long Breach', 'Expectancy', 'Avg P/L', 'Confidence'],
+                                    item.buckets.map((row) => [
+                                        escapeHtml(row.label || '—'),
+                                        String(Number(row.trade_count || 0)),
+                                        formatPercent(row.short_breach_rate || 0),
+                                        formatPercent(row.long_breach_rate || 0),
+                                        formatCurrency(row.expectancy || 0),
+                                        formatCurrency(row.average_pnl || 0),
+                                        renderConfidenceBadge(row.confidence),
+                                    ]),
+                                    { wrapClass: 'performance-table-wrap-wide' },
+                                )
+                                : '<div class="performance-empty-state">No breach buckets for this system.</div>'}
                         </article>
                     `).join('')}
                 </div>
@@ -1296,7 +1457,6 @@
         const renderDashboard = (payload) => {
             const safePayload = normalizeDashboardPayload(payload);
             latestDashboardPayload = safePayload;
-            profileEmSafetyView = safePayload.learning?.profile_em_safety_distance?.default_view || 'real_only';
             const metrics = safePayload.metrics;
             renderGauge({
                 targetId: 'win-rate-gauge',
@@ -1337,7 +1497,12 @@
             renderCreditEfficiencyBreakdown('credit-efficiency-system-panel', safePayload.charts.credit_efficiency_by_system);
             renderCreditEfficiencyBreakdown('credit-efficiency-profile-panel', safePayload.charts.credit_efficiency_by_profile);
             renderCreditEfficiencyBreakdown('credit-efficiency-vix-panel', safePayload.charts.credit_efficiency_by_vix_bucket);
-            renderProfileEmSafetyDistance(safePayload.learning.profile_em_safety_distance);
+            renderProfileEmPerformance(safePayload.learning.profile_em_performance);
+            renderDistanceEfficiency(safePayload.learning.distance_efficiency);
+            renderTimeOfEntryEdge(safePayload.learning.time_of_entry_edge);
+            renderExitEfficiency(safePayload.learning.exit_efficiency);
+            renderVixRegimePerformance(safePayload.learning.vix_regime_performance);
+            renderExpectedMoveBreachAnalysis(safePayload.learning.expected_move_breach_analysis);
             renderSafetyRatioSummary(safePayload.learning.safety_optimization, safePayload.charts.safety_ratio_expectancy_curve);
             renderLearningAudit(safePayload.learning.em_policy, safePayload.learning.result_audit);
             const caption = document.getElementById('performance-records-caption');
@@ -1376,13 +1541,6 @@
 
         filterInputs.forEach((input) => {
             input.addEventListener('change', refreshDashboard);
-        });
-
-        document.querySelectorAll('[data-profile-em-view]').forEach((button) => {
-            button.addEventListener('click', () => {
-                profileEmSafetyView = button.dataset.profileEmView || 'real_only';
-                renderProfileEmSafetyDistance(latestDashboardPayload.learning.profile_em_safety_distance);
-            });
         });
 
         renderDashboard(latestDashboardPayload);

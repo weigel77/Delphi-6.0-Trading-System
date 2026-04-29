@@ -8,11 +8,13 @@ from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+from flask import g, has_request_context
 
 from config import AppConfig, get_app_config
 
 from .cache_service import CacheEntry, CacheService
 from .calculations import add_daily_change_columns, calculate_percent_change, calculate_point_change
+from .market_calendar_service import MarketCalendarService
 from .provider_factory import ProviderFactory
 from .runtime.provider_composition import LocalProviderComposer, ProviderComposer
 from .providers.base_provider import (
@@ -27,6 +29,9 @@ CHICAGO_TZ = ZoneInfo(get_app_config().app_timezone)
 LOOKBACK_DAYS = 30
 LATEST_CACHE_SECONDS = 30
 HISTORICAL_CACHE_SECONDS = 600
+REGULAR_SESSION_START = (8, 30)
+REQUEST_MARKET_DATA_CACHE_KEY = "_delphi_request_market_data_cache"
+REQUEST_INTRADAY_CACHE_KEY = "_delphi_request_intraday_cache"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -59,6 +64,7 @@ class MarketDataService:
         timezone_name = display_timezone or self.config.app_timezone
         self.display_timezone = ZoneInfo(timezone_name)
         self.cache_service = cache_service or CacheService()
+        self.market_calendar_service = MarketCalendarService(self.config)
         self.live_provider = provider or ProviderFactory.create_live_provider(self.config, provider_composer=self.provider_composer)
         if historical_providers is not None:
             self.historical_providers = historical_providers
@@ -73,18 +79,42 @@ class MarketDataService:
 
     def get_latest_snapshot(self, ticker: str, query_type: str = "latest") -> Dict[str, Any]:
         """Return the freshest available market snapshot for the ticker."""
+        return self._get_latest_snapshot_with_request_cache(ticker=ticker, query_type=query_type, fresh=False)
+
+    def get_fresh_latest_snapshot(self, ticker: str, query_type: str = "latest") -> Dict[str, Any]:
+        """Force a fresh market snapshot by bypassing the short-lived cache key."""
+        return self._get_latest_snapshot_with_request_cache(ticker=ticker, query_type=query_type, fresh=True)
+
+    def _get_latest_snapshot_with_request_cache(
+        self,
+        *,
+        ticker: str,
+        query_type: str,
+        fresh: bool,
+    ) -> Dict[str, Any]:
+        """Reuse the same latest snapshot across a single request when the ticker matches."""
         provider = self.live_provider
+        provider_key = provider.get_metadata().get("provider_key", "unknown")
+        request_cache = self._get_request_market_data_cache()
+        request_cache_key = f"{provider_key}:{ticker}:latest"
+        if not fresh and request_cache is not None and request_cache_key in request_cache:
+            return self.cache_service.clone_payload(request_cache[request_cache_key])
+
+        effective_query_type = query_type if not fresh else f"{query_type}:fresh:{self._current_time().isoformat()}"
         cache_key = self.cache_service.build_cache_key(
-            provider=provider.get_metadata().get("provider_key", "unknown"),
+            provider=provider_key,
             ticker=ticker,
-            query_type=query_type,
+            query_type=effective_query_type,
         )
-        return self._execute_cached_query(
+        payload = self._execute_cached_query(
             cache_key=cache_key,
             ttl_seconds=LATEST_CACHE_SECONDS,
             fetcher=lambda: self._build_latest_snapshot(ticker),
             provider=provider,
         )
+        if not fresh and request_cache is not None:
+            request_cache[request_cache_key] = self.cache_service.clone_payload(payload)
+        return payload
 
     def get_fresh_latest_snapshot(self, ticker: str, query_type: str = "latest") -> Dict[str, Any]:
         """Force a fresh market snapshot by bypassing the short-lived cache key."""
@@ -146,20 +176,33 @@ class MarketDataService:
         query_type: str = "intraday",
     ) -> pd.DataFrame:
         """Return same-day intraday candles from the active live provider."""
-        provider = self.live_provider
-        current_date = self._current_time().date().isoformat()
-        cache_key = self.cache_service.build_cache_key(
-            provider=provider.get_metadata().get("provider_key", "unknown"),
+        current_time = self._current_time()
+        session_request = self.resolve_intraday_session_request(current_time=current_time)
+        return self._get_intraday_frame_with_request_cache(
             ticker=ticker,
+            requested_session_date=session_request["requested_session_date"],
+            resolved_session_date=session_request["resolved_session_date"],
+            interval_minutes=interval_minutes,
             query_type=query_type,
-            interval=str(interval_minutes),
-            session_date=current_date,
+            fresh=False,
         )
-        return self._execute_cached_query(
-            cache_key=cache_key,
-            ttl_seconds=LATEST_CACHE_SECONDS,
-            fetcher=lambda: provider.get_same_day_intraday_candles(ticker, interval_minutes=interval_minutes),
-            provider=provider,
+
+    def get_fresh_same_day_intraday_candles(
+        self,
+        ticker: str,
+        interval_minutes: int = 5,
+        query_type: str = "intraday",
+    ) -> pd.DataFrame:
+        """Force a fresh same-day intraday request by bypassing the short-lived cache key."""
+        current_time = self._current_time()
+        session_request = self.resolve_intraday_session_request(current_time=current_time)
+        return self._get_intraday_frame_with_request_cache(
+            ticker=ticker,
+            requested_session_date=session_request["requested_session_date"],
+            resolved_session_date=session_request["resolved_session_date"],
+            interval_minutes=interval_minutes,
+            query_type=query_type,
+            fresh=True,
         )
 
     def get_fresh_same_day_intraday_candles(
@@ -183,23 +226,13 @@ class MarketDataService:
         query_type: str = "intraday_date",
     ) -> pd.DataFrame:
         """Return intraday candles for the requested session date from the active live provider."""
-        provider = self.live_provider
-        cache_key = self.cache_service.build_cache_key(
-            provider=provider.get_metadata().get("provider_key", "unknown"),
+        return self._get_intraday_frame_with_request_cache(
             ticker=ticker,
+            requested_session_date=target_date,
+            resolved_session_date=target_date,
+            interval_minutes=interval_minutes,
             query_type=query_type,
-            interval=str(interval_minutes),
-            session_date=target_date.isoformat(),
-        )
-        return self._execute_cached_query(
-            cache_key=cache_key,
-            ttl_seconds=LATEST_CACHE_SECONDS,
-            fetcher=lambda: provider.get_intraday_candles_for_date(
-                ticker,
-                target_date=target_date,
-                interval_minutes=interval_minutes,
-            ),
-            provider=provider,
+            fresh=False,
         )
 
     def get_fresh_intraday_candles_for_date(
@@ -210,12 +243,129 @@ class MarketDataService:
         query_type: str = "intraday_date",
     ) -> pd.DataFrame:
         """Force a fresh dated intraday request by bypassing the short-lived cache key."""
-        return self.get_intraday_candles_for_date(
-            ticker,
-            target_date=target_date,
+        return self._get_intraday_frame_with_request_cache(
+            ticker=ticker,
+            requested_session_date=target_date,
+            resolved_session_date=target_date,
             interval_minutes=interval_minutes,
-            query_type=f"{query_type}:fresh:{self._current_time().isoformat()}",
+            query_type=query_type,
+            fresh=True,
         )
+
+    def resolve_intraday_session_request(
+        self,
+        requested_session_date: date | None = None,
+        *,
+        current_time: datetime | None = None,
+    ) -> Dict[str, Any]:
+        """Resolve the latest valid intraday session date for the current market state."""
+        local_now = current_time or self._current_time()
+        local_now = local_now.astimezone(self.display_timezone) if local_now.tzinfo else local_now.replace(tzinfo=self.display_timezone)
+        requested_date = requested_session_date or local_now.date()
+        latest_available_session = self._get_latest_available_intraday_session_date(local_now)
+        resolved_date = requested_date
+        reasons: list[str] = []
+
+        if requested_date > latest_available_session:
+            resolved_date = latest_available_session
+            reasons.append(f"requested session exceeded latest available tradable session {latest_available_session.isoformat()}")
+
+        if not self.market_calendar_service.is_tradable_market_day(resolved_date):
+            closure_name = self.market_calendar_service.get_holiday_name(resolved_date) or ("weekend" if resolved_date.weekday() >= 5 else "exchange-closed")
+            prior_tradable = self._get_previous_tradable_market_day(resolved_date)
+            reasons.append(f"requested session {resolved_date.isoformat()} was {closure_name}; using {prior_tradable.isoformat()}")
+            resolved_date = prior_tradable
+
+        return {
+            "requested_session_date": requested_date,
+            "resolved_session_date": resolved_date,
+            "local_now": local_now,
+            "normalization_reason": "; ".join(reasons) if reasons else "",
+        }
+
+    def _get_intraday_frame_with_request_cache(
+        self,
+        *,
+        ticker: str,
+        requested_session_date: date,
+        resolved_session_date: date,
+        interval_minutes: int,
+        query_type: str,
+        fresh: bool,
+    ) -> pd.DataFrame:
+        provider = self.live_provider
+        provider_key = provider.get_metadata().get("provider_key", "unknown")
+        request_cache = self._get_request_intraday_cache()
+
+        request_cache_key = ":".join(
+            [
+                provider_key,
+                ticker,
+                str(interval_minutes),
+                resolved_session_date.isoformat(),
+                "fresh" if fresh else "cached",
+            ]
+        )
+
+        if request_cache is not None and request_cache_key in request_cache:
+            return self.cache_service.clone_payload(request_cache[request_cache_key])
+
+        effective_query_type = query_type if not fresh else f"{query_type}:fresh:{self._current_time().isoformat()}"
+        cache_key = self.cache_service.build_cache_key(
+            provider=provider_key,
+            ticker=ticker,
+            query_type=effective_query_type,
+            interval=str(interval_minutes),
+            session_date=resolved_session_date.isoformat(),
+        )
+        payload = self._execute_cached_query(
+            cache_key=cache_key,
+            ttl_seconds=LATEST_CACHE_SECONDS,
+            fetcher=lambda: provider.get_intraday_candles_for_date(
+                ticker,
+                target_date=resolved_session_date,
+                interval_minutes=interval_minutes,
+            ),
+            provider=provider,
+        )
+
+        if request_cache is not None:
+            request_cache[request_cache_key] = self.cache_service.clone_payload(payload)
+
+        return payload
+
+    def _get_latest_available_intraday_session_date(self, local_now: datetime) -> date:
+        candidate = local_now.date()
+        market_open_hour, market_open_minute = REGULAR_SESSION_START
+        if not self.market_calendar_service.is_tradable_market_day(candidate):
+            return self._get_previous_tradable_market_day(candidate)
+        if (local_now.hour, local_now.minute) < (market_open_hour, market_open_minute):
+            return self._get_previous_tradable_market_day(candidate)
+        return candidate
+
+    def _get_previous_tradable_market_day(self, anchor_date: date) -> date:
+        candidate = anchor_date - timedelta(days=1)
+        while not self.market_calendar_service.is_tradable_market_day(candidate):
+            candidate -= timedelta(days=1)
+        return candidate
+
+    def _get_request_intraday_cache(self) -> dict[str, Any] | None:
+        if not has_request_context():
+            return None
+        cache = getattr(g, REQUEST_INTRADAY_CACHE_KEY, None)
+        if cache is None:
+            cache = {}
+            setattr(g, REQUEST_INTRADAY_CACHE_KEY, cache)
+        return cache
+
+    def _get_request_market_data_cache(self) -> dict[str, Any] | None:
+        if not has_request_context():
+            return None
+        cache = getattr(g, REQUEST_MARKET_DATA_CACHE_KEY, None)
+        if cache is None:
+            cache = {}
+            setattr(g, REQUEST_MARKET_DATA_CACHE_KEY, cache)
+        return cache
 
     @staticmethod
     def get_result_metadata(result: Any) -> Dict[str, Any]:

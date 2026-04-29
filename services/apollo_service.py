@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time
+import copy
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, time, timedelta
+from threading import Lock
 from typing import Any, Dict, List
 from zoneinfo import ZoneInfo
 
@@ -35,6 +38,9 @@ class ApolloService:
         self.options_chain_service = options_chain_service or OptionsChainService(self.config, provider=self._resolve_option_chain_provider())
         self.candidate_service = ApolloCandidateService(self.config)
         self.display_timezone = ZoneInfo(self.config.app_timezone)
+        self._management_context_cache: Dict[str, Any] | None = None
+        self._management_context_cache_expires_at: datetime | None = None
+        self._management_context_cache_lock = Lock()
 
     def run_precheck(self, *, force_refresh: bool = False) -> Dict[str, Any]:
         """Execute the first-stage Apollo workflow."""
@@ -62,19 +68,36 @@ class ApolloService:
             if force_refresh and hasattr(self.market_data_service, "get_fresh_latest_snapshot")
             else self.market_data_service.get_latest_snapshot
         )
-        try:
-            spx_data = latest_snapshot_reader("^GSPC", query_type="apollo_latest_spx")
-            reasons.append("Live SPX data retrieved successfully.")
-        except MarketDataError as exc:
-            reasons.append(f"Unable to retrieve live SPX data: {exc}")
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            spx_future = executor.submit(latest_snapshot_reader, "^GSPC", query_type="apollo_latest_spx")
+            vix_future = executor.submit(latest_snapshot_reader, "^VIX", query_type="apollo_latest_vix")
+            try:
+                spx_data = spx_future.result()
+                reasons.append("Live SPX data retrieved successfully.")
+            except MarketDataError as exc:
+                reasons.append(f"Unable to retrieve live SPX data: {exc}")
 
-        try:
-            vix_data = latest_snapshot_reader("^VIX", query_type="apollo_latest_vix")
-            reasons.append("Live VIX data retrieved successfully.")
-        except MarketDataError as exc:
-            reasons.append(f"Unable to retrieve live VIX data: {exc}")
+            try:
+                vix_data = vix_future.result()
+                reasons.append("Live VIX data retrieved successfully.")
+            except MarketDataError as exc:
+                reasons.append(f"Unable to retrieve live VIX data: {exc}")
 
-        macro_status = self.macro_service.get_macro_status(calendar_context["next_market_day"])
+        timing_status = self._evaluate_timing_window(checked_at)
+        reasons.extend([reason for reason in timing_status["reasons"] if reason not in reasons])
+
+        provider_name = self.market_data_service.get_result_metadata(spx_data or vix_data).get(
+            "provider_name",
+            self.market_data_service.get_provider_metadata().get("live_provider_name", "Unknown Provider"),
+        )
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            macro_future = executor.submit(self.macro_service.get_macro_status, calendar_context["next_market_day"])
+            structure_future = executor.submit(self.structure_service.analyze_same_day_spx_structure)
+            option_chain_future = executor.submit(self.options_chain_service.get_spx_option_chain_summary, calendar_context["next_market_day"])
+            macro_status = macro_future.result()
+            structure = structure_future.result()
+            option_chain = option_chain_future.result()
+
         if not macro_status.get("available", True):
             reasons.append("Macro calendar check unavailable.")
         elif macro_status.get("fallback_used"):
@@ -94,22 +117,12 @@ class ApolloService:
             if summary not in reasons:
                 reasons.append(summary)
 
-        timing_status = self._evaluate_timing_window(checked_at)
-        reasons.extend([reason for reason in timing_status["reasons"] if reason not in reasons])
-
         apollo_status = self._determine_status(
             spx_data=spx_data,
             vix_data=vix_data,
             macro_status=macro_status,
             timing_level=timing_status["level"],
         )
-
-        provider_name = self.market_data_service.get_result_metadata(spx_data or vix_data).get(
-            "provider_name",
-            self.market_data_service.get_provider_metadata().get("live_provider_name", "Unknown Provider"),
-        )
-        structure = self.structure_service.analyze_same_day_spx_structure()
-        option_chain = self.options_chain_service.get_spx_option_chain_summary(calendar_context["next_market_day"])
         trade_candidates = self.candidate_service.build_trade_candidates(
             option_chain=option_chain,
             structure=structure,
@@ -146,6 +159,10 @@ class ApolloService:
             "provider_name": provider_name,
             "spx": self._build_market_item("SPX", spx_data),
             "vix": self._build_market_item("VIX", vix_data),
+            "header_market_snapshots": {
+                "^GSPC": spx_data or {},
+                "^VIX": vix_data or {},
+            },
             "macro": macro_status,
             "structure": structure,
             "market_calendar": calendar_context,
@@ -155,6 +172,28 @@ class ApolloService:
             "apollo_status": apollo_status,
             "reasons": reasons,
         }
+
+    def build_management_context(self) -> Dict[str, Any]:
+        if self.config.runtime_target == "local":
+            now = datetime.now(self.display_timezone)
+            with self._management_context_cache_lock:
+                if self._management_context_cache is not None and self._management_context_cache_expires_at is not None and now <= self._management_context_cache_expires_at:
+                    return copy.deepcopy(self._management_context_cache)
+
+        try:
+            structure = self.structure_service.analyze_same_day_spx_structure()
+        except Exception:
+            structure = {}
+        context = {
+            "current_structure_grade": str(structure.get("final_grade") or structure.get("grade") or "Not available"),
+            "current_macro_grade": "Not available",
+            "precheck": {},
+        }
+        if self.config.runtime_target == "local":
+            with self._management_context_cache_lock:
+                self._management_context_cache = copy.deepcopy(context)
+                self._management_context_cache_expires_at = datetime.now(self.display_timezone) + timedelta(seconds=5)
+        return context
 
     def _resolve_option_chain_provider(self):
         provider = getattr(self.market_data_service, "live_provider", None)
