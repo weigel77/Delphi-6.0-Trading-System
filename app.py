@@ -114,6 +114,7 @@ HOSTED_SESSION_EMAIL_KEY = "hosted_user_email"
 HOSTED_SESSION_DISPLAY_NAME_KEY = "hosted_user_display_name"
 HOSTED_SESSION_DEVICE_BRANCH_KEY = "hosted_device_branch"
 HOSTED_LOCAL_BROWSER_SESSION_COOKIE = "delphi_hosted_local_session"
+HOSTED_SCHWAB_POST_AUTH_REDIRECT_KEY = "hosted_schwab_post_auth_redirect"
 HOSTED_PAYLOAD_CACHE_EXTENSION_KEY = "hosted_payload_cache"
 HOSTED_DELPHI4_SYNC_RESULT_KEY = "hosted_delphi4_sync_result"
 HOSTED_MOBILE_APOLLO_HANDOFF_KEY = "hosted_mobile_apollo_handoff"
@@ -636,13 +637,11 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         "runtime_target": str(app.config.get("RUNTIME_TARGET") or APP_CONFIG.runtime_target or "local").strip().lower() or "local",
         "hosted_public_base_url": str(app.config.get("HOSTED_PUBLIC_BASE_URL") or APP_CONFIG.hosted_public_base_url or "").strip(),
     }
-    app.config["RUNTIME_TARGET"] = "local"
-    app.config["APP_HOST"] = "127.0.0.1"
-    app.config["HOSTED_PUBLIC_BASE_URL"] = ""
-    app.config["APP_PORT"] = 5001
-    app.config["APP_DISPLAY_NAME"] = "Delphi 7.2.12 Local"
-    app.config["APP_PAGE_KICKER"] = "Delphi 7.2.12 Local"
-    app.config["APP_VERSION_LABEL"] = "Version 7.2.12"
+    app.config.setdefault("RUNTIME_TARGET", "local")
+    app.config.setdefault("APP_HOST", "127.0.0.1")
+    app.config.setdefault("HOSTED_PUBLIC_BASE_URL", "")
+    app.config.setdefault("APP_PORT", 5001)
+    app.config.setdefault("SCHWAB_REDIRECT_URI", "https://127.0.0.1:5001/callback")
     runtime_app_config = resolve_runtime_app_config(app, APP_CONFIG)
     apply_runtime_app_config_to_flask_config(app, runtime_app_config)
     host_infrastructure_assembler = select_host_infrastructure_assembler(app, runtime_app_config)
@@ -792,10 +791,11 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
     @app.before_request
     def reject_removed_hosted_surface() -> Any:
-        if request.path.startswith("/hosted"):
-            abort(404)
-        if request.path in {"/sign-in", "/sign-out", "/private-access-check"}:
-            abort(404)
+        if app.config.get("RUNTIME_TARGET") != "hosted":
+            if request.path.startswith("/hosted"):
+                abort(404)
+            if request.path in {"/sign-in", "/sign-out", "/private-access-check"}:
+                abort(404)
         return None
 
     @app.before_request
@@ -1012,7 +1012,10 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         if app.config.get("RUNTIME_TARGET") != "hosted":
             abort(404)
         next_path = sanitize_hosted_next_path(request.values.get("next"))
-        return redirect(build_hosted_launch_url(next_path=next_path, view=request.values.get("view")))
+        active_branch = resolve_hosted_device_branch(request.values.get("view") or get_hosted_device_branch(default="desktop"))
+        if request.method == "POST":
+            return hosted_branch_login(active_branch)
+        return redirect(url_for("hosted_branch_login", branch=active_branch, next=next_path))
 
     @app.route("/hosted/login/<branch>", methods=["GET", "POST"])
     def hosted_branch_login(branch: str) -> Any:
@@ -1129,18 +1132,11 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             if authenticated
             else build_hosted_login_url("mobile", next_path=next_path)
         )
-        return render_template(
-            "hosted_device_launch.html",
-            page_browser_title=f"{HOSTED_APP_DISPLAY_NAME} Portal",
-            desktop_target=desktop_target,
-            mobile_target=mobile_target,
-            explicit_view=explicit_view,
-            preferred_view=preferred_view,
-            authenticated=authenticated,
-            mobile_breakpoint=HOSTED_MOBILE_PHONE_MAX_WIDTH + 1,
-            desktop_home_url=build_hosted_branch_destination("desktop", next_path=next_path),
-            mobile_home_url=build_hosted_branch_destination("mobile", next_path=next_path),
-            **(build_hosted_template_context(identity, app=app) if identity is not None else {}),
+        preferred_branch = preferred_view or "desktop"
+        return redirect(
+            build_hosted_branch_destination(preferred_branch, next_path=next_path)
+            if authenticated
+            else build_hosted_login_url(preferred_branch, next_path=next_path)
         )
 
     def render_hosted_mobile_shell(active_tab: str) -> Any:
@@ -1363,7 +1359,35 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         if app.config.get("RUNTIME_TARGET") != "hosted":
             abort(404)
         preferred_branch = get_hosted_device_branch(default="")
-        response = redirect(build_hosted_launch_url(view=preferred_branch))
+        response = redirect(build_hosted_login_url(preferred_branch))
+        invalidate_hosted_browser_cache_session(response, app=app)
+        clear_hosted_browser_session()
+        get_session_invalidator(app).invalidate_response(response)
+        return response
+
+    @app.route("/hosted/schwab-logout", methods=["POST"])
+    def hosted_schwab_logout() -> Any:
+        if app.config.get("RUNTIME_TARGET") != "hosted":
+            abort(404)
+        provider = market_data_service.provider
+        if hasattr(provider, "auth_service") and hasattr(provider.auth_service, "clear_tokens"):
+            provider.auth_service.clear_tokens()
+        oauth_session_keys = app.extensions["oauth_session_keys"]
+        workflow_state = get_workflow_state(app)
+        workflow_state.put(oauth_session_keys["login_in_progress"], False)
+        workflow_state.put(oauth_session_keys["callback_pending"], False)
+        workflow_state.put(oauth_session_keys["connected"], False)
+        workflow_state.put(oauth_session_keys["authorized"], False)
+        workflow_state.pop(oauth_session_keys["oauth_state"], None)
+        workflow_state.pop(oauth_session_keys["pkce_verifier"], None)
+        workflow_state.pop(HOSTED_SCHWAB_POST_AUTH_REDIRECT_KEY, None)
+        _clear_hosted_payload_cache(app=app)
+        set_status_message(
+            "Schwab session cleared. Sign in again with beigel77@gmail.com before reconnecting to Schwab.",
+            level="info",
+        )
+        preferred_branch = get_hosted_device_branch(default="desktop")
+        response = redirect(build_hosted_login_url(preferred_branch))
         invalidate_hosted_browser_cache_session(response, app=app)
         clear_hosted_browser_session()
         get_session_invalidator(app).invalidate_response(response)
@@ -2668,6 +2692,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         workflow_state.put(oauth_session_keys["callback_pending"], True)
         workflow_state.put(oauth_session_keys["connected"], False)
         workflow_state.put(oauth_session_keys["authorized"], False)
+        workflow_state.put(HOSTED_SCHWAB_POST_AUTH_REDIRECT_KEY, resolve_post_schwab_redirect_target(app=app))
         app.logger.info(
             "OAuth state created | runtime_target=%s | env=%s | hosted_public_base_url=%s | port=%s | redirect_uri=%s | token_target_path=%s | session_cookie=%s | oauth_namespace=%s | oauth_state=%s",
             runtime_app_config.runtime_target,
@@ -2707,6 +2732,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
         oauth_session_keys = app.extensions["oauth_session_keys"]
         workflow_state = get_workflow_state(app)
+        post_auth_redirect = str(workflow_state.pop(HOSTED_SCHWAB_POST_AUTH_REDIRECT_KEY, "") or "").strip()
         received_state = request.args.get("state")
         authorization_code = request.args.get("code")
         app.logger.info(
@@ -2771,7 +2797,23 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             workflow_state.put(oauth_session_keys["connected"], True)
             workflow_state.put(oauth_session_keys["authorized"], True)
             workflow_state.pop(oauth_session_keys["pkce_verifier"], None)
-            set_status_message("Connected to Schwab successfully.", level="info")
+            if app.config.get("RUNTIME_TARGET") == "hosted":
+                try:
+                    diagnostics = refresh_from_supabase_truth(app=app)
+                    set_status_message(
+                        "Connected to Schwab successfully. Refreshed Supabase truth tables "
+                        f"(max trade #{diagnostics['max_trade_number']}, active trades {diagnostics['active_trades_count']}).",
+                        level="info",
+                    )
+                except Exception as exc:
+                    _clear_hosted_payload_cache(app=app)
+                    app.logger.warning("Hosted Supabase truth refresh failed after Schwab callback: %s", exc)
+                    set_status_message(
+                        "Connected to Schwab successfully, but the hosted Supabase refresh failed. Reload the hosted page to retry.",
+                        level="warning",
+                    )
+            else:
+                set_status_message("Connected to Schwab successfully.", level="info")
         except Exception as exc:
             workflow_state.put(oauth_session_keys["login_in_progress"], False)
             workflow_state.put(oauth_session_keys["callback_pending"], False)
@@ -2780,6 +2822,8 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
             set_status_message(str(exc), level="error")
             app.logger.warning("Schwab token exchange failed: %s", exc)
 
+        if app.config.get("RUNTIME_TARGET") == "hosted":
+            return redirect(sanitize_hosted_next_path(post_auth_redirect) if post_auth_redirect else url_for("hosted_shell_home"))
         return redirect(url_for("index"))
 
     @app.get("/trades/<trade_mode>")
@@ -3552,6 +3596,10 @@ def parse_performance_request_filters(source: Any) -> Dict[str, list[str]]:
             values = [item for item in values.split(",") if item]
         if values or group_is_active:
             filters[key] = list(values or [])
+    for key in ("start_date", "end_date"):
+        value = str(source.get(key) or "").strip() if hasattr(source, "get") else ""
+        if value:
+            filters[key] = [value]
     return filters
 
 
@@ -3563,6 +3611,12 @@ def normalize_requested_performance_filters(filters: Optional[Dict[str, list[str
         allowed = {normalize_filter_value(group, option) for option in options}
         values = [normalize_filter_value(group, value) for value in (filters.get(group) or [])]
         normalized[group] = [value for value in values if value in allowed]
+    for key in ("start_date", "end_date"):
+        if not filters or key not in filters:
+            continue
+        raw_value = str((filters.get(key) or [""])[0] or "").strip()
+        if raw_value:
+            normalized[key] = [raw_value]
     return normalized
 
 
@@ -3588,6 +3642,12 @@ def build_hosted_performance_query_string(filters: Optional[Dict[str, list[str]]
         query_parts.append((f"{group}__active", "1"))
         for value in values:
             query_parts.append((group, value))
+    for key in ("start_date", "end_date"):
+        if not filters or key not in filters:
+            continue
+        raw_value = str((filters.get(key) or [""])[0] or "").strip()
+        if raw_value:
+            query_parts.append((key, raw_value))
     return urllib.parse.urlencode(query_parts, doseq=True)
 
 
@@ -3866,6 +3926,59 @@ def _execute_supabase_refresh(app: Optional[Flask] = None) -> None:
     )
 
 
+def resolve_post_schwab_redirect_target(*, app: Optional[Flask] = None) -> str:
+    container = _resolve_flask_container(app)
+    if str(container.config.get("RUNTIME_TARGET") or "").strip().lower() != "hosted":
+        return url_for("index") if has_request_context() else "/"
+    default_target = url_for("hosted_shell_home") if has_request_context() else "/hosted"
+    requested_next = str(request.args.get("next") or "").strip() if has_request_context() else ""
+    if requested_next:
+        return sanitize_hosted_next_path(requested_next)
+    referrer = str(request.referrer or "").strip() if has_request_context() else ""
+    if referrer:
+        parsed = urllib.parse.urlsplit(referrer)
+        candidate = parsed.path or default_target
+        if parsed.query:
+            candidate = f"{candidate}?{parsed.query}"
+        return sanitize_hosted_next_path(candidate)
+    return default_target
+
+
+def refresh_from_supabase_truth(*, app: Optional[Flask] = None) -> Dict[str, Any]:
+    container = _resolve_flask_container(app)
+    _clear_hosted_payload_cache(app=container)
+
+    trade_store = get_trade_store(container)
+    loaded_trade_count = 0
+    max_trade_number = 0
+    for trade_mode in ("real", "simulated", "talos"):
+        for trade in trade_store.list_trades(trade_mode):
+            loaded_trade_count += 1
+            max_trade_number = max(max_trade_number, int(trade.get("trade_number") or 0))
+
+    management_payload = build_hosted_open_trade_management_payload(app=container)
+    active_trades_count = int(management_payload.get("open_trade_count") or 0)
+
+    performance_service = get_performance_service(container)
+    load_records = getattr(performance_service, "load_records", None)
+    performance_record_count = len(load_records()) if callable(load_records) else 0
+
+    diagnostics = {
+        "loaded_trade_count": loaded_trade_count,
+        "max_trade_number": max_trade_number,
+        "active_trades_count": active_trades_count,
+        "performance_record_count": performance_record_count,
+    }
+    container.logger.info(
+        "Hosted Supabase truth refresh | loaded_trade_count=%s | performance_record_count=%s | max_trade_number=%s | active_trades_count=%s",
+        diagnostics["loaded_trade_count"],
+        diagnostics["performance_record_count"],
+        diagnostics["max_trade_number"],
+        diagnostics["active_trades_count"],
+    )
+    return diagnostics
+
+
 def get_workflow_state(app: Optional[Flask] = None) -> WorkflowStateStore:
     container = app or current_app
     workflow_state = container.extensions.get("workflow_state")
@@ -4101,7 +4214,12 @@ def authorize_hosted_private_browser_request(app: Optional[Flask] = None) -> tup
     try:
         return require_hosted_private_access(app), None
     except AuthenticationRequiredError:
-        return None, redirect(build_hosted_launch_url(next_path=build_hosted_browser_next_path()))
+        return None, redirect(
+            build_hosted_login_url(
+                get_hosted_device_branch(default="desktop"),
+                next_path=build_hosted_browser_next_path(),
+            )
+        )
     except PrivateAccessDeniedError as exc:
         return None, (
             render_template(
@@ -4403,6 +4521,7 @@ def build_hosted_shell_navigation() -> list[Dict[str, str]]:
 
 def build_delphi_route_map(*, hosted: bool = False) -> Dict[str, str]:
     if hosted:
+        hosted_next = sanitize_hosted_next_path(request.full_path or request.path) if has_request_context() else "/hosted"
         return {
             "home": url_for("hosted_shell_home"),
             "research": url_for("hosted_research"),
@@ -4417,6 +4536,8 @@ def build_delphi_route_map(*, hosted: bool = False) -> Dict[str, str]:
             "notifications": url_for("hosted_notifications_settings_page"),
             "performance_data": url_for("hosted_performance_data"),
             "text_status": url_for("text_status_api"),
+            "schwab_login": url_for("login", next=hosted_next),
+            "schwab_logout": url_for("hosted_schwab_logout"),
             "logout": url_for("hosted_browser_sign_out"),
         }
 
@@ -4469,13 +4590,16 @@ def build_hosted_login_url(branch: Any, *, next_path: Any = None) -> str:
     active_branch = resolve_hosted_device_branch(branch)
     sanitized_next = sanitize_hosted_next_path(next_path)
     default_home = url_for("hosted_shell_home") if has_request_context() else "/hosted"
-    if sanitized_next == default_home:
-        return url_for("hosted_branch_login", branch=active_branch) if has_request_context() else f"/hosted/login/{active_branch}"
-    return (
-        url_for("hosted_branch_login", branch=active_branch, next=sanitized_next)
-        if has_request_context()
-        else f"/hosted/login/{active_branch}?next={sanitized_next}"
-    )
+    route_params: Dict[str, Any] = {}
+    if active_branch != "desktop":
+        route_params["view"] = active_branch
+    if sanitized_next != default_home:
+        route_params["next"] = sanitized_next
+    if has_request_context():
+        return url_for("hosted_login_entry", **route_params)
+    if not route_params:
+        return "/hosted/login"
+    return f"/hosted/login?{urllib.parse.urlencode(route_params)}"
 
 
 def map_hosted_next_path_to_desktop_path(next_path: Any) -> str:
@@ -4547,7 +4671,7 @@ def render_hosted_login_page(
     error_message: str,
 ) -> Any:
     active_branch = resolve_hosted_device_branch(branch)
-    template_name = "hosted_login_mobile.html" if active_branch == "mobile" else "hosted_login.html"
+    template_name = "hosted_login.html"
     return render_template(
         template_name,
         page_browser_title=f"{HOSTED_APP_DISPLAY_NAME} Sign In",

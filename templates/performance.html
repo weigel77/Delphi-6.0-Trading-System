@@ -86,6 +86,16 @@
                     </fieldset>
                 {% endfor %}
             </div>
+            <div class="trade-import-grid" style="margin-top: 1rem;">
+                <div class="field-group">
+                    <label for="performance-start-date">Custom Start Date</label>
+                    <input id="performance-start-date" class="performance-date-input" type="date" value="{{ active_filters.get('start_date', '') }}">
+                </div>
+                <div class="field-group">
+                    <label for="performance-end-date">Custom End Date</label>
+                    <input id="performance-end-date" class="performance-date-input" type="date" value="{{ active_filters.get('end_date', '') }}">
+                </div>
+            </div>
         </section>
 
         <section class="performance-chart-grid">
@@ -120,7 +130,7 @@
 
         <section class="panel performance-learning-panel">
             <div class="performance-panel-header">
-                <h2>{% if hosted_mode %}Delphi 7.2.11 Hosted Learning Metrics{% else %}Performance Learning Metrics{% endif %}</h2>
+                <h2>{% if hosted_mode %}Delphi 7.2.14 Hosted Learning Metrics{% else %}Performance Learning Metrics{% endif %}</h2>
                 <span class="subtle">Decision-useful trade-quality analytics derived from current stored trade history, timestamps, close events, VIX, and EM metadata.</span>
             </div>
 
@@ -264,6 +274,8 @@
         const performanceUrl = performanceRoot?.dataset.performanceUrl;
         const payloadElement = document.getElementById('performance-dashboard-payload');
         const filterInputs = Array.from(document.querySelectorAll('.performance-filter-input'));
+        const dateInputs = Array.from(document.querySelectorAll('.performance-date-input'));
+        const customRangeInput = document.querySelector('.performance-timeframe-input[value="custom-range"]');
         const palette = {
             blue: '#1f6feb',
             blueSoft: '#d8e8ff',
@@ -489,12 +501,23 @@
                     filters[group].push(input.value);
                 }
             });
+            dateInputs.forEach((input) => {
+                if (input.value) {
+                    filters[input.id === 'performance-start-date' ? 'start_date' : 'end_date'] = input.value;
+                }
+            });
             return filters;
         };
 
         const buildQuery = (filters) => {
             const params = new URLSearchParams();
             Object.entries(filters).forEach(([key, values]) => {
+                if (key === 'start_date' || key === 'end_date') {
+                    if (values) {
+                        params.append(key, values);
+                    }
+                    return;
+                }
                 params.append(`${key}__active`, '1');
                 values.forEach((value) => params.append(key, value));
             });
@@ -1541,6 +1564,15 @@
 
         filterInputs.forEach((input) => {
             input.addEventListener('change', refreshDashboard);
+        });
+
+        dateInputs.forEach((input) => {
+            input.addEventListener('change', () => {
+                if (customRangeInput) {
+                    customRangeInput.checked = true;
+                }
+                refreshDashboard();
+            });
         });
 
         renderDashboard(latestDashboardPayload);

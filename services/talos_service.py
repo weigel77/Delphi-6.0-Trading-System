@@ -1015,7 +1015,7 @@ class TalosService:
                 continue
             current_spread_mark = record.get("current_spread_mark")
             captured = self._coerce_float(record.get("percent_credit_captured")) or 0.0
-            expiration_date = parse_date_value(record.get("expiration"))
+            expiration_date = parse_date_value(record.get("expiration") or record.get("expiration_date"))
             if captured >= self.TALOS_CAPTURE_LIQUIDATION_THRESHOLD:
                 if self._is_close_restricted_window(now):
                     self._append_skip(
@@ -1158,14 +1158,16 @@ class TalosService:
                 )
                 action_taken = True
                 continue
-            if expiration_date is not None and expiration_date <= now.date() and now.time() >= self.MARKET_CLOSE:
+            expiration_passed = expiration_date is not None and expiration_date < now.date()
+            expiration_reached_close = expiration_date is not None and expiration_date == now.date() and now.time() >= self.MARKET_CLOSE
+            if expiration_passed or expiration_reached_close:
                 self.trade_store.expire_trade(
                     trade_id,
                     {
                         "event_datetime": current_timestamp(),
                         "actual_exit_value": 0.0,
                         "close_reason": "Talos expiration sweep",
-                        "notes_exit": "Talos expired the remaining contracts after the regular market session.",
+                        "notes_exit": "Talos expired the remaining contracts because expiration has passed or the regular market session has closed on expiration day.",
                     },
                 )
                 self._append_activity(
@@ -1174,7 +1176,7 @@ class TalosService:
                         "timestamp": now.isoformat(),
                         "category": "expiration",
                         "title": "Talos expiration",
-                        "detail": f"Trade #{record.get('trade_number')} {record.get('system_name')} expired during the Talos end-of-session sweep.",
+                        "detail": f"Trade #{record.get('trade_number')} {record.get('system_name')} expired because its expiration date has passed or the market has closed on expiration day.",
                     },
                 )
                 metadata = dict((state.get("trade_metadata") or {}).get(str(trade_id), {}))
@@ -1182,7 +1184,7 @@ class TalosService:
                     state,
                     system_name=str(record.get("system_name") or "Talos"),
                     decision="expire",
-                    reason_text=f"Trade #{record.get('trade_number')} expired during the Talos end-of-session sweep.",
+                    reason_text=f"Trade #{record.get('trade_number')} expired because its expiration date has passed or the market has closed on expiration day.",
                     score_breakdown=dict(metadata.get("score_breakdown") or {}),
                     weights=metadata.get("adaptive_weights"),
                 )

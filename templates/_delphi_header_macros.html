@@ -3,7 +3,7 @@
     <a class="button-link{% if secondary %} button-link-secondary{% endif %}{% if is_active %} button-link-active{% endif %}" href="{{ href }}" data-delphi-nav="{{ key }}"{% if is_active %} aria-current="page"{% endif %}{% if key in ['apollo', 'kairos'] %} data-refresh-market-status="true"{% endif %}>{{ label }}</a>
 {%- endmacro %}
 
-{% macro render_delphi_header(active_page, page_heading, page_copy, page_kicker='Delphi 7.2.11 Local', page_meta='Delphi workflow shell.', page_version='Version 7.2.11', header_variant='subpage', menu_status=None) -%}
+{% macro render_delphi_header(active_page, page_heading, page_copy, page_kicker='Delphi 7.2.14 Local', page_meta='Delphi workflow shell.', page_version='Version 7.2.14', header_variant='subpage', menu_status=None) -%}
     {% set routes = delphi_routes if delphi_routes is defined and delphi_routes else {} %}
     {% set header_icons = {
         'management': 'icons/delphi-icon.png',
@@ -44,7 +44,7 @@
                     </div>
                 {% endif %}
                 <div>
-                    <p class="hero-kicker delphi-header-kicker">{{ app_identity.page_kicker if page_kicker in ['Delphi 2.0', 'Delphi', 'Delphi 4.3 Dev', 'Delphi 6.4 Local', 'Delphi 7.0 Local', 'Delphi 7.2.9 Local', 'Delphi 7.2.10 Local', 'Delphi 7.2.11 Local'] else page_kicker }}</p>
+                    <p class="hero-kicker delphi-header-kicker">{{ app_identity.page_kicker if page_kicker in ['Delphi 2.0', 'Delphi', 'Delphi 4.3 Dev', 'Delphi 6.4 Local', 'Delphi 7.0 Local', 'Delphi 7.2.9 Local', 'Delphi 7.2.14 Local'] else page_kicker }}</p>
                     <h1>{{ page_heading }}</h1>
                     <p class="hero-copy delphi-header-copy">{{ page_copy }}</p>
                 </div>
@@ -62,7 +62,7 @@
                             <p class="delphi-status-card-meta">{{ card.meta }}</p>
                             {% if card.label == 'Schwab connection' and menu_status.connection_requires_login %}
                                 <div class="hero-status-action delphi-home-connect">
-                                    <a class="button-link" href="{{ url_for('login') }}">Connect</a>
+                                    <a class="button-link" href="{{ routes.get('schwab_login', url_for('login')) }}">Connect</a>
                                 </div>
                             {% endif %}
                         </article>
@@ -71,10 +71,15 @@
             {% endif %}
 
             <div class="delphi-header-meta">
-                <span class="hero-version">{{ app_identity.version_label if page_version in ['Version 2.0', 'Version 4.3 Dev', 'Version 6.4', 'Version 7.0', 'Version 7.2.9', 'Version 7.2.10', 'Version 7.2.11'] else page_version }}</span>
+                <span class="hero-version">{{ app_identity.version_label if page_version in ['Version 2.0', 'Version 4.3 Dev', 'Version 6.4', 'Version 7.0', 'Version 7.2.9', 'Version 7.2.14'] else page_version }}</span>
                 <p class="subtle">{{ page_meta }}</p>
                 <div class="delphi-header-actions">
                     <a class="button-link button-link-secondary button-link-small" href="{{ routes.get('notifications') }}">Notifications</a>
+                    {% if routes.get('schwab_logout') %}
+                    <form method="post" action="{{ routes.get('schwab_logout') }}">
+                        <button type="submit" class="button-link button-link-secondary button-link-small">Schwab Logout</button>
+                    </form>
+                    {% endif %}
                     <button
                         type="button"
                         class="button-link button-link-secondary button-link-small"

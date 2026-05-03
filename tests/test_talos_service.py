@@ -982,6 +982,32 @@ class TalosServiceTest(unittest.TestCase):
         self.assertEqual(str(trade.get("derived_status_raw") or trade.get("status") or "").strip().lower(), "open")
         self.assertTrue(any("80% capture liquidation" in item.get("reason", "") for item in state["skip_log"]))
 
+    def test_manage_open_trades_expires_trade_when_expiration_date_has_already_passed(self) -> None:
+        self.now = datetime(2026, 4, 21, 8, 45, tzinfo=self.chicago)
+        payload = self._trade_payload("Apollo")
+        payload["expiration_date"] = "2026-04-20"
+        trade_id = self.trade_store.create_trade(payload)
+        state = self.service._default_state()
+
+        action_taken = self.service._manage_open_trades(
+            state,
+            [
+                {
+                    "trade_id": trade_id,
+                    "trade_number": 1,
+                    "system_name": "Apollo",
+                    "contracts": 1,
+                    "current_spread_mark": 0.9,
+                    "expiration_date": "2026-04-20",
+                }
+            ],
+        )
+
+        trade = self.trade_store.get_trade(trade_id)
+        self.assertTrue(action_taken)
+        self.assertEqual(str(trade.get("derived_status_raw") or trade.get("status") or "").strip().lower(), "expired")
+        self.assertTrue(any(item.get("category") == "expiration" for item in state["activity_log"]))
+
     def test_apollo_profile_history_summary_uses_all_trade_sources(self) -> None:
         original_builder = self.service._build_learning_records
         self.service._build_learning_records = lambda: [
