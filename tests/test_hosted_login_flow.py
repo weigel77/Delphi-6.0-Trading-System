@@ -214,7 +214,7 @@ class HostedLoginFlowTest(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             self.assertIn(b"Hosted Access", response.data)
-            self.assertIn(b"Delphi 7.2.14 Hosted", response.data)
+            self.assertIn(b"Delphi 7.2.15 Hosted", response.data)
             self.assertIn(b"type=\"email\"", response.data)
             self.assertIn(b"type=\"password\"", response.data)
             self.assertIn(b"Continue to Hosted Delphi", response.data)
@@ -232,7 +232,7 @@ class HostedLoginFlowTest(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             self.assertIn(b"Hosted Access", response.data)
-            self.assertIn(b"Delphi 7.2.14 Hosted", response.data)
+            self.assertIn(b"Delphi 7.2.15 Hosted", response.data)
             self.assertIn(b"type=\"email\"", response.data)
             self.assertIn(b"type=\"password\"", response.data)
             self.assertIn(b"Continue to Hosted Delphi", response.data)

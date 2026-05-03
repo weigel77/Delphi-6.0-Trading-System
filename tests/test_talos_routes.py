@@ -210,7 +210,7 @@ class TalosRouteTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Talos Engine", response.data)
         self.assertIn(b"Talos: Automaton of Crete and Wall Street Options Thinker", response.data)
-        self.assertIn(b"Version 7.2.14", response.data)
+        self.assertIn(b"Version 7.2.15", response.data)
         self.assertIn(b"Apollo Portfolio Construction", response.data)
         self.assertIn(b"Premium Target", response.data)
         self.assertIn(b"Selected Mix Standard x1, Fortress x1", response.data)

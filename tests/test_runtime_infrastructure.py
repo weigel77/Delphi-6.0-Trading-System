@@ -28,8 +28,8 @@ class RuntimeInfrastructureTest(unittest.TestCase):
             self.assertEqual(infrastructure.storage.import_preview_root, Path(app.instance_path))
             self.assertEqual(app.config["TRADE_DATABASE"], str(database_path))
             self.assertEqual(app.config["KAIROS_REPLAY_STORAGE_DIR"], str(replay_path))
-            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 7.2.14 Local")
-            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 7.2.14")
+            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 7.2.15 Local")
+            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 7.2.15")
             self.assertIn("talos_service", app.extensions)
 
     def test_hosted_runtime_uses_hosted_surface_when_explicitly_requested(self):
@@ -55,9 +55,9 @@ class RuntimeInfrastructureTest(unittest.TestCase):
             self.assertEqual(infrastructure.settings.runtime_target, "hosted")
             self.assertEqual(app.config["RUNTIME_TARGET"], "hosted")
             self.assertEqual(app.config["HOSTED_PUBLIC_BASE_URL"], "https://hosted.example.test")
-            self.assertEqual(app.config["SCHWAB_REDIRECT_URI"], "https://hosted.example.test/callback")
-            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 7.2.14")
-            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 7.2.14")
+            self.assertEqual(app.config["SCHWAB_REDIRECT_URI"], "https://eigeltrade.com/callback")
+            self.assertEqual(app.config["APP_DISPLAY_NAME"], "Delphi 7.2.15")
+            self.assertEqual(app.config["APP_VERSION_LABEL"], "Version 7.2.15")
             self.assertEqual(profile.host, "127.0.0.1")
             self.assertEqual(profile.port, app.config["APP_PORT"])
             self.assertTrue(profile.use_https)

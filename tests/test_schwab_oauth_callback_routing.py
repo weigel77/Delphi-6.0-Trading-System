@@ -36,12 +36,15 @@ class SchwabOauthCallbackRoutingTest(unittest.TestCase):
         runtime_config, authorize_url = self._build_authorize_url(
             RUNTIME_TARGET="hosted",
             HOSTED_PUBLIC_BASE_URL="https://wrong.example.test",
-            SCHWAB_REDIRECT_URI="https://eigeltrade.com/callback",
+            SCHWAB_REDIRECT_URI="https://127.0.0.1:5001/callback",
         )
 
-        self.assertEqual(runtime_config.runtime_target, "local")
+        self.assertEqual(runtime_config.runtime_target, "hosted")
         self.assertEqual(runtime_config.schwab_redirect_uri, "https://eigeltrade.com/callback")
         self.assertIn("redirect_uri=https%3A%2F%2Feigeltrade.com%2Fcallback", authorize_url)
+        self.assertNotIn("127.0.0.1", authorize_url)
+        self.assertNotIn("localhost", authorize_url)
+        self.assertNotIn(":5001", authorize_url)
 
     def test_hosted_runtime_derives_callback_from_public_base_url_when_redirect_missing(self):
         runtime_config, authorize_url = self._build_authorize_url(
@@ -61,6 +64,7 @@ class SchwabOauthCallbackRoutingTest(unittest.TestCase):
         )
 
         self.assertEqual(runtime_config.schwab_redirect_uri, "https://eigeltrade.com/callback")
+        self.assertIn("https%3A%2F%2Feigeltrade.com%2Fcallback", authorize_url)
         self.assertNotIn("127.0.0.1", authorize_url)
         self.assertNotIn("localhost", authorize_url)
         self.assertNotIn(":5001", authorize_url)

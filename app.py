@@ -511,6 +511,17 @@ def mask_oauth_state(value: Any) -> str:
 
 
 LOCAL_SCHWAB_REDIRECT_URI = "https://127.0.0.1:5001/callback"
+HOSTED_SCHWAB_REDIRECT_URI = "https://eigeltrade.com/callback"
+
+
+def is_loopback_redirect_uri(value: str) -> bool:
+    """Return whether a redirect URI points at a local development host."""
+    normalized_value = str(value or "").strip()
+    if not normalized_value:
+        return False
+    parsed = urllib.parse.urlparse(normalized_value)
+    hostname = str(parsed.hostname or "").strip().lower()
+    return hostname in LOCAL_DEV_HOSTS
 
 
 def resolve_schwab_redirect_uri(*, runtime_target: str, hosted_public_base_url: str, configured_redirect_uri: str) -> str:
@@ -520,11 +531,7 @@ def resolve_schwab_redirect_uri(*, runtime_target: str, hosted_public_base_url: 
     normalized_configured_redirect_uri = str(configured_redirect_uri or "").strip()
 
     if normalized_runtime_target == "hosted":
-        if normalized_configured_redirect_uri:
-            return normalized_configured_redirect_uri
-        if normalized_hosted_public_base_url:
-            return f"{normalized_hosted_public_base_url.rstrip('/')}/callback"
-        return ""
+        return HOSTED_SCHWAB_REDIRECT_URI
 
     if normalized_configured_redirect_uri:
         return normalized_configured_redirect_uri
@@ -600,11 +607,25 @@ def resolve_runtime_app_config(app: Flask, base_config: AppConfig) -> AppConfig:
     ).strip()
     config_payload["runtime_target"] = runtime_target
     config_payload["hosted_public_base_url"] = hosted_public_base_url
-    config_payload["schwab_redirect_uri"] = resolve_schwab_redirect_uri(
+    configured_redirect_uri = str(config_payload.get("schwab_redirect_uri") or "")
+    resolved_redirect_uri = resolve_schwab_redirect_uri(
         runtime_target=callback_runtime_target,
         hosted_public_base_url=callback_hosted_public_base_url,
-        configured_redirect_uri=str(config_payload.get("schwab_redirect_uri") or ""),
+        configured_redirect_uri=configured_redirect_uri,
     )
+    config_payload["schwab_redirect_uri"] = resolved_redirect_uri
+    if runtime_target == "hosted" and configured_redirect_uri and configured_redirect_uri != resolved_redirect_uri:
+        logging.getLogger(__name__).warning(
+            "Hosted runtime forcing public Schwab redirect URI | configured_redirect_uri=%s | selected_redirect_uri=%s",
+            configured_redirect_uri,
+            resolved_redirect_uri,
+        )
+    if runtime_target == "hosted" and is_loopback_redirect_uri(configured_redirect_uri):
+        logging.getLogger(__name__).warning(
+            "Hosted runtime rejected loopback Schwab redirect URI | configured_redirect_uri=%s | selected_redirect_uri=%s",
+            configured_redirect_uri,
+            resolved_redirect_uri,
+        )
     if runtime_target == "hosted":
         config_payload["schwab_token_path"] = "supabase://hosted_runtime_state/schwab_oauth_token/default"
 
@@ -641,7 +662,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     app.config.setdefault("APP_HOST", "127.0.0.1")
     app.config.setdefault("HOSTED_PUBLIC_BASE_URL", "")
     app.config.setdefault("APP_PORT", 5001)
-    app.config.setdefault("SCHWAB_REDIRECT_URI", "https://127.0.0.1:5001/callback")
+    app.config.setdefault("SCHWAB_REDIRECT_URI", LOCAL_SCHWAB_REDIRECT_URI)
     runtime_app_config = resolve_runtime_app_config(app, APP_CONFIG)
     apply_runtime_app_config_to_flask_config(app, runtime_app_config)
     host_infrastructure_assembler = select_host_infrastructure_assembler(app, runtime_app_config)
