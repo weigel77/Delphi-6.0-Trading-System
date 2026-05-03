@@ -1,8 +1,10 @@
-"""Open-trade management, scheduled notifications, and deduped alerts for Delphi 4.3 Dev."""
+"""Open-trade management, scheduled notifications, and deduped alerts."""
 
 from __future__ import annotations
 
 import logging
+import math
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from threading import RLock
@@ -22,9 +24,19 @@ from .repositories.management_state_repository import (
     SQLiteOpenTradeManagementStateRepository,
     build_management_state_payload,
 )
+from .repositories.global_notification_settings_repository import GlobalNotificationSettingsRepository
+from .repositories.trade_notification_repository import TradeNotificationRepository
 from .repositories.trade_repository import TradeRepository
 from .runtime.notifications import NotificationDelivery
 from .runtime.scheduler import RuntimeJobHandle, RuntimeScheduler, ThreadingTimerScheduler
+from .trade_notifications import (
+    GLOBAL_NOTIFICATION_DAILY_END,
+    GLOBAL_NOTIFICATION_DAILY_START,
+    GLOBAL_NOTIFICATION_OPEN_TRADES,
+    default_global_notification_settings,
+    evaluate_trade_notifications,
+    normalize_trade_notifications,
+)
 from .trade_store import (
     current_timestamp,
     normalize_system_name,
@@ -32,6 +44,7 @@ from .trade_store import (
     parse_datetime_value,
     resolve_trade_candidate_profile,
     resolve_trade_credit_model,
+    summarize_trade_close_events,
     to_float,
 )
 
@@ -82,6 +95,8 @@ class OpenTradeManager:
         config: AppConfig | None = None,
         now_provider: Callable[[], datetime] | None = None,
         state_repository: OpenTradeManagementStateRepository | None = None,
+        trade_notification_repository: TradeNotificationRepository | None = None,
+        global_notification_settings_repository: GlobalNotificationSettingsRepository | None = None,
         scheduler: RuntimeScheduler | None = None,
     ) -> None:
         self.config = config or get_app_config()
@@ -98,6 +113,8 @@ class OpenTradeManager:
         self.market_calendar_service = market_calendar_service or MarketCalendarService(self.config)
         self.database_path = Path(self.trade_store.database_path)
         self.state_repository = state_repository or SQLiteOpenTradeManagementStateRepository(self.database_path)
+        self.trade_notification_repository = trade_notification_repository
+        self.global_notification_settings_repository = global_notification_settings_repository
         self.scheduler = scheduler or ThreadingTimerScheduler()
         self.display_timezone = ZoneInfo(self.config.app_timezone)
         self.now_provider = now_provider or (lambda: datetime.now(self.display_timezone))
@@ -107,6 +124,10 @@ class OpenTradeManager:
 
     def initialize(self) -> None:
         self.state_repository.initialize()
+        if self.trade_notification_repository is not None:
+            self.trade_notification_repository.initialize()
+        if self.global_notification_settings_repository is not None:
+            self.global_notification_settings_repository.initialize()
 
     def start_background_monitoring(self) -> None:
         with self._monitor_lock:
@@ -124,9 +145,34 @@ class OpenTradeManager:
 
     def set_notifications_enabled(self, enabled: bool) -> None:
         self.state_repository.set_notifications_enabled(enabled)
+        settings = self.load_global_notification_settings()
+        target_keys = {GLOBAL_NOTIFICATION_OPEN_TRADES}
+        if self.global_notification_settings_repository is None:
+            target_keys = {
+                GLOBAL_NOTIFICATION_OPEN_TRADES,
+                GLOBAL_NOTIFICATION_DAILY_START,
+                GLOBAL_NOTIFICATION_DAILY_END,
+            }
+        updated = [
+            {**item, "enabled": bool(enabled)} if item.get("key") in target_keys else dict(item)
+            for item in settings
+        ]
+        self.save_global_notification_settings(updated)
 
     def notifications_enabled(self) -> bool:
-        return bool(self.state_repository.load_runtime_settings().get("notifications_enabled", True))
+        settings = {item["key"]: item for item in self.load_global_notification_settings() if item.get("key")}
+        return bool((settings.get(GLOBAL_NOTIFICATION_OPEN_TRADES) or {}).get("enabled", True))
+
+    def load_global_notification_settings(self) -> List[Dict[str, Any]]:
+        if self.global_notification_settings_repository is None:
+            fallback_enabled = bool(self.state_repository.load_runtime_settings().get("notifications_enabled", True))
+            return [{**item, "enabled": fallback_enabled} for item in default_global_notification_settings()]
+        return self.global_notification_settings_repository.load_settings()
+
+    def save_global_notification_settings(self, settings: List[Dict[str, Any]]) -> None:
+        if self.global_notification_settings_repository is None:
+            return
+        self.global_notification_settings_repository.save_settings(settings)
 
     def _schedule_background_monitor(self) -> None:
         if not self._monitor_running:
@@ -158,9 +204,18 @@ class OpenTradeManager:
     def evaluate_open_trades(self, *, send_alerts: bool = False) -> Dict[str, Any]:
         now = self._now()
         open_trades = self._load_open_trades()
-        alert_eligible_trades = [trade for trade in open_trades if str(trade.get("trade_mode") or "").strip().lower() == "real"]
-        states_by_trade = self._load_management_states()
-        runtime_settings = self._load_runtime_settings()
+        global_notification_settings = self.load_global_notification_settings()
+        global_notification_map = {
+            item["key"]: item for item in global_notification_settings if item.get("key")
+        }
+        alert_eligible_trades = [trade for trade in open_trades if str(trade.get("trade_mode") or "").strip().lower() == "real"] if send_alerts else []
+        notifications_by_trade_id: Dict[int, List[Dict[str, Any]]] = {}
+        states_by_trade: Dict[int, Dict[str, Any]] = {}
+        runtime_settings: Dict[str, Any] = {}
+        if send_alerts:
+            notifications_by_trade_id = self._load_trade_notifications(open_trades)
+            states_by_trade = self._load_management_states()
+            runtime_settings = self._load_runtime_settings()
         shared_context = self._build_shared_context(open_trades, now)
         alerts_sent = 0
         alert_failures: List[str] = []
@@ -170,64 +225,100 @@ class OpenTradeManager:
         for trade in open_trades:
             previous_state = states_by_trade.get(int(trade.get("id") or 0), {})
             record = self._evaluate_trade(trade, shared_context, now)
-            alert_outcome = {"sent": False, "error": "", "priority": None, "alert_type": None, "sent_at": None}
-            record["trade_notification_state"] = {
-                "last_status": self._coerce_text(trade.get("last_status"), fallback="—"),
-                "last_action_sent": self._coerce_text(trade.get("last_action_sent"), fallback="—"),
-                "last_alert_timestamp": self._format_datetime(parse_datetime_value(trade.get("last_alert_timestamp"))),
-            }
-            self._upsert_management_state(record, previous_state, alert_outcome, now)
-            persisted_state = build_management_state_payload(record, previous_state, alert_outcome, now)
-            record["alert_state"] = self._build_alert_state_payload(persisted_state, trade)
+            if send_alerts:
+                notifications = list(notifications_by_trade_id.get(int(trade.get("id") or 0), normalize_trade_notifications([])))
+                triggered_notifications = evaluate_trade_notifications({**trade, "notifications": notifications}, record)
+                triggered_by_type = {item["type"]: item for item in triggered_notifications}
+                record["notifications"] = [
+                    {
+                        **notification,
+                        "triggered": notification["type"] in triggered_by_type,
+                        "trigger_reason": (triggered_by_type.get(notification["type"]) or {}).get("reason", ""),
+                    }
+                    for notification in notifications
+                ]
+                record["active_notifications"] = [item for item in record["notifications"] if item.get("enabled")]
+                record["triggered_notifications"] = triggered_notifications
+                record["triggered_notification_count"] = len(triggered_notifications)
+                alert_outcome = {"sent": False, "error": "", "priority": None, "alert_type": None, "sent_at": None}
+                record["trade_notification_state"] = {
+                    "last_status": self._coerce_text(trade.get("last_status"), fallback="—"),
+                    "last_action_sent": self._coerce_text(trade.get("last_action_sent"), fallback="—"),
+                    "last_alert_timestamp": self._format_datetime(parse_datetime_value(trade.get("last_alert_timestamp"))),
+                }
+                self._upsert_management_state(record, previous_state, alert_outcome, now)
+                persisted_state = build_management_state_payload(record, previous_state, alert_outcome, now)
+                record["alert_state"] = self._build_alert_state_payload(persisted_state, trade)
             records.append(record)
 
-        if send_alerts and runtime_settings.get("notifications_enabled", True):
+        if send_alerts:
             real_records = [
                 item for item in records if str(item.get("trade_mode") or "").strip().lower() == "real"
             ]
-            daily_outcomes = self._process_daily_notifications(real_records, now, runtime_settings)
+            daily_outcomes = self._process_daily_notifications(real_records, now, runtime_settings, global_notification_map)
             for outcome in daily_outcomes:
                 if outcome.get("sent"):
                     alerts_sent += 1
                 elif outcome.get("error"):
                     alert_failures.append(str(outcome["error"]))
-            for trade in alert_eligible_trades:
-                record = next((item for item in records if int(item.get("trade_id") or 0) == int(trade.get("id") or 0)), None)
-                if record is None:
-                    continue
-                previous_state = states_by_trade.get(int(trade.get("id") or 0), {})
-                alert_outcome = self._process_trade_notifications(trade, record, previous_state, now)
-                if alert_outcome.get("sent"):
-                    alerts_sent += int(alert_outcome.get("sent_count") or 1)
-                elif alert_outcome.get("error"):
-                    alert_failures.append(f"Trade #{record['trade_number']}: {alert_outcome['error']}")
-                self._upsert_management_state(record, previous_state, alert_outcome, now)
-                persisted_state = build_management_state_payload(record, previous_state, alert_outcome, now)
-                updated_trade = dict(trade)
-                updated_trade["last_status"] = str(record.get("status") or "")
-                updated_trade["last_action_sent"] = str(record.get("action_type") or "")
-                updated_trade["last_alert_timestamp"] = alert_outcome.get("sent_at") or trade.get("last_alert_timestamp")
-                record["alert_state"] = self._build_alert_state_payload(persisted_state, updated_trade)
-
+            if bool((global_notification_map.get(GLOBAL_NOTIFICATION_OPEN_TRADES) or {}).get("enabled", True)):
+                for trade in alert_eligible_trades:
+                    record = next((item for item in records if int(item.get("trade_id") or 0) == int(trade.get("id") or 0)), None)
+                    if record is None:
+                        continue
+                    previous_state = states_by_trade.get(int(trade.get("id") or 0), {})
+                    alert_outcome = self._process_trade_notifications(trade, record, previous_state, now)
+                    if alert_outcome.get("sent"):
+                        alerts_sent += int(alert_outcome.get("sent_count") or 1)
+                    elif alert_outcome.get("error"):
+                        alert_failures.append(f"Trade #{record['trade_number']}: {alert_outcome['error']}")
+                    self._upsert_management_state(record, previous_state, alert_outcome, now)
+                    persisted_state = build_management_state_payload(record, previous_state, alert_outcome, now)
+                    updated_trade = dict(trade)
+                    updated_trade["last_status"] = str(record.get("status") or "")
+                    updated_trade["last_action_sent"] = str(record.get("action_type") or "")
+                    updated_trade["last_alert_timestamp"] = alert_outcome.get("sent_at") or trade.get("last_alert_timestamp")
+                    record["alert_state"] = self._build_alert_state_payload(persisted_state, updated_trade)
         records.sort(key=lambda item: (-int(item.get("status_severity") or 0), str(item.get("system_name") or ""), -int(item.get("trade_number") or 0)))
+        status_counts = self._build_status_counts(records)
         return {
             "evaluated_at": now.isoformat(),
             "evaluated_at_display": self._format_datetime(now),
             "open_trade_count": len(records),
             "alerts_sent": alerts_sent,
             "alert_failures": alert_failures,
-            "notifications_enabled": bool(runtime_settings.get("notifications_enabled", True)),
+            "notifications_enabled": bool((global_notification_map.get(GLOBAL_NOTIFICATION_OPEN_TRADES) or {}).get("enabled", True)),
+            "global_notification_settings": global_notification_settings,
             "last_morning_snapshot_date": runtime_settings.get("last_morning_snapshot_date") or "",
             "last_eod_summary_date": runtime_settings.get("last_eod_summary_date") or "",
             "live_expected_move_display": next((record.get("current_live_expected_move_display") for record in records if record.get("current_live_expected_move_display")), "—"),
-            "status_counts": self._build_status_counts(records),
+            "header_market_snapshots": {
+                "^GSPC": shared_context.get("spx_snapshot") or {},
+                "^VIX": shared_context.get("vix_snapshot") or {},
+            },
+            "status_counts": status_counts,
             "records": records,
         }
+
+    def evaluate_trade_record(self, trade_id: int) -> Dict[str, Any] | None:
+        trade = self.trade_store.get_trade(trade_id)
+        if not trade:
+            return None
+        now = self._now()
+        shared_context = self._build_shared_context([trade], now)
+        return self._evaluate_trade(trade, shared_context, now)
 
     def send_manual_status_update(self, *, trade_mode: str) -> Dict[str, Any]:
         normalized_trade_mode = str(trade_mode or "").strip().lower()
         if normalized_trade_mode not in {"real", "simulated"}:
             raise ValueError(f"Unsupported trade mode for manual status update: {trade_mode}")
+        if normalized_trade_mode != "real":
+            return {
+                "sent": False,
+                "error": "",
+                "record_count": 0,
+                "notifications_enabled": bool(self.notifications_enabled()),
+            }
 
         payload = self.evaluate_open_trades(send_alerts=False)
         selected_records = [
@@ -274,64 +365,191 @@ class OpenTradeManager:
         }
 
     def _build_shared_context(self, open_trades: List[Dict[str, Any]], now: datetime) -> Dict[str, Any]:
-        spx_snapshot = self._safe_snapshot("^GSPC", query_type="open_trade_management_spx")
-        vix_snapshot = self._safe_snapshot("^VIX", query_type="open_trade_management_vix")
+        normalized_systems = {str(item.get("system_name") or "").strip().lower() for item in open_trades}
+        has_apollo_trades = "apollo" in normalized_systems
+        has_kairos_trades = "kairos" in normalized_systems
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            spx_future = executor.submit(self._safe_snapshot, "^GSPC", query_type="open_trade_management_spx")
+            vix_future = executor.submit(self._safe_snapshot, "^VIX", query_type="open_trade_management_vix")
+            spx_snapshot = spx_future.result()
+            vix_snapshot = vix_future.result()
         expirations = {
             parsed_date
             for parsed_date in (self._coerce_trade_expiration(item) for item in open_trades)
             if parsed_date is not None
         }
-        option_chains = {
-            expiration_date.isoformat(): self.options_chain_service.get_spx_option_chain_summary(expiration_date)
-            for expiration_date in sorted(expirations)
-        }
+        option_chains: Dict[str, Any] = {}
+        sorted_expirations = sorted(expirations)
+        if sorted_expirations:
+            with ThreadPoolExecutor(max_workers=min(4, len(sorted_expirations))) as executor:
+                future_map = {
+                    executor.submit(self.options_chain_service.get_spx_option_chain_summary, expiration_date): expiration_date
+                    for expiration_date in sorted_expirations
+                }
+                for future, expiration_date in future_map.items():
+                    option_chains[expiration_date.isoformat()] = future.result()
+        current_spx = self._coerce_float((spx_snapshot or {}).get("Latest Value"))
+        prepared_option_chains = self._prepare_option_chain_contexts(
+            option_chains=option_chains,
+            spot=current_spx,
+            evaluation_date=now.date(),
+        )
 
         apollo_context: Dict[str, Any] = {}
-        if any(str(item.get("system_name") or "").strip().lower() == "apollo" for item in open_trades):
-            try:
-                apollo_precheck = self.apollo_service.run_precheck()
-            except Exception as exc:  # pragma: no cover - defensive provider handling
-                LOGGER.warning("Apollo management context unavailable: %s", exc)
-                apollo_precheck = {}
-            apollo_context = {
-                "current_structure_grade": self._coerce_text(((apollo_precheck.get("structure") or {}).get("final_grade") or (apollo_precheck.get("structure") or {}).get("grade")), fallback="Not available"),
-                "current_macro_grade": self._coerce_text(((apollo_precheck.get("macro") or {}).get("grade")), fallback="Not available"),
-                "precheck": apollo_precheck,
-            }
-
-        kairos_context: Dict[str, Any] = self._build_kairos_context(now)
+        kairos_context: Dict[str, Any] = {}
+        context_futures: Dict[Any, str] = {}
+        context_worker_count = int(has_apollo_trades) + int(has_kairos_trades)
+        if context_worker_count > 0:
+            with ThreadPoolExecutor(max_workers=context_worker_count) as executor:
+                if has_apollo_trades:
+                    context_futures[executor.submit(self._build_apollo_management_context)] = "apollo"
+                if has_kairos_trades:
+                    context_futures[executor.submit(self._build_kairos_context, now)] = "kairos"
+                for future, context_name in context_futures.items():
+                    if context_name == "apollo":
+                        apollo_context = future.result()
+                    else:
+                        kairos_context = future.result()
         return {
             "now": now,
             "spx_snapshot": spx_snapshot,
             "vix_snapshot": vix_snapshot,
             "option_chains": option_chains,
+            "prepared_option_chains": prepared_option_chains,
             "apollo": apollo_context,
             "kairos": kairos_context,
-            "current_spx": self._coerce_float((spx_snapshot or {}).get("Latest Value")),
+            "current_spx": current_spx,
             "current_vix": self._coerce_float((vix_snapshot or {}).get("Latest Value")),
         }
 
-    def _build_kairos_context(self, now: datetime) -> Dict[str, Any]:
-        dashboard = {}
+    def _build_apollo_management_context(self) -> Dict[str, Any]:
+        apollo_context: Dict[str, Any] = {}
         try:
-            dashboard = self.kairos_service.get_dashboard_payload() if self.kairos_service is not None else {}
+            management_context_builder = getattr(self.apollo_service, "build_management_context", None)
+            if callable(management_context_builder):
+                apollo_context = management_context_builder()
+            else:
+                apollo_precheck = self.apollo_service.run_precheck()
+                apollo_context = {
+                    "current_structure_grade": self._coerce_text(((apollo_precheck.get("structure") or {}).get("final_grade") or (apollo_precheck.get("structure") or {}).get("grade")), fallback="Not available"),
+                }
+        except Exception as exc:  # pragma: no cover - defensive provider handling
+            LOGGER.warning("Apollo management context unavailable: %s", exc)
+            apollo_context = {}
+        return apollo_context
+
+    def _prepare_option_chain_contexts(
+        self,
+        *,
+        option_chains: Dict[str, Any],
+        spot: float | None,
+        evaluation_date: date,
+    ) -> Dict[str, Dict[str, Any]]:
+        prepared: Dict[str, Dict[str, Any]] = {}
+        for expiration_key, chain_summary in option_chains.items():
+            if not isinstance(chain_summary, dict):
+                continue
+            expiration_date = parse_date_value(expiration_key)
+            prepared[expiration_key] = self._prepare_option_chain_context(
+                chain_summary=chain_summary,
+                spot=spot,
+                expiration_date=expiration_date,
+                evaluation_date=evaluation_date,
+            )
+        return prepared
+
+    def _prepare_option_chain_context(
+        self,
+        *,
+        chain_summary: Dict[str, Any],
+        spot: float | None,
+        expiration_date: date | None,
+        evaluation_date: date,
+    ) -> Dict[str, Any]:
+        normalized_puts = self._normalize_live_contracts(chain_summary.get("puts") or [])
+        normalized_calls = self._normalize_live_contracts(chain_summary.get("calls") or [])
+        prepared = {
+            "normalized_puts": normalized_puts,
+            "normalized_calls": normalized_calls,
+            "puts_by_strike": {round(float(item["strike"]), 2): item for item in normalized_puts},
+            "calls_by_strike": {round(float(item["strike"]), 2): item for item in normalized_calls},
+            "expected_move_by_system": {},
+        }
+        if spot is not None:
+            prepared["expected_move_by_system"] = {
+                "apollo": self._build_expected_move_details_from_normalized(
+                    normalized_puts=normalized_puts,
+                    normalized_calls=normalized_calls,
+                    spot=spot,
+                    system_name="Apollo",
+                    expiration_date=expiration_date,
+                    evaluation_date=evaluation_date,
+                ),
+                "kairos": self._build_expected_move_details_from_normalized(
+                    normalized_puts=normalized_puts,
+                    normalized_calls=normalized_calls,
+                    spot=spot,
+                    system_name="Kairos",
+                    expiration_date=expiration_date,
+                    evaluation_date=evaluation_date,
+                ),
+            }
+        return prepared
+
+    def _build_kairos_context(self, now: datetime) -> Dict[str, Any]:
+        management_context: Dict[str, Any] = {}
+        try:
+            management_context_builder = getattr(self.kairos_service, "build_management_context", None)
+            if callable(management_context_builder):
+                management_context = management_context_builder() if self.kairos_service is not None else {}
+            elif self.kairos_service is not None:
+                dashboard = self.kairos_service.get_dashboard_payload()
+                latest_scan = dashboard.get("latest_scan") or {}
+                management_context = {
+                    "current_structure_status": latest_scan.get("structure_status"),
+                    "current_momentum_status": latest_scan.get("momentum_status"),
+                }
         except Exception as exc:  # pragma: no cover - defensive provider handling
             LOGGER.warning("Kairos management context unavailable: %s", exc)
+            management_context = {}
 
-        latest_scan = dashboard.get("latest_scan") or {}
         intraday = self._build_intraday_kairos_context(now)
         return {
-            "dashboard": dashboard,
-            "current_structure_status": self._coerce_text(latest_scan.get("structure_status") or intraday.get("structure_status"), fallback="Developing"),
-            "current_momentum_status": self._coerce_text(latest_scan.get("momentum_status") or intraday.get("momentum_status"), fallback="Steady"),
-            "current_vwap": intraday.get("current_vwap"),
-            "current_session_posture": intraday.get("session_posture") or "Awaiting tape",
+            "current_structure_status": self._coerce_text(management_context.get("current_structure_status") or intraday.get("structure_status"), fallback="Developing"),
             "below_vwap": intraday.get("below_vwap", False),
         }
 
     def _build_intraday_kairos_context(self, now: datetime) -> Dict[str, Any]:
         try:
-            frame = self.market_data_service.get_same_day_intraday_candles("^GSPC", interval_minutes=1, query_type="open_trade_management_kairos_intraday")
+            requested_session_date = now.date()
+            session_request_resolver = getattr(self.market_data_service, "resolve_intraday_session_request", None)
+            if callable(session_request_resolver):
+                session_request = session_request_resolver(requested_session_date, current_time=now)
+                resolved_session_date = session_request.get("resolved_session_date", requested_session_date)
+                normalization_reason = str(session_request.get("normalization_reason") or "")
+            else:
+                resolved_session_date = requested_session_date
+                normalization_reason = ""
+            if resolved_session_date != requested_session_date:
+                LOGGER.info(
+                    "Open trade intraday session normalized | requested_session_date=%s | resolved_session_date=%s | reason=%s",
+                    requested_session_date.isoformat(),
+                    resolved_session_date.isoformat(),
+                    normalization_reason or "latest valid tradable session",
+                )
+            if hasattr(self.market_data_service, "get_intraday_candles_for_date"):
+                frame = self.market_data_service.get_intraday_candles_for_date(
+                    "^GSPC",
+                    target_date=resolved_session_date,
+                    interval_minutes=1,
+                    query_type="open_trade_management_kairos_intraday",
+                )
+            else:
+                frame = self.market_data_service.get_same_day_intraday_candles(
+                    "^GSPC",
+                    interval_minutes=1,
+                    query_type="open_trade_management_kairos_intraday",
+                )
         except MarketDataError:
             return {}
         if frame is None or frame.empty:
@@ -350,33 +568,18 @@ class OpenTradeManager:
         typical_price = (pd.to_numeric(working["High"], errors="coerce") + pd.to_numeric(working["Low"], errors="coerce") + pd.to_numeric(working["Close"], errors="coerce")) / 3.0
         cumulative_volume = float(volume_series.sum())
         current_vwap = float(((typical_price * volume_series).sum() / cumulative_volume) if cumulative_volume > 0 else current_close)
-        recent_close = self._coerce_float(working.iloc[max(0, len(working) - 6)].get("Close"), fallback=current_close)
         net_change_percent = self._percent_change(current_close, session_open)
-        close_vs_vwap_percent = self._percent_change(current_close, current_vwap)
-        recent_change_percent = self._percent_change(current_close, recent_close)
-        session_posture = self._derive_session_posture(
-            net_change_percent=net_change_percent,
-            close_vs_vwap_percent=close_vs_vwap_percent,
-            recent_change_percent=recent_change_percent,
-        )
         if current_close < current_vwap and net_change_percent <= -0.18:
             structure_status = "Failed"
-            momentum_status = "Expired"
         elif current_close < current_vwap:
             structure_status = "Weakening"
-            momentum_status = "Weakening"
         elif current_close > current_vwap and net_change_percent >= 0.08:
             structure_status = "Bullish Confirmation"
-            momentum_status = "Improving"
         else:
             structure_status = "Developing"
-            momentum_status = "Steady"
         return {
-            "current_vwap": round(current_vwap, 2),
             "below_vwap": bool(current_close < current_vwap),
-            "session_posture": session_posture,
             "structure_status": structure_status,
-            "momentum_status": momentum_status,
         }
 
     def _evaluate_trade(self, trade: Dict[str, Any], shared_context: Dict[str, Any], now: datetime) -> Dict[str, Any]:
@@ -394,21 +597,28 @@ class OpenTradeManager:
             classification = self._classify_apollo_trade(trade, metrics, shared_context.get("apollo") or {}, now)
             profile_label = resolve_trade_candidate_profile(trade)
 
-        return {
+        record = {
             "trade_id": int(trade.get("id") or 0),
             "trade_number": int(trade.get("trade_number") or 0),
             "system_name": system_name,
             "trade_mode": trade_mode,
             "profile_label": profile_label,
             "pass_type": self._coerce_text(trade.get("pass_type"), fallback="—"),
+            "short_strike": self._coerce_float(trade.get("short_strike")),
+            "short_strike_display": self._format_number(self._coerce_float(trade.get("short_strike"))),
+            "long_strike": self._coerce_float(trade.get("long_strike")),
+            "long_strike_display": self._format_number(self._coerce_float(trade.get("long_strike"))),
             "entry_timestamp": self._format_datetime(parse_datetime_value(trade.get("entry_datetime")) or now),
             "expiration": self._format_date(self._coerce_trade_expiration(trade)),
+            "expiration_display": self._format_expiration_label(self._coerce_trade_expiration(trade)),
             "underlying_symbol": self._coerce_text(trade.get("underlying_symbol"), fallback="SPX"),
             "option_type": option_type,
             "net_credit_per_contract": metrics["net_credit_per_contract"],
             "net_credit_per_contract_display": self._format_number(metrics["net_credit_per_contract"], decimals=4),
             "contracts": metrics["remaining_contracts"],
             "contracts_display": str(metrics["remaining_contracts"]),
+            "original_contracts": metrics["original_contracts"],
+            "original_contracts_display": str(metrics["original_contracts"]),
             "total_premium": metrics["total_premium"],
             "total_premium_display": self._format_currency(metrics["total_premium"]),
             "max_loss": metrics["max_loss"],
@@ -445,6 +655,10 @@ class OpenTradeManager:
             "current_close_price_display": self._format_number(metrics["current_close_price"], decimals=4),
             "unrealized_pnl": metrics["unrealized_pnl"],
             "unrealized_pnl_display": self._format_currency(metrics["unrealized_pnl"]),
+            "realized_close_cost": metrics["realized_close_cost"],
+            "realized_close_cost_display": self._format_currency(metrics["realized_close_cost"]),
+            "closed_contracts": metrics["closed_contracts"],
+            "closed_contracts_display": str(metrics["closed_contracts"]),
             "percent_credit_captured": metrics["percent_credit_captured"],
             "percent_credit_captured_display": self._format_signed_percent(metrics["percent_credit_captured"]),
             "current_pl": metrics["current_pl"],
@@ -459,6 +673,8 @@ class OpenTradeManager:
             "status_reason_code": classification["status_reason_code"],
             "thesis_reason_code": classification["thesis_reason_code"],
             "next_trigger": classification["next_trigger"],
+            "exit_plan_summary": classification.get("exit_plan_summary") or classification["next_trigger"],
+            "exit_plan_gates": classification.get("exit_plan_gates") or [],
             "trigger_source": classification["trigger_source"],
             "structure_trigger_fired": classification["structure_trigger_fired"],
             "vwap_trigger_fired": classification["vwap_trigger_fired"],
@@ -480,12 +696,16 @@ class OpenTradeManager:
             "evaluated_at": now.isoformat(),
             "evaluated_at_display": self._format_datetime(now),
         }
+        return record
 
     def _build_live_metrics(self, trade: Dict[str, Any], *, current_underlying: float, current_vix: float | None, shared_context: Dict[str, Any], now: datetime) -> Dict[str, Any]:
         short_strike = self._coerce_float(trade.get("short_strike"), fallback=0.0)
         long_strike = self._coerce_float(trade.get("long_strike"), fallback=0.0)
         entry_underlying = self._coerce_float(trade.get("spx_at_entry") or trade.get("spx_entry"), fallback=0.0)
-        remaining_contracts = int(trade.get("remaining_contracts") or trade.get("contracts") or 0)
+        close_summary = summarize_trade_close_events(trade, trade.get("close_events") or [])
+        original_contracts = int(close_summary.get("original_contracts") or trade.get("contracts") or 0)
+        remaining_contracts = int(close_summary.get("remaining_contracts") or trade.get("remaining_contracts") or original_contracts or 0)
+        closed_contracts = max(original_contracts - remaining_contracts, 0)
         credit_model = resolve_trade_credit_model(trade)
         net_credit_per_contract = self._coerce_float(credit_model.get("net_credit_per_contract"), fallback=0.0)
         total_premium = self._coerce_float(credit_model.get("total_premium"))
@@ -503,10 +723,11 @@ class OpenTradeManager:
         current_spread_mark = self._resolve_current_spread_mark(trade, shared_context)
         current_total_close_cost = None
         unrealized_pnl = None
+        realized_close_cost = round(self._coerce_float(close_summary.get("total_close_cost"), fallback=0.0) or 0.0, 2)
         if current_spread_mark is not None and remaining_contracts > 0:
             current_total_close_cost = round(current_spread_mark * 100.0 * remaining_contracts, 2)
-        if total_premium is not None and current_total_close_cost is not None:
-            unrealized_pnl = round(total_premium - current_total_close_cost, 2)
+        if total_premium is not None:
+            unrealized_pnl = round(total_premium - realized_close_cost, 2)
         current_close_price = current_spread_mark if current_spread_mark is not None else net_credit_per_contract
         percent_credit_captured = None
         current_pl = None
@@ -516,9 +737,12 @@ class OpenTradeManager:
             current_pl = round((net_credit_per_contract - current_close_price) * remaining_contracts * 100.0, 2)
 
         expiration_date = self._coerce_trade_expiration(trade)
-        chain_summary = (shared_context.get("option_chains") or {}).get(expiration_date.isoformat()) if expiration_date is not None else None
+        expiration_key = expiration_date.isoformat() if expiration_date is not None else ""
+        chain_summary = (shared_context.get("option_chains") or {}).get(expiration_key) if expiration_key else None
+        prepared_chain = (shared_context.get("prepared_option_chains") or {}).get(expiration_key) if expiration_key else None
         current_live_expected_move_details = self._estimate_live_expected_move_from_chain(
             chain_summary=chain_summary,
+            prepared_chain=prepared_chain,
             spot=current_underlying,
             system_name=normalize_system_name(trade.get("system_name")),
             expiration_date=expiration_date,
@@ -561,6 +785,9 @@ class OpenTradeManager:
             "percent_credit_captured": percent_credit_captured,
             "current_pl": current_pl,
             "remaining_contracts": remaining_contracts,
+            "original_contracts": original_contracts,
+            "closed_contracts": closed_contracts,
+            "realized_close_cost": realized_close_cost,
             "time_remaining_to_expiration": time_remaining["seconds"],
             "time_remaining_display": time_remaining["display"],
             "entry_structure_grade": self._coerce_text(trade.get("structure_grade"), fallback="Not available"),
@@ -568,6 +795,7 @@ class OpenTradeManager:
             "entry_vix": self._coerce_float(trade.get("vix_at_entry") or trade.get("vix_entry")),
             "expected_move_used": entry_expected_move,
             "actual_em_multiple": self._coerce_float(trade.get("actual_em_multiple")),
+            "short_delta": self._coerce_float(trade.get("short_delta")),
             "fallback_used": self._coerce_text(trade.get("fallback_used"), fallback="no"),
             "fallback_rule_name": self._coerce_text(trade.get("fallback_rule_name"), fallback="—"),
             "notes_entry": self._coerce_text(trade.get("notes_entry"), fallback="—"),
@@ -610,14 +838,18 @@ class OpenTradeManager:
                 reason = f"Apollo spread is down to {em_multiple:.2f}x current live expected-move clearance and is approaching exit territory."
 
         action_plan = self._build_action_plan(status, int(metrics.get("remaining_contracts") or 0), metrics)
+        next_trigger, next_trigger_action = self._build_price_ladder_next_trigger(trade, metrics)
+        exit_plan_summary = self._build_exit_plan_summary(trade, metrics)
         return {
             "status": status,
             "thesis_status": "neutral",
             "reason": reason,
             "status_reason_code": status_reason_code,
             "thesis_reason_code": "apollo-thesis-neutral",
-            "next_trigger": self._build_apollo_next_trigger(status),
-            "trigger_source": "current-live-expected-move",
+            "next_trigger": next_trigger,
+            "exit_plan_summary": exit_plan_summary,
+            "exit_plan_gates": self._build_exit_plan_gates(trade, metrics),
+            "trigger_source": next_trigger_action,
             "current_structure_grade": current_structure,
             "status_em_multiple": em_multiple,
             "structure_trigger_fired": False,
@@ -664,14 +896,18 @@ class OpenTradeManager:
             reason = f"Kairos spread is down to {em_multiple:.2f}x current same-day expected-move clearance and is approaching exit territory."
 
         action_plan = self._build_action_plan(status, int(metrics.get("remaining_contracts") or 0), metrics)
+        next_trigger, next_trigger_action = self._build_price_ladder_next_trigger(trade, metrics)
+        exit_plan_summary = self._build_exit_plan_summary(trade, metrics)
         return {
             "status": status,
             "thesis_status": thesis_status,
             "reason": reason,
             "status_reason_code": status_reason_code,
             "thesis_reason_code": thesis_reason_code,
-            "next_trigger": self._build_kairos_next_trigger(status),
-            "trigger_source": "current-live-expected-move",
+            "next_trigger": next_trigger,
+            "exit_plan_summary": exit_plan_summary,
+            "exit_plan_gates": self._build_exit_plan_gates(trade, metrics),
+            "trigger_source": next_trigger_action,
             "current_structure_grade": current_structure,
             "status_em_multiple": em_multiple,
             "structure_trigger_fired": structure_trigger_fired,
@@ -682,14 +918,22 @@ class OpenTradeManager:
             **action_plan,
         }
 
-    def _process_daily_notifications(self, records: List[Dict[str, Any]], now: datetime, runtime_settings: Dict[str, Any]) -> list[Dict[str, Any]]:
+    def _process_daily_notifications(
+        self,
+        records: List[Dict[str, Any]],
+        now: datetime,
+        runtime_settings: Dict[str, Any],
+        global_notification_map: Dict[str, Dict[str, Any]],
+    ) -> list[Dict[str, Any]]:
         outcomes: list[Dict[str, Any]] = []
-        morning_outcome = self._send_morning_snapshot_if_due(records, now, runtime_settings)
-        if morning_outcome is not None:
-            outcomes.append(morning_outcome)
-        eod_outcome = self._send_eod_summary_if_due(records, now, runtime_settings)
-        if eod_outcome is not None:
-            outcomes.append(eod_outcome)
+        if bool((global_notification_map.get(GLOBAL_NOTIFICATION_DAILY_START) or {}).get("enabled", True)):
+            morning_outcome = self._send_morning_snapshot_if_due(records, now, runtime_settings)
+            if morning_outcome is not None:
+                outcomes.append(morning_outcome)
+        if bool((global_notification_map.get(GLOBAL_NOTIFICATION_DAILY_END) or {}).get("enabled", True)):
+            eod_outcome = self._send_eod_summary_if_due(records, now, runtime_settings)
+            if eod_outcome is not None:
+                outcomes.append(eod_outcome)
         return outcomes
 
     def _process_trade_notifications(self, trade: Dict[str, Any], record: Dict[str, Any], previous_state: Dict[str, Any], now: datetime) -> Dict[str, Any]:
@@ -740,13 +984,19 @@ class OpenTradeManager:
 
     def _load_open_trades(self) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
-        for trade_mode in ("real", "simulated"):
+        for trade_mode in ("real", "simulated", "talos"):
             rows.extend(
                 trade
                 for trade in self.trade_store.list_trades(trade_mode)
                 if str(trade.get("derived_status_raw") or trade.get("status") or "").strip().lower() in {"open", "reduced"}
             )
         return rows
+
+    def _load_trade_notifications(self, trades: List[Dict[str, Any]]) -> Dict[int, List[Dict[str, Any]]]:
+        if self.trade_notification_repository is None:
+            return {int(trade.get("id") or 0): normalize_trade_notifications([]) for trade in trades if int(trade.get("id") or 0) > 0}
+        trade_ids = [int(trade.get("id") or 0) for trade in trades if int(trade.get("id") or 0) > 0]
+        return self.trade_notification_repository.load_notifications_for_trade_ids(trade_ids)
 
     def _load_runtime_settings(self) -> Dict[str, Any]:
         return self.state_repository.load_runtime_settings()
@@ -756,9 +1006,6 @@ class OpenTradeManager:
 
     def _load_management_states(self) -> Dict[int, Dict[str, Any]]:
         return self.state_repository.load_management_states()
-
-    def _load_management_state(self, trade_id: int) -> Dict[str, Any]:
-        return self.state_repository.load_management_state(trade_id)
 
     def _build_alert_state_payload(self, state: Dict[str, Any], trade: Dict[str, Any]) -> Dict[str, Any]:
         last_alert_sent_at = parse_datetime_value(state.get("last_alert_sent_at")) if state else None
@@ -781,23 +1028,163 @@ class OpenTradeManager:
                 counts[label] += 1
         return [{"label": label, "count": counts[label], "key": self._slugify(label)} for label in counts]
 
-    def _build_apollo_next_trigger(self, status: str) -> str:
-        if status == "Healthy":
-            return "Watch below 2.00x current live EM; prep if short distance compresses or long strike nears."
-        if status == "Watch":
-            return "Exit Approaching below 1.50x current live EM; monitor short distance and long-strike proximity."
-        if status == "Exit Partial":
-            return "Full exit if live EM falls further, the short strike breaches, or the long strike comes into play."
-        return "Next trigger is short-strike compression, long-strike proximity, or live EM exhaustion."
+    def _build_price_ladder_next_trigger(self, trade: Dict[str, Any], metrics: Dict[str, Any]) -> tuple[str, str]:
+        original_contracts = max(int(metrics.get("original_contracts") or 0), 0)
+        remaining_contracts = max(int(metrics.get("remaining_contracts") or 0), 0)
+        current_spx = self._coerce_float(metrics.get("current_underlying_price"))
+        short_strike = self._coerce_float(trade.get("short_strike"), fallback=0.0) or 0.0
+        long_strike = self._coerce_float(trade.get("long_strike"), fallback=0.0) or 0.0
+        option_type = self._coerce_text(trade.get("option_type"), fallback="Put Credit Spread")
 
-    def _build_kairos_next_trigger(self, status: str) -> str:
-        if status == "Healthy":
-            return "Watch below 3.00x current live EM; also monitor distance-to-short and structure degradation."
-        if status == "Watch":
-            return "Exit Approaching below 1.50x current live EM; also monitor long-strike proximity and structure breaks."
-        if status == "Exit Partial":
-            return "Full exit if same-day EM compresses further, the short strike breaches, or the long strike is threatened."
-        return "Next trigger is long-strike proximity, structure break, or further live EM compression."
+        if original_contracts <= 0 or remaining_contracts <= 0 or current_spx is None or short_strike <= 0 or long_strike <= 0:
+            return ("No open-contract trigger ladder is available.", "price-ladder-unavailable")
+
+        is_call = "call" in option_type.lower()
+        cumulative_targets = self._build_cumulative_exit_targets(original_contracts)
+        triggered_steps = self._build_trigger_steps(short_strike=short_strike, long_strike=long_strike, is_call=is_call, cumulative_targets=cumulative_targets)
+        actual_closed_contracts = max(original_contracts - remaining_contracts, 0)
+
+        last_triggered_step: Dict[str, Any] | None = None
+        for step in triggered_steps:
+            if self._is_trigger_crossed(current_spx, float(step["trigger_level"]), is_call=is_call):
+                last_triggered_step = step
+            else:
+                break
+
+        if last_triggered_step is not None:
+            catch_up_contracts = max(int(last_triggered_step["required_closed_contracts"]) - actual_closed_contracts, 0)
+            if catch_up_contracts > 0:
+                return (
+                    f"Close Now: {catch_up_contracts} contracts. SPX has already crossed {last_triggered_step['label']} ({last_triggered_step['comparison']} {self._format_number(last_triggered_step['trigger_level'])}).",
+                    "price-ladder-catch-up",
+                )
+
+        for step in triggered_steps:
+            if int(step["incremental_contracts"]) <= 0:
+                continue
+            if self._is_trigger_crossed(current_spx, float(step["trigger_level"]), is_call=is_call):
+                continue
+            return (
+                f"{step['label']}: close {step['incremental_contracts']} contracts at SPX {step['comparison']} {self._format_number(step['trigger_level'])}.",
+                "price-ladder-next",
+            )
+
+        return ("No future price trigger remains. Close the balance on the next manual risk signal.", "price-ladder-complete")
+
+    def _build_exit_plan_summary(self, trade: Dict[str, Any], metrics: Dict[str, Any]) -> str:
+        original_contracts = max(int(metrics.get("original_contracts") or 0), 0)
+        remaining_contracts = max(int(metrics.get("remaining_contracts") or 0), 0)
+        short_strike = self._coerce_float(trade.get("short_strike"), fallback=0.0) or 0.0
+        long_strike = self._coerce_float(trade.get("long_strike"), fallback=0.0) or 0.0
+        option_type = self._coerce_text(trade.get("option_type"), fallback="Put Credit Spread")
+        if original_contracts <= 0 or remaining_contracts <= 0 or short_strike <= 0 or long_strike <= 0:
+            return "No exit plan is available."
+
+        is_call = "call" in option_type.lower()
+        cumulative_targets = self._build_cumulative_exit_targets(original_contracts)
+        triggered_steps = self._build_trigger_steps(
+            short_strike=short_strike,
+            long_strike=long_strike,
+            is_call=is_call,
+            cumulative_targets=cumulative_targets,
+        )
+        actual_closed_contracts = max(original_contracts - remaining_contracts, 0)
+        future_steps = [step for step in triggered_steps if int(step["required_closed_contracts"]) > actual_closed_contracts and int(step["incremental_contracts"]) > 0]
+        if not future_steps:
+            return "No future trigger remains. Close the balance on the next manual risk signal."
+
+        next_step = future_steps[0]
+        detail = f"Next: {next_step['label']} close {next_step['incremental_contracts']} at SPX {next_step['comparison']} {self._format_number(next_step['trigger_level'])}."
+        later_steps = future_steps[1:]
+        if later_steps:
+            detail = f"{detail} Later: {'; '.join(f"{step['label']} close {step['incremental_contracts']}" for step in later_steps)}."
+        return detail
+
+    def _build_exit_plan_gates(self, trade: Dict[str, Any], metrics: Dict[str, Any]) -> list[Dict[str, Any]]:
+        original_contracts = max(int(metrics.get("original_contracts") or 0), 0)
+        short_strike = self._coerce_float(trade.get("short_strike"), fallback=0.0) or 0.0
+        long_strike = self._coerce_float(trade.get("long_strike"), fallback=0.0) or 0.0
+        option_type = self._coerce_text(trade.get("option_type"), fallback="Put Credit Spread")
+        current_spx = self._coerce_float(metrics.get("current_underlying_price"))
+        remaining_contracts = max(int(metrics.get("remaining_contracts") or 0), 0)
+        if original_contracts <= 0 or short_strike <= 0 or long_strike <= 0:
+            return []
+
+        is_call = "call" in option_type.lower()
+        cumulative_targets = self._build_cumulative_exit_targets(original_contracts)
+        triggered_steps = self._build_trigger_steps(
+            short_strike=short_strike,
+            long_strike=long_strike,
+            is_call=is_call,
+            cumulative_targets=cumulative_targets,
+        )
+        actual_closed_contracts = max(original_contracts - remaining_contracts, 0)
+        gates: list[Dict[str, Any]] = []
+        for step in triggered_steps:
+            incremental_contracts = int(step["incremental_contracts"])
+            executed = incremental_contracts > 0 and int(step["required_closed_contracts"]) <= actual_closed_contracts
+            due_now = False
+            if not executed and current_spx is not None:
+                due_now = self._is_trigger_crossed(current_spx, float(step["trigger_level"]), is_call=is_call)
+            gates.append(
+                {
+                    "label": step["label"],
+                    "trigger_value": float(step["trigger_level"]),
+                    "trigger_value_display": self._format_number(step["trigger_level"]),
+                    "comparison": step["comparison"],
+                    "quantity_to_close": incremental_contracts,
+                    "quantity_to_close_display": str(incremental_contracts),
+                    "executed": executed,
+                    "due_now": due_now,
+                    "state_key": "executed" if executed else ("due" if due_now else "pending"),
+                    "state_label": "Executed" if executed else ("Due Now" if due_now else "Pending"),
+                }
+            )
+        return gates
+
+    @staticmethod
+    def _build_cumulative_exit_targets(original_contracts: int) -> list[int]:
+        if original_contracts <= 0:
+            return [0, 0, 0, 0]
+        ratios = (0.25, 0.50, 0.75, 1.0)
+        targets: list[int] = []
+        for ratio in ratios:
+            targets.append(min(original_contracts, max(targets[-1] if targets else 0, math.ceil(original_contracts * ratio))))
+        return targets
+
+    def _build_trigger_steps(self, *, short_strike: float, long_strike: float, is_call: bool, cumulative_targets: list[int]) -> list[Dict[str, Any]]:
+        comparison = ">=" if is_call else "<="
+        levels = [
+            short_strike - 30.0 if is_call else short_strike + 30.0,
+            short_strike - 15.0 if is_call else short_strike + 15.0,
+            short_strike,
+            long_strike,
+        ]
+        labels = [
+            "30-point short-strike proximity",
+            "15-point short-strike proximity",
+            "short-strike breach",
+            "long-strike touch",
+        ]
+        steps: list[Dict[str, Any]] = []
+        prior_target = 0
+        for index, required_closed_contracts in enumerate(cumulative_targets):
+            incremental_contracts = max(required_closed_contracts - prior_target, 0)
+            prior_target = required_closed_contracts
+            steps.append(
+                {
+                    "label": labels[index],
+                    "trigger_level": levels[index],
+                    "required_closed_contracts": required_closed_contracts,
+                    "incremental_contracts": incremental_contracts,
+                    "comparison": comparison,
+                }
+            )
+        return steps
+
+    @staticmethod
+    def _is_trigger_crossed(current_spx: float, trigger_level: float, *, is_call: bool) -> bool:
+        return current_spx >= trigger_level if is_call else current_spx <= trigger_level
 
     @staticmethod
     def _derive_kairos_thesis_status(current_structure: str, below_vwap: bool) -> tuple[str, str]:
@@ -818,24 +1205,39 @@ class OpenTradeManager:
         if not chain_summary.get("success"):
             return None
         option_type = self._coerce_text(trade.get("option_type"), fallback="Put Credit Spread")
-        contracts = chain_summary.get("calls") if "call" in option_type.lower() else chain_summary.get("puts")
-        if not isinstance(contracts, list):
-            return None
-        strike_lookup = {round(float(item.get("strike") or 0.0), 2): item for item in contracts if self._coerce_float(item.get("strike")) is not None}
+        prepared_chain = (shared_context.get("prepared_option_chains") or {}).get(expiration.isoformat()) or {}
+        strike_lookup = prepared_chain.get("calls_by_strike") if "call" in option_type.lower() else prepared_chain.get("puts_by_strike")
+        if not isinstance(strike_lookup, dict):
+            contracts = chain_summary.get("calls") if "call" in option_type.lower() else chain_summary.get("puts")
+            if not isinstance(contracts, list):
+                return None
+            strike_lookup = {round(float(item.get("strike") or 0.0), 2): item for item in contracts if self._coerce_float(item.get("strike")) is not None}
         short_leg = strike_lookup.get(round(float(trade.get("short_strike") or 0.0), 2))
         long_leg = strike_lookup.get(round(float(trade.get("long_strike") or 0.0), 2))
         if not short_leg or not long_leg:
             return None
-        short_mark = self._option_mark(short_leg)
-        long_mark = self._option_mark(long_leg)
+        short_mark = self._option_executable_price(short_leg, side="buy")
+        long_mark = self._option_executable_price(long_leg, side="sell")
         if short_mark is None or long_mark is None:
             return None
         return round(max(short_mark - long_mark, 0.0), 2)
+
+    def _option_executable_price(self, contract: Dict[str, Any], *, side: str) -> float | None:
+        if side == "buy":
+            ask = to_float(contract.get("ask"))
+            if ask is not None:
+                return ask
+        if side == "sell":
+            bid = to_float(contract.get("bid"))
+            if bid is not None:
+                return bid
+        return self._option_mark(contract)
 
     def _estimate_live_expected_move_from_chain(
         self,
         *,
         chain_summary: Dict[str, Any] | None,
+        prepared_chain: Dict[str, Any] | None = None,
         spot: float,
         system_name: str,
         expiration_date: date | None,
@@ -849,8 +1251,33 @@ class OpenTradeManager:
                 "contracts_label": "—",
             }
 
-        normalized_puts = self._normalize_live_contracts(chain_summary.get("puts") or [])
-        normalized_calls = self._normalize_live_contracts(chain_summary.get("calls") or [])
+        system_key = "kairos" if normalize_system_name(system_name) == "Kairos" else "apollo"
+        prepared_expected_moves = (prepared_chain or {}).get("expected_move_by_system") or {}
+        cached_details = prepared_expected_moves.get(system_key)
+        if isinstance(cached_details, dict) and cached_details:
+            return dict(cached_details)
+
+        normalized_puts = (prepared_chain or {}).get("normalized_puts") or self._normalize_live_contracts(chain_summary.get("puts") or [])
+        normalized_calls = (prepared_chain or {}).get("normalized_calls") or self._normalize_live_contracts(chain_summary.get("calls") or [])
+        return self._build_expected_move_details_from_normalized(
+            normalized_puts=normalized_puts,
+            normalized_calls=normalized_calls,
+            spot=spot,
+            system_name=system_name,
+            expiration_date=expiration_date,
+            evaluation_date=evaluation_date,
+        )
+
+    def _build_expected_move_details_from_normalized(
+        self,
+        *,
+        normalized_puts: List[Dict[str, Any]],
+        normalized_calls: List[Dict[str, Any]],
+        spot: float,
+        system_name: str,
+        expiration_date: date | None,
+        evaluation_date: date,
+    ) -> Dict[str, Any]:
         selected_put = self._find_live_contract_at_or_below_strike(normalized_puts, spot) or self._find_nearest_live_contract(normalized_puts, spot)
         selected_call = self._find_live_contract_at_or_above_strike(normalized_calls, spot) or self._find_nearest_live_contract(normalized_calls, spot)
         put_anchor = self._option_mark(selected_put or {}) if selected_put is not None else 0.0
@@ -1176,6 +1603,15 @@ class OpenTradeManager:
     def _send_management_alert(
         self, trade: Dict[str, Any] | None, record: Dict[str, Any], payload: Dict[str, Any], now: datetime
     ) -> Dict[str, Any]:
+        trade_mode = str(record.get("trade_mode") or (trade or {}).get("trade_mode") or "real").strip().lower()
+        if trade_mode != "real":
+            return {
+                "sent": False,
+                "error": "",
+                "priority": int(payload.get("priority") or 0),
+                "alert_type": payload.get("alert_type"),
+                "sent_at": None,
+            }
         title = str(payload.get("title") or "").strip()
         message = str(payload.get("message") or "").strip()
         priority = int(payload.get("priority") or 0)
@@ -1322,6 +1758,11 @@ class OpenTradeManager:
 
     def _format_date(self, value: date | None) -> str:
         return value.isoformat() if value is not None else "—"
+
+    def _format_expiration_label(self, value: date | None) -> str:
+        if value is None:
+            return "—"
+        return value.strftime("%a %Y-%m-%d")
 
     def _format_datetime(self, value: datetime | None) -> str:
         if value is None:

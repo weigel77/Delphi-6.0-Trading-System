@@ -1,34 +1,50 @@
 {% macro render_nav_button(label, href, key, active_page, secondary=false) -%}
-    {% set is_active = active_page == key or (key == 'journal' and active_page in ['journal', 'real-trades', 'simulated-trades']) %}
+    {% set is_active = active_page == key or (key == 'journal' and active_page in ['journal', 'real-trades', 'simulated-trades', 'talos-trades']) %}
     <a class="button-link{% if secondary %} button-link-secondary{% endif %}{% if is_active %} button-link-active{% endif %}" href="{{ href }}" data-delphi-nav="{{ key }}"{% if is_active %} aria-current="page"{% endif %}{% if key in ['apollo', 'kairos'] %} data-refresh-market-status="true"{% endif %}>{{ label }}</a>
 {%- endmacro %}
 
-{% macro render_delphi_header(active_page, page_heading, page_copy, page_kicker='Delphi 4.3 Dev', page_meta='Delphi workflow shell.', page_version='Version 4.3 Dev', header_variant='subpage', menu_status=None) -%}
+{% macro render_delphi_header(active_page, page_heading, page_copy, page_kicker='Delphi 7.2.15 Local', page_meta='Delphi workflow shell.', page_version='Version 7.2.15', header_variant='subpage', menu_status=None) -%}
     {% set routes = delphi_routes if delphi_routes is defined and delphi_routes else {} %}
+    {% set header_icons = {
+        'management': 'icons/delphi-icon.png',
+        'research': 'icons/delphi-icon.png',
+        'apollo': 'icons/apollo-icon.png',
+        'kairos': 'icons/kairos-icon.png',
+        'talos': 'icons/talos-icon.png',
+        'journal': 'icons/journal-icon.png',
+        'performance': 'icons/performance-icon.png',
+    } %}
+    {% set header_icon = header_icons.get(active_page) %}
     <img class="delphi-header-backdrop-image" src="{{ url_for('static', filename='delphi-hero.svg') }}" alt="" aria-hidden="true">
     <div class="delphi-header-backdrop"></div>
     <div class="delphi-header-content">
         <div class="delphi-header-top">
             <div class="delphi-header-brand">
-                <div class="hero-emblem delphi-header-emblem" aria-hidden="true">
-                    <svg viewBox="0 0 120 120" role="presentation">
-                        <defs>
-                            <linearGradient id="delphi-header-fill" x1="0" x2="1" y1="0" y2="1">
-                                <stop offset="0%" stop-color="#d7e8ff" />
-                                <stop offset="100%" stop-color="#58a6ff" />
-                            </linearGradient>
-                        </defs>
-                        <circle cx="60" cy="60" r="55" fill="rgba(255,255,255,0.08)" stroke="rgba(214,230,255,0.55)" stroke-width="2" />
-                        <path d="M36 83c-7-10-11-21-11-35 0-12 4-24 11-34" fill="none" stroke="rgba(215,232,255,0.5)" stroke-width="4" stroke-linecap="round" />
-                        <path d="M84 83c7-10 11-21 11-35 0-12-4-24-11-34" fill="none" stroke="rgba(215,232,255,0.5)" stroke-width="4" stroke-linecap="round" />
-                        <path d="M43 77h34" stroke="url(#delphi-header-fill)" stroke-width="4" stroke-linecap="round" />
-                        <path d="M48 77V49m12 28V43m12 34V53" stroke="url(#delphi-header-fill)" stroke-width="3.5" stroke-linecap="round" />
-                        <path d="M42 47h36l-18-12-18 12Z" fill="url(#delphi-header-fill)" stroke="#d7e8ff" stroke-width="1.6" stroke-linejoin="round" />
-                        <path d="M35 31c9-6 17-9 25-9 8 0 16 3 25 9" fill="none" stroke="rgba(215,232,255,0.4)" stroke-width="2.4" stroke-linecap="round" />
-                    </svg>
-                </div>
+                {% if header_icon %}
+                    <div class="hero-emblem delphi-header-emblem delphi-header-emblem-image-shell" aria-hidden="true">
+                        <img class="delphi-header-emblem-image" src="{{ url_for('static', filename=header_icon) }}" alt="">
+                    </div>
+                {% else %}
+                    <div class="hero-emblem delphi-header-emblem" aria-hidden="true">
+                        <svg viewBox="0 0 120 120" role="presentation">
+                            <defs>
+                                <linearGradient id="delphi-header-fill" x1="0" x2="1" y1="0" y2="1">
+                                    <stop offset="0%" stop-color="#d7e8ff" />
+                                    <stop offset="100%" stop-color="#58a6ff" />
+                                </linearGradient>
+                            </defs>
+                            <circle cx="60" cy="60" r="55" fill="rgba(255,255,255,0.08)" stroke="rgba(214,230,255,0.55)" stroke-width="2" />
+                            <path d="M36 83c-7-10-11-21-11-35 0-12 4-24 11-34" fill="none" stroke="rgba(215,232,255,0.5)" stroke-width="4" stroke-linecap="round" />
+                            <path d="M84 83c7-10 11-21 11-35 0-12-4-24-11-34" fill="none" stroke="rgba(215,232,255,0.5)" stroke-width="4" stroke-linecap="round" />
+                            <path d="M43 77h34" stroke="url(#delphi-header-fill)" stroke-width="4" stroke-linecap="round" />
+                            <path d="M48 77V49m12 28V43m12 34V53" stroke="url(#delphi-header-fill)" stroke-width="3.5" stroke-linecap="round" />
+                            <path d="M42 47h36l-18-12-18 12Z" fill="url(#delphi-header-fill)" stroke="#d7e8ff" stroke-width="1.6" stroke-linejoin="round" />
+                            <path d="M35 31c9-6 17-9 25-9 8 0 16 3 25 9" fill="none" stroke="rgba(215,232,255,0.4)" stroke-width="2.4" stroke-linecap="round" />
+                        </svg>
+                    </div>
+                {% endif %}
                 <div>
-                    <p class="hero-kicker delphi-header-kicker">{{ app_identity.page_kicker if hosted_mode or page_kicker in ['Delphi 2.0', 'Delphi', 'Delphi 4.3 Dev'] else page_kicker }}</p>
+                    <p class="hero-kicker delphi-header-kicker">{{ app_identity.page_kicker if page_kicker in ['Delphi 2.0', 'Delphi', 'Delphi 4.3 Dev', 'Delphi 6.4 Local', 'Delphi 7.0 Local', 'Delphi 7.2.9 Local', 'Delphi 7.2.14 Local', 'Delphi 7.2.15 Local'] else page_kicker }}</p>
                     <h1>{{ page_heading }}</h1>
                     <p class="hero-copy delphi-header-copy">{{ page_copy }}</p>
                 </div>
@@ -46,7 +62,7 @@
                             <p class="delphi-status-card-meta">{{ card.meta }}</p>
                             {% if card.label == 'Schwab connection' and menu_status.connection_requires_login %}
                                 <div class="hero-status-action delphi-home-connect">
-                                    <a class="button-link" href="{{ url_for('login') }}">Connect</a>
+                                    <a class="button-link" href="{{ routes.get('schwab_login', url_for('login')) }}">Connect</a>
                                 </div>
                             {% endif %}
                         </article>
@@ -54,44 +70,40 @@
                 </div>
             {% endif %}
 
-            <div class="delphi-header-meta{% if hosted_mode %} delphi-header-meta-hosted{% endif %}">
-                <span class="hero-version">{{ app_identity.version_label if hosted_mode or page_version in ['Version 2.0', 'Version 4.3 Dev'] else page_version }}</span>
-                {% if hosted_mode %}
-                    <div class="delphi-header-hosted-auth-block">
-                        <p class="delphi-header-status-label">Hosted Session</p>
-                        <p class="delphi-header-status-value">Authenticated</p>
-                        <p class="delphi-header-status-meta">{{ hosted_identity.display_name or hosted_identity.email or 'Approved User' }}</p>
-                    </div>
-                    {% if hosted_sign_out_url is defined and hosted_sign_out_url %}
-                        <form method="post" action="{{ hosted_sign_out_url }}" class="delphi-header-logout-form">
-                            <button type="submit" class="button-link button-link-secondary button-link-small">Log Out</button>
-                        </form>
+            <div class="delphi-header-meta">
+                <span class="hero-version">{{ app_identity.version_label if page_version in ['Version 2.0', 'Version 4.3 Dev', 'Version 6.4', 'Version 7.0', 'Version 7.2.9', 'Version 7.2.14', 'Version 7.2.15'] else page_version }}</span>
+                <p class="subtle">{{ page_meta }}</p>
+                <div class="delphi-header-actions">
+                    <a class="button-link button-link-secondary button-link-small" href="{{ routes.get('notifications') }}">Notifications</a>
+                    {% if routes.get('schwab_logout') %}
+                    <form method="post" action="{{ routes.get('schwab_logout') }}">
+                        <button type="submit" class="button-link button-link-secondary button-link-small">Schwab Logout</button>
+                    </form>
                     {% endif %}
-                {% else %}
-                    <p class="subtle">{{ page_meta }}</p>
-                    <div class="delphi-header-actions">
-                        <button
-                            type="button"
-                            class="button-link button-link-secondary button-link-small"
-                            id="delphi-text-status-button"
-                            data-text-status-url="{{ routes.get('text_status', url_for('text_status_api')) }}"
-                        >Text Status</button>
-                        <span id="delphi-text-status-feedback" class="delphi-header-feedback subtle" aria-live="polite"></span>
-                    </div>
-                {% endif %}
+                    <button
+                        type="button"
+                        class="button-link button-link-secondary button-link-small"
+                        id="delphi-text-status-button"
+                        data-text-status-url="{{ routes.get('text_status', url_for('text_status_api')) }}"
+                    >Text Status</button>
+                    <span id="delphi-text-status-feedback" class="delphi-header-feedback subtle" aria-live="polite"></span>
+                </div>
             </div>
         </div>
 
         <div class="delphi-header-nav" aria-label="Primary navigation">
+            {{ render_nav_button('Home', routes.get('management', url_for('open_trade_management_page')), 'management', active_page) }}
             {{ render_nav_button('Research', routes.get('research', url_for('research')), 'research', active_page) }}
             {{ render_nav_button('Run Apollo', routes.get('apollo', url_for('run_apollo', autorun=1)), 'apollo', active_page) }}
             {{ render_nav_button('Run Kairos', routes.get('kairos', url_for('kairos_live_page')), 'kairos', active_page) }}
-            {{ render_nav_button('Manage Trades', routes.get('management', url_for('open_trade_management_page')), 'management', active_page) }}
+            {% if routes.get('talos') %}
+            {{ render_nav_button('Talos', routes.get('talos'), 'talos', active_page) }}
+            {% endif %}
             {{ render_nav_button('Performance', routes.get('performance', url_for('performance_dashboard')), 'performance', active_page) }}
             {{ render_nav_button('Journal', routes.get('journal', url_for('trade_dashboard', trade_mode='real')), 'journal', active_page) }}
         </div>
 
-        {% if not hosted_mode and header_status_items is defined and header_status_items %}
+        {% if header_status_items is defined and header_status_items %}
             <div class="delphi-header-status-strip" aria-label="Hosted status summary">
                 {% for item in header_status_items %}
                     <article class="delphi-header-status-item delphi-header-status-item-{{ item.tone|default('neutral') }}">
@@ -105,69 +117,6 @@
             </div>
         {% endif %}
 
-        {% if not hosted_mode %}
-        <script>
-            (() => {
-                document.querySelectorAll('[data-refresh-market-status="true"]').forEach((link) => {
-                    if (link.dataset.refreshBound === 'true') {
-                        return;
-                    }
-                    link.dataset.refreshBound = 'true';
-                    link.addEventListener('click', () => {
-                        try {
-                            const url = new URL(link.href, window.location.origin);
-                            url.searchParams.set('header_refresh', Date.now().toString());
-                            link.href = url.toString();
-                        } catch (error) {
-                            // Ignore malformed hrefs and preserve the original navigation path.
-                        }
-                    });
-                });
-
-                const button = document.getElementById('delphi-text-status-button');
-                const feedback = document.getElementById('delphi-text-status-feedback');
-                const displayName = {{ app_identity.display_name|tojson }};
-                if (!button || button.dataset.bound === 'true') {
-                    return;
-                }
-
-                const setFeedback = (text, tone = 'neutral') => {
-                    if (!feedback) {
-                        return;
-                    }
-                    feedback.textContent = text || '';
-                    feedback.dataset.tone = tone;
-                };
-
-                button.dataset.bound = 'true';
-                button.addEventListener('click', async () => {
-                    const originalLabel = button.textContent;
-                    button.disabled = true;
-                    button.textContent = 'Sending...';
-                    setFeedback(`Sending ${displayName} test alert...`, 'neutral');
-
-                    try {
-                        const response = await fetch(button.dataset.textStatusUrl, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                            },
-                            body: JSON.stringify({ source: 'header-button' }),
-                        });
-                        const payload = await response.json().catch(() => ({}));
-                        if (!response.ok || !payload.ok) {
-                            throw new Error(payload.error || 'Unable to send Pushover test alert.');
-                        }
-                        setFeedback(payload.message || 'Pushover test alert sent.', 'success');
-                    } catch (error) {
-                        setFeedback(error.message || 'Unable to send Pushover test alert.', 'error');
-                    } finally {
-                        button.disabled = false;
-                        button.textContent = originalLabel;
-                    }
-                });
-            })();
-        </script>
-        {% endif %}
+        <script src="{{ url_for('static', filename='delphi_header.js') }}" defer data-delphi-display-name="{{ app_identity.display_name|e }}"></script>
     </div>
 {%- endmacro %}

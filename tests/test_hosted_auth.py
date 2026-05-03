@@ -167,7 +167,7 @@ class HostedAuthTest(unittest.TestCase):
             runtime_config = get_runtime_app_config(app)
             provider = app.extensions["market_data_service"].provider
 
-            self.assertEqual(runtime_config.schwab_redirect_uri, "https://delphi-hosted.example.com/callback")
+            self.assertEqual(runtime_config.schwab_redirect_uri, "https://eigeltrade.com/callback")
             self.assertEqual(runtime_config.schwab_token_path, "supabase://hosted_runtime_state/schwab_oauth_token/default")
             self.assertIsInstance(provider.auth_service.token_store, SupabaseTokenRepository)
             self.assertEqual(provider.auth_service.config.schwab_redirect_uri, runtime_config.schwab_redirect_uri)
@@ -180,4 +180,7 @@ class HostedAuthTest(unittest.TestCase):
             params = parse_qs(parsed.query)
             self.assertEqual(parsed.scheme, "https")
             self.assertEqual(parsed.netloc, "api.schwabapi.com")
-            self.assertEqual(params["redirect_uri"], ["https://delphi-hosted.example.com/callback"])
+            self.assertEqual(params["redirect_uri"], ["https://eigeltrade.com/callback"])
+            self.assertNotIn("127.0.0.1", location)
+            self.assertNotIn("localhost", location)
+            self.assertNotIn(":5001", location)

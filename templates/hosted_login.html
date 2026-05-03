@@ -3,39 +3,215 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ page_browser_title }} | {{ app_identity.display_name }}</title>
+    <title>{{ page_browser_title }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
 </head>
-<body class="hosted-shell-body">
-    <main class="hosted-shell-layout">
-        <section class="hosted-shell-header-card hosted-login-card">
-            <div class="hosted-shell-panel-header">
+<body>
+    <main class="page-shell">
+        <section class="hero-card delphi-header-card delphi-shared-header delphi-header-card-subpage">
+            <div class="delphi-header-content">
+                <div class="delphi-header-top">
+                    <div class="delphi-header-brand">
+                        <div>
+                            <p class="hero-kicker delphi-header-kicker">Delphi 7.2.15 Hosted</p>
+                            <h1>{{ page_heading }}</h1>
+                            <p class="hero-copy delphi-header-copy">{{ page_copy }}</p>
+                        </div>
+                    </div>
+                    <div class="delphi-header-meta">
+                        <span class="hero-version">Version 7.2.15</span>
+                        <p class="subtle">Hosted startup gate for Delphi private access.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="panel trade-dashboard-panel">
+            <div class="result-header">
                 <div>
-                    <p class="hosted-shell-kicker">{{ app_identity.page_kicker }}</p>
-                    <h1>{{ page_heading }}</h1>
-                    <p class="hosted-shell-copy">{{ page_copy }}</p>
+                    <h2>Hosted Access</h2>
+                    <p class="subtle">Sign in with the approved hosted email before starting Schwab authentication. Approved access is currently limited to beigel77@gmail.com.</p>
                 </div>
             </div>
 
-            <form method="post" action="{{ url_for('hosted_login_entry') }}" class="hosted-login-form">
+            {% if error_message %}
+                <div class="message message-error">{{ error_message }}</div>
+            {% endif %}
+
+            <form method="post" action="{{ login_action_url or url_for('hosted_login_entry') }}" class="trade-import-form">
                 <input type="hidden" name="next" value="{{ next_path }}">
-                <div class="hosted-login-grid">
+                <div class="trade-import-grid">
                     <div class="field-group">
-                        <label for="hosted-email">Email</label>
-                        <input id="hosted-email" name="email" type="email" value="{{ form_email }}" autocomplete="email" required>
+                        <label for="hosted-email">Hosted Email</label>
+                        <input id="hosted-email" name="email" type="email" autocomplete="email" value="{{ form_email }}" required>
                     </div>
                     <div class="field-group">
                         <label for="hosted-password">Password</label>
                         <input id="hosted-password" name="password" type="password" autocomplete="current-password" required>
                     </div>
                 </div>
-                {% if error_message %}
-                    <div class="message message-warning hosted-shell-error-message">{{ error_message }}</div>
-                {% endif %}
-                <div class="hosted-shell-toolbar-actions">
-                    <button type="submit">Sign In</button>
+                <div class="actions trade-form-actions">
+                    <button type="submit">Continue to Hosted Delphi</button>
+                    {% if alternate_login_url %}
+                    <a class="button-link button-link-secondary" href="{{ alternate_login_url }}">Switch to {{ alternate_branch|title }}</a>
+                    {% endif %}
                 </div>
             </form>
+        </section>
+    </main>
+</body>
+</html><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ page_browser_title }} | {{ app_identity.display_name }}</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            font-family: Arial, Helvetica, sans-serif;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: #101318;
+            color: #f3f4f6;
+        }
+
+        main {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 32px 16px;
+        }
+
+        .login-card {
+            width: 100%;
+            max-width: 420px;
+            background: #1a1f27;
+            border: 1px solid #2b3340;
+            border-radius: 12px;
+            padding: 32px 24px;
+        }
+
+        h1 {
+            margin: 0 0 8px;
+            font-size: 32px;
+            letter-spacing: 0.08em;
+        }
+
+        p {
+            margin: 0;
+            color: #c8d0da;
+            line-height: 1.5;
+        }
+
+        .login-meta {
+            margin-top: 8px;
+            font-size: 14px;
+        }
+
+        form {
+            display: grid;
+            gap: 16px;
+            margin-top: 24px;
+        }
+
+        label {
+            display: grid;
+            gap: 8px;
+            font-size: 14px;
+            color: #e5e7eb;
+        }
+
+        input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #3b4554;
+            border-radius: 8px;
+            background: #0f141a;
+            color: #f9fafb;
+            font: inherit;
+        }
+
+        button {
+            width: 100%;
+            padding: 12px;
+            border: 0;
+            border-radius: 8px;
+            background: #d1d5db;
+            color: #111827;
+            font: inherit;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .error-message {
+            padding: 12px;
+            border-radius: 8px;
+            background: #3a1d1d;
+            border: 1px solid #6b2626;
+            color: #fecaca;
+            font-size: 14px;
+        }
+
+        .login-footer {
+            margin-top: 20px;
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            align-items: center;
+            font-size: 13px;
+            color: #9ca3af;
+        }
+
+        .login-footer a {
+            color: #d1d5db;
+            text-decoration: none;
+        }
+
+        .login-footer a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <section class="login-card" aria-labelledby="desktop-login-title">
+            <h1 id="desktop-login-title">DELPHI</h1>
+            <p>Desktop hosted login</p>
+            <p class="login-meta">{{ app_identity.page_kicker }}</p>
+
+            <form method="post" action="{{ login_action_url }}">
+                <input type="hidden" name="next" value="{{ next_path }}">
+
+                <label for="hosted-email">
+                    <span>Email</span>
+                    <input id="hosted-email" name="email" type="email" value="{{ form_email }}" autocomplete="email" required>
+                </label>
+
+                <label for="hosted-password">
+                    <span>Password</span>
+                    <input id="hosted-password" name="password" type="password" autocomplete="current-password" required>
+                </label>
+
+                {% if error_message %}
+                    <div class="error-message">{{ error_message }}</div>
+                {% endif %}
+
+                <button type="submit">Login</button>
+            </form>
+
+            <div class="login-footer">
+                <span>{{ app_identity.version_label }}</span>
+                <a href="{{ alternate_login_url }}">Switch to {{ alternate_branch|title }}</a>
+            </div>
         </section>
     </main>
 </body>

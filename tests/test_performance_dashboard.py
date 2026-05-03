@@ -2,6 +2,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
+from datetime import date, timedelta
 from pathlib import Path
 
 from app import create_app
@@ -75,6 +76,7 @@ class PerformanceDashboardTest(unittest.TestCase):
             system_name="Apollo",
             candidate_profile="Standard",
             trade_date="2026-04-01",
+            expiration_date="2026-04-01",
             spx_at_entry="6500",
             vix_at_entry="17.5",
             macro_grade="None",
@@ -88,6 +90,7 @@ class PerformanceDashboardTest(unittest.TestCase):
             system_name="Kairos",
             candidate_profile="",
             trade_date="2026-04-02",
+            expiration_date="2026-04-02",
             spx_at_entry="6500",
             vix_at_entry="22.5",
             macro_grade="Major",
@@ -103,6 +106,7 @@ class PerformanceDashboardTest(unittest.TestCase):
             system_name="Apollo",
             candidate_profile="Fortress",
             trade_date="2026-04-03",
+            expiration_date="2026-04-03",
             spx_at_entry="6500",
             vix_at_entry="20",
             macro_grade="Minor",
@@ -117,12 +121,83 @@ class PerformanceDashboardTest(unittest.TestCase):
             candidate_profile="Aggressive",
             status="open",
             trade_date="2026-04-04",
+            expiration_date="2026-04-04",
             macro_grade="None",
             structure_grade="Good",
             actual_entry_credit="1.25",
             actual_exit_value="",
             close_reason="",
         )
+        self._create_trade(
+            "talos",
+            system_name="Kairos",
+            candidate_profile="Prime",
+            trade_date="2026-04-04",
+            expiration_date="2026-04-04",
+            spx_at_entry="6500",
+            vix_at_entry="19",
+            macro_grade="None",
+            structure_grade="Good",
+            expected_move="28",
+            actual_entry_credit="1.6",
+            actual_exit_value="0.4",
+        )
+
+    def test_timeframe_filters_use_expiration_date_instead_of_trade_date(self):
+        today = date.today()
+        older_than_year = today - timedelta(days=500)
+        within_year = today - timedelta(days=30)
+
+        payload = build_dashboard_payload(
+            [
+                build_performance_record(
+                    {
+                        "id": 101,
+                        "trade_number": 101,
+                        "trade_mode": "real",
+                        "system_name": "Apollo",
+                        "candidate_profile": "Standard",
+                        "status": "closed",
+                        "trade_date": today.isoformat(),
+                        "expiration_date": older_than_year.isoformat(),
+                        "gross_pnl": 150.0,
+                        "actual_entry_credit": 1.5,
+                        "spread_width": 5.0,
+                        "contracts": 1,
+                    }
+                ),
+                build_performance_record(
+                    {
+                        "id": 102,
+                        "trade_number": 102,
+                        "trade_mode": "real",
+                        "system_name": "Apollo",
+                        "candidate_profile": "Standard",
+                        "status": "closed",
+                        "trade_date": older_than_year.isoformat(),
+                        "expiration_date": within_year.isoformat(),
+                        "gross_pnl": 90.0,
+                        "actual_entry_credit": 1.25,
+                        "spread_width": 5.0,
+                        "contracts": 1,
+                    }
+                ),
+            ],
+            filters={
+                "system": ["apollo", "kairos", "aegis"],
+                "profile": ["legacy", "aggressive", "fortress", "standard", "prime", "subprime"],
+                "result": ["win", "loss", "black-swan", "scratched"],
+                "trade_mode": ["real"],
+                "macro_grade": ["none", "minor", "major"],
+                "structure_grade": ["good", "neutral", "poor"],
+                "timeframe": ["1-yr"],
+            },
+        )
+
+        self.assertEqual(payload["records_total"], 2)
+        self.assertEqual(payload["records_filtered"], 1)
+        self.assertEqual(len(payload["charts"]["equity_curve"]["points"]), 1)
+        self.assertEqual(payload["charts"]["equity_curve"]["points"][0]["label"], within_year.isoformat())
 
     def test_performance_page_route_loads_and_renders_chart_containers(self):
         response = self.client.get("/performance")
@@ -135,52 +210,51 @@ class PerformanceDashboardTest(unittest.TestCase):
         self.assertIn(b"data-performance-url=\"/performance/data\"", response.data)
         self.assertIn(b"System", response.data)
         self.assertIn(b"Trade Mode", response.data)
+        self.assertIn(b"Talos", response.data)
         self.assertIn(b"performance-line-popup", response.data)
-        self.assertIn(b"Delphi 4.3 Learning Metrics", response.data)
+        self.assertIn(b"Performance Learning Metrics", response.data)
         self.assertIn(b"id=\"credit-efficiency-system-panel\"", response.data)
         self.assertIn(b"id=\"credit-efficiency-profile-panel\"", response.data)
         self.assertIn(b"id=\"credit-efficiency-vix-panel\"", response.data)
-        self.assertIn(b"Best EM Safety Distance by Profile", response.data)
-        self.assertIn(b"id=\"profile-em-safety-distance-panel\"", response.data)
-        self.assertIn(b"id=\"profile-em-safety-real-only\"", response.data)
-        self.assertIn(b"id=\"profile-em-safety-real-plus-simulated\"", response.data)
+        self.assertIn(b"EM Performance by Profile", response.data)
+        self.assertIn(b"id=\"profile-em-performance-panel\"", response.data)
+        self.assertIn(b"Custom Range", response.data)
+        self.assertIn(b'id="performance-start-date"', response.data)
+        self.assertIn(b'id="performance-end-date"', response.data)
+        self.assertIn(b"Distance Efficiency Score", response.data)
+        self.assertIn(b"id=\"distance-efficiency-panel\"", response.data)
+        self.assertIn(b"Time of Entry Edge", response.data)
+        self.assertIn(b"id=\"time-of-entry-edge-panel\"", response.data)
+        self.assertIn(b"Exit Efficiency", response.data)
+        self.assertIn(b"id=\"exit-efficiency-panel\"", response.data)
+        self.assertIn(b"VIX Regime Performance", response.data)
+        self.assertIn(b"id=\"vix-regime-performance-panel\"", response.data)
+        self.assertIn(b"Expected Move Deviation / Breach Analysis", response.data)
+        self.assertIn(b"id=\"expected-move-breach-panel\"", response.data)
         self.assertIn(b"Safety Ratio Curve Summary", response.data)
         self.assertIn(b"id=\"safety-ratio-expectancy-chart\"", response.data)
         self.assertIn(b"id=\"safety-ratio-bucket-summary\"", response.data)
-        self.assertIn(b"id=\"safety-ratio-summary-details\"", response.data)
-        self.assertIn(b"Learning Audit", response.data)
-        self.assertIn(b"id=\"learning-audit-details\"", response.data)
-        self.assertIn(b"id=\"learning-audit-panel\"", response.data)
-        self.assertNotIn(b"Live vs Simulated", response.data)
-        self.assertNotIn(b"Adaptive Safety Guidance", response.data)
-        self.assertNotIn(b"EM Policy Guidance", response.data)
-        self.assertNotIn(b"Best EM Range by VIX", response.data)
-        self.assertNotIn(b"Fallback Impact", response.data)
-        self.assertNotIn(b"Learning Status", response.data)
-        self.assertNotIn(b"Result Classification Audit", response.data)
-        self.assertNotIn(b"id=\"trade-mode-learning-grid\"", response.data)
-        self.assertNotIn(b"id=\"adaptive-safety-guidance\"", response.data)
-        self.assertNotIn(b"id=\"em-policy-guidance\"", response.data)
-        self.assertNotIn(b"id=\"em-policy-vix-guidance\"", response.data)
-        self.assertNotIn(b"id=\"em-policy-fallback-impact\"", response.data)
-        self.assertNotIn(b"id=\"em-policy-learning-status\"", response.data)
-        self.assertNotIn(b"id=\"result-classification-audit\"", response.data)
-        self.assertNotIn(b"id=\"safety-ratio-summary-details\" open", response.data)
-        self.assertNotIn(b"id=\"learning-audit-details\" open", response.data)
-        self.assertIn(b"Premium collected divided by maximum theoretical risk at entry.", response.data)
-        self.assertNotIn(b"performance-line-tooltip", response.data)
-        self.assertNotIn(b"mouseenter", response.data)
-        self.assertNotIn(b"mouseleave", response.data)
-        self.assertIn(b'data-filter-group="trade_mode" value="real" checked', response.data)
-        self.assertIn(b'data-filter-group="trade_mode" value="simulated"', response.data)
-        self.assertNotIn(b'data-filter-group="trade_mode" value="simulated" checked', response.data)
+
+    def test_performance_data_route_filters_by_custom_expiration_date_range(self):
+        response = self.client.get(
+            "/performance/data?trade_mode__active=1&trade_mode=real&timeframe__active=1&timeframe=custom-range&start_date=2026-04-02&end_date=2026-04-03"
+        )
+
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["records_total"], 5)
+        self.assertEqual(payload["records_filtered"], 1)
+        self.assertEqual(payload["filters"]["start_date"], "2026-04-02")
+        self.assertEqual(payload["filters"]["end_date"], "2026-04-03")
+        self.assertEqual(payload["charts"]["equity_curve"]["points"][0]["label"], "2026-04-02")
 
     def test_performance_data_route_returns_expected_metrics_and_filters(self):
         response = self.client.get("/performance/data")
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        self.assertEqual(payload["records_total"], 4)
+        self.assertEqual(payload["records_total"], 5)
         self.assertEqual(payload["records_filtered"], 2)
         self.assertEqual(payload["filters"]["trade_mode"], ["real"])
         self.assertEqual(payload["metrics"]["totals"]["open_trades"], 0)
@@ -227,10 +301,13 @@ class PerformanceDashboardTest(unittest.TestCase):
         self.assertIn("em_policy", payload["learning"])
         self.assertIn("apollo", payload["learning"]["em_policy"])
         self.assertIn("kairos", payload["learning"]["em_policy"])
-        self.assertIn("profile_em_safety_distance", payload["learning"])
-        self.assertEqual(payload["learning"]["profile_em_safety_distance"]["default_view"], "real_only")
-        self.assertFalse(payload["learning"]["profile_em_safety_distance"]["real_only"]["include_simulated"])
-        self.assertTrue(payload["learning"]["profile_em_safety_distance"]["real_plus_simulated"]["include_simulated"])
+        self.assertIn("profile_em_performance", payload["learning"])
+        self.assertIn("distance_efficiency", payload["learning"])
+        self.assertIn("time_of_entry_edge", payload["learning"])
+        self.assertIn("exit_efficiency", payload["learning"])
+        self.assertIn("vix_regime_performance", payload["learning"])
+        self.assertIn("expected_move_breach_analysis", payload["learning"])
+        self.assertGreaterEqual(len(payload["learning"]["data_limitations"]), 1)
         self.assertIn("safety_ratio_expectancy_curve", payload["charts"])
 
     def test_performance_data_route_respects_explicitly_empty_filter_group(self):
@@ -241,7 +318,7 @@ class PerformanceDashboardTest(unittest.TestCase):
         self.assertEqual(payload["filters"]["profile"], [])
         self.assertEqual(payload["records_filtered"], 0)
 
-    def test_profile_em_safety_distance_payload_separates_real_only_from_real_plus_simulated(self):
+    def test_profile_em_performance_uses_profile_specific_intervals(self):
         payload = build_dashboard_payload(
             [
                 build_performance_record(
@@ -282,7 +359,7 @@ class PerformanceDashboardTest(unittest.TestCase):
                     {
                         "id": 63,
                         "trade_number": 63,
-                        "trade_mode": "simulated",
+                        "trade_mode": "real",
                         "system_name": "Apollo",
                         "candidate_profile": "Fortress",
                         "status": "closed",
@@ -299,7 +376,7 @@ class PerformanceDashboardTest(unittest.TestCase):
                     {
                         "id": 64,
                         "trade_number": 64,
-                        "trade_mode": "simulated",
+                        "trade_mode": "real",
                         "system_name": "Apollo",
                         "candidate_profile": "Fortress",
                         "status": "closed",
@@ -323,22 +400,15 @@ class PerformanceDashboardTest(unittest.TestCase):
             },
         )
 
-        em_distance = payload["learning"]["profile_em_safety_distance"]
-        real_profiles = {item["profile"]: item for item in em_distance["real_only"]["profiles"]}
-        combined_profiles = {item["profile"]: item for item in em_distance["real_plus_simulated"]["profiles"]}
-        standard_high_vix = next(item for item in real_profiles["Standard"]["regimes"] if item["key"] == "vix_ge_19")
-        fortress_high_vix = next(item for item in combined_profiles["Fortress"]["regimes"] if item["key"] == "vix_ge_19")
+        profile_em = {item["profile"]: item for item in payload["learning"]["profile_em_performance"]["profiles"]}
 
-        self.assertEqual(em_distance["default_view"], "real_only")
-        self.assertIn("Standard", real_profiles)
-        self.assertNotIn("Fortress", real_profiles)
-        self.assertEqual(standard_high_vix["recommended_range"], "1.8-2.0x EM")
-        self.assertEqual(standard_high_vix["supporting_trade_count"], 2)
-        self.assertEqual(standard_high_vix["status"], "ready")
-        self.assertIn("Fortress", combined_profiles)
-        self.assertEqual(fortress_high_vix["recommended_range"], "2.2+x EM")
-        self.assertEqual(fortress_high_vix["supporting_trade_count"], 2)
-        self.assertEqual(fortress_high_vix["status"], "ready")
+        self.assertIn("Standard", profile_em)
+        self.assertIn("Fortress", profile_em)
+        self.assertEqual(profile_em["Standard"]["qualified_trade_count"], 2)
+        self.assertEqual(profile_em["Fortress"]["qualified_trade_count"], 2)
+        self.assertNotEqual(profile_em["Standard"]["interval_range"], profile_em["Fortress"]["interval_range"])
+        self.assertEqual(profile_em["Standard"]["buckets"][0]["trade_count"], 2)
+        self.assertEqual(profile_em["Fortress"]["buckets"][0]["trade_count"], 2)
 
     def test_performance_filters_change_metric_outputs_correctly(self):
         response = self.client.get("/performance/data?system=apollo&result=win&result=loss&result=black-swan&trade_mode=real&trade_mode=simulated&profile=legacy&profile=aggressive&profile=fortress&profile=standard&macro_grade=none&macro_grade=minor&macro_grade=major&structure_grade=good&structure_grade=neutral&structure_grade=poor")

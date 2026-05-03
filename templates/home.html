@@ -10,11 +10,12 @@
     {% from '_delphi_header_macros.html' import render_delphi_header with context %}
     {% set sync_panel = hosted_delphi4_sync_panel if hosted_delphi4_sync_panel is defined and hosted_delphi4_sync_panel else {} %}
     <main class="page-shell delphi-home-shell">
+        {% if sync_panel.visible %}
         <section class="hosted-shell-panel delphi4-sync-panel">
             <div class="hosted-shell-panel-header">
                 <div>
                     <p class="hosted-shell-kicker">Developer Utility</p>
-                    <h2>DEV PANEL — SYNC 4.3 DATA</h2>
+                    <h2>Sync New 4.3 Data</h2>
                 </div>
                 <p>Forced visible for debug render verification. This does not change backend permissions or sync behavior.</p>
             </div>
@@ -89,8 +90,9 @@
         </section>
 
         <script>
-            console.log('DEV PANEL rendered: SYNC 4.3 DATA');
+            console.log('Sync New 4.3 Data panel rendered');
         </script>
+        {% endif %}
 
         <section class="hero-card delphi-header-card delphi-shared-header delphi-header-card-subpage">
             {{ render_delphi_header(

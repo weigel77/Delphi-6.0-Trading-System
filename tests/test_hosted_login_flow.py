@@ -50,6 +50,14 @@ class _AuthResponse:
 
 
 class HostedLoginFlowTest(unittest.TestCase):
+    RAW_JS_FRAGMENTS = (
+        b"const toggle",
+        b"addEventListener(",
+        b"HTMLFormElement.prototype.submit",
+        b"querySelector(",
+        b"window.matchMedia(",
+    )
+
     def _create_hosted_app(self, temp_dir: str):
         return create_app(
             {
@@ -132,7 +140,119 @@ class HostedLoginFlowTest(unittest.TestCase):
 
             shell_response = client.get("/hosted/apollo")
             self.assertEqual(shell_response.status_code, 200)
-            self.assertIn(b"Apollo: Greek God of Prophecy and Part-Time Options Trader", shell_response.data)
+            self.assertIn(b"Apollo Engine", shell_response.data)
+
+    def test_hosted_mobile_login_route_preserves_mobile_branch_after_authentication(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = self._create_hosted_app(temp_dir)
+            app.extensions["hosted_session_authenticator"] = _FakeHostedSessionAuthenticator(
+                {
+                    ("bill@example.com", "secret123"): HostedBrowserSession(
+                        user_id="user-1",
+                        email="bill@example.com",
+                        display_name="Bill",
+                        access_token="bill-token",
+                        refresh_token="bill-refresh",
+                    )
+                }
+            )
+            app.extensions["request_identity_resolver"] = _CookieIdentityResolver(
+                {
+                    "bill-token": RequestIdentity(
+                        user_id="user-1",
+                        email="bill@example.com",
+                        display_name="Bill",
+                        authenticated=True,
+                        auth_source="supabase-hosted",
+                    )
+                }
+            )
+
+            client = app.test_client()
+            response = client.post("/hosted/login/mobile", data={"email": "bill@example.com", "password": "secret123", "next": "/hosted/apollo"}, follow_redirects=False)
+
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(response.headers["Location"], "/hosted/mobile/runs")
+            self.assertTrue(any("delphi_hosted_access_token=bill-token" in header for header in response.headers.getlist("Set-Cookie")))
+
+    def test_hosted_launch_page_exposes_desktop_and_mobile_login_targets_for_unauthenticated_users(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = self._create_hosted_app(temp_dir)
+
+            response = app.test_client().get("/hosted/launch?next=/hosted/apollo&view=mobile")
+
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(response.headers["Location"], "/hosted/login?view=mobile&next=/hosted/apollo")
+
+    def test_hosted_launch_page_uses_current_hosted_identity_for_authenticated_users(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = self._create_hosted_app(temp_dir)
+            app.extensions["request_identity_resolver"] = _CookieIdentityResolver(
+                {
+                    "bill-token": RequestIdentity(
+                        user_id="user-1",
+                        email="bill@example.com",
+                        display_name="Bill",
+                        authenticated=True,
+                        auth_source="supabase-hosted",
+                    )
+                }
+            )
+
+            client = app.test_client()
+            client.set_cookie("delphi_hosted_access_token", "bill-token")
+            response = client.get("/hosted/launch")
+
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(response.headers["Location"], "/hosted")
+
+    def test_hosted_desktop_login_page_renders_delphi_6_3_6_portal(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = self._create_hosted_app(temp_dir)
+
+            response = app.test_client().get("/hosted/login/desktop")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(b"Hosted Access", response.data)
+            self.assertIn(b"Delphi 7.2.15 Hosted", response.data)
+            self.assertIn(b"type=\"email\"", response.data)
+            self.assertIn(b"type=\"password\"", response.data)
+            self.assertIn(b"Continue to Hosted Delphi", response.data)
+            self.assertIn(b"beigel77@gmail.com", response.data)
+            self.assertIn(b'action="/hosted/login/desktop"', response.data)
+            self.assertNotIn(b"delphi-pyramid.png", response.data)
+            for fragment in self.RAW_JS_FRAGMENTS:
+                self.assertNotIn(fragment, response.data)
+
+    def test_hosted_mobile_login_page_renders_delphi_6_3_6_portal(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = self._create_hosted_app(temp_dir)
+
+            response = app.test_client().get("/hosted/login/mobile")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(b"Hosted Access", response.data)
+            self.assertIn(b"Delphi 7.2.15 Hosted", response.data)
+            self.assertIn(b"type=\"email\"", response.data)
+            self.assertIn(b"type=\"password\"", response.data)
+            self.assertIn(b"Continue to Hosted Delphi", response.data)
+            self.assertIn(b"beigel77@gmail.com", response.data)
+            self.assertIn(b'action="/hosted/login/mobile"', response.data)
+            self.assertNotIn(b"delphi-pyramid.png", response.data)
+            for fragment in self.RAW_JS_FRAGMENTS:
+                self.assertNotIn(fragment, response.data)
+
+    def test_hosted_login_pages_do_not_render_raw_javascript_fragments(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = self._create_hosted_app(temp_dir)
+            client = app.test_client()
+
+            for route in ("/hosted/login/desktop", "/hosted/login/mobile"):
+                response = client.get(route)
+
+                self.assertEqual(response.status_code, 200)
+                for fragment in self.RAW_JS_FRAGMENTS:
+                    self.assertNotIn(fragment, response.data)
 
     def test_hosted_login_route_denies_non_allowlisted_identity(self):
         with tempfile.TemporaryDirectory() as temp_dir:

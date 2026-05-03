@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2400 1400" role="img" aria-label="Delphi oracle symbol">
+  <defs>
+    <linearGradient id="gold-stroke" x1="860" y1="410" x2="1540" y2="990" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#7a4704"/>
+      <stop offset="30%" stop-color="#b97a12"/>
+      <stop offset="58%" stop-color="#f6bc34"/>
+      <stop offset="78%" stop-color="#ffe690"/>
+      <stop offset="100%" stop-color="#b66c08"/>
+    </linearGradient>
+    <linearGradient id="gold-flare" x1="260" y1="700" x2="2140" y2="700" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#f5c84e" stop-opacity="0"/>
+      <stop offset="20%" stop-color="#cb8711" stop-opacity="0.18"/>
+      <stop offset="50%" stop-color="#fff6cb" stop-opacity="1"/>
+      <stop offset="80%" stop-color="#cb8711" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#f5c84e" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="orb-fill" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#fffde7"/>
+      <stop offset="26%" stop-color="#ffe985"/>
+      <stop offset="60%" stop-color="#f7b51e"/>
+      <stop offset="100%" stop-color="#965503"/>
+    </radialGradient>
+    <radialGradient id="orb-halo" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffd761" stop-opacity="0.68"/>
+      <stop offset="50%" stop-color="#ffbc29" stop-opacity="0.2"/>
+      <stop offset="100%" stop-color="#ffbc29" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="line-glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
+    <filter id="flare-glow" x="-20%" y="-180%" width="140%" height="460%">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+    <filter id="orb-glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="14"/>
+    </filter>
+
+    <path id="eye-outer" d="M790 700 C945 560 1098 488 1200 488 C1302 488 1455 560 1610 700 C1455 840 1302 912 1200 912 C1098 912 945 840 790 700 Z"/>
+    <path id="eye-inner" d="M932 700 C1020 622 1116 582 1200 582 C1284 582 1380 622 1468 700 C1380 778 1284 818 1200 818 C1116 818 1020 778 932 700 Z"/>
+    <path id="triangle-main" d="M1200 420 L954 846 L1446 846 Z"/>
+    <path id="triangle-inner" d="M1200 492 L1020 804 L1380 804 Z"/>
+    <circle id="ring-outer" cx="1200" cy="700" r="334"/>
+    <circle id="ring-mid" cx="1200" cy="700" r="302"/>
+    <circle id="ring-inner" cx="1200" cy="700" r="268"/>
+    <circle id="ring-core" cx="1200" cy="700" r="226"/>
+  </defs>
+
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <g stroke="url(#gold-stroke)" opacity="0.28" filter="url(#line-glow)">
+      <use href="#ring-outer" stroke-width="5.6"/>
+      <use href="#ring-mid" stroke-width="4.8"/>
+      <use href="#ring-inner" stroke-width="4"/>
+      <use href="#ring-core" stroke-width="3.6"/>
+      <use href="#triangle-main" stroke-width="8"/>
+      <use href="#triangle-inner" stroke-width="5.6"/>
+      <use href="#eye-outer" stroke-width="8"/>
+      <use href="#eye-inner" stroke-width="5.2"/>
+      <path d="M310 700 H2090" stroke-width="7"/>
+      <path d="M1200 474 V926" stroke-width="4.2"/>
+      <path d="M870 437 L1010 575" stroke-width="3.6"/>
+      <path d="M1530 437 L1390 575" stroke-width="3.6"/>
+      <path d="M870 962 L1010 826" stroke-width="3.2"/>
+      <path d="M1530 962 L1390 826" stroke-width="3.2"/>
+    </g>
+
+    <g stroke="url(#gold-stroke)" opacity="0.96">
+      <use href="#ring-outer" stroke-width="1.8" opacity="0.56"/>
+      <use href="#ring-mid" stroke-width="2.8" opacity="0.94"/>
+      <use href="#ring-inner" stroke-width="1.7" opacity="0.48"/>
+      <use href="#ring-core" stroke-width="2.4" opacity="0.82"/>
+      <use href="#triangle-main" stroke-width="4.8"/>
+      <use href="#triangle-inner" stroke-width="2.8" opacity="0.82"/>
+      <use href="#eye-outer" stroke-width="6.6"/>
+      <use href="#eye-inner" stroke-width="3.2" opacity="0.9"/>
+      <path d="M300 700 H2100" stroke="url(#gold-flare)" stroke-width="2.6"/>
+      <path d="M478 700 H1922" stroke="url(#gold-flare)" stroke-width="1.1" opacity="0.88"/>
+      <path d="M1200 470 V930" stroke-width="2" opacity="0.84"/>
+      <path d="M1200 420 V540" stroke-width="2.4"/>
+      <path d="M954 846 H1446" stroke-width="3" opacity="0.84"/>
+      <path d="M954 846 L954 702" stroke-width="1.9" opacity="0.72"/>
+      <path d="M1446 846 L1446 702" stroke-width="1.9" opacity="0.72"/>
+      <path d="M870 437 L1010 575" stroke-width="1.8" opacity="0.62"/>
+      <path d="M1530 437 L1390 575" stroke-width="1.8" opacity="0.62"/>
+      <path d="M870 962 L1010 826" stroke-width="1.5" opacity="0.38"/>
+      <path d="M1530 962 L1390 826" stroke-width="1.5" opacity="0.38"/>
+      <path d="M790 700 H932" stroke-width="3.2"/>
+      <path d="M1468 700 H1610" stroke-width="3.2"/>
+      <path d="M1100 530 Q1200 498 1300 530" stroke-width="1.4" opacity="0.46"/>
+      <path d="M1100 870 Q1200 902 1300 870" stroke-width="1.4" opacity="0.34"/>
+    </g>
+  </g>
+
+  <g opacity="0.72" filter="url(#flare-glow)">
+    <path d="M250 700 H2150" stroke="url(#gold-flare)" stroke-width="5.4" stroke-linecap="round"/>
+  </g>
+
+  <g>
+    <circle cx="1200" cy="700" r="74" fill="url(#orb-halo)" filter="url(#orb-glow)" opacity="0.5"/>
+    <circle cx="1200" cy="700" r="28" fill="url(#orb-fill)"/>
+    <circle cx="1200" cy="700" r="14" fill="#fff9de" opacity="0.98"/>
+  </g>
+
+  <g fill="url(#gold-stroke)" opacity="0.86">
+    <circle cx="1088" cy="640" r="3.6"/>
+    <circle cx="1312" cy="640" r="3.6"/>
+    <circle cx="1200" cy="488" r="2.8" opacity="0.72"/>
+    <circle cx="1200" cy="912" r="2.8" opacity="0.72"/>
+  </g>
+</svg>

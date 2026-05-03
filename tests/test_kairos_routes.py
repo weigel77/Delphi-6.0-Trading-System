@@ -221,9 +221,9 @@ class KairosRoutesTest(unittest.TestCase):
         self.assertIn(b"Bars processed", response.data)
         self.assertIn(b"Latest candle time", response.data)
         self.assertIn(b"Tape source", response.data)
-        self.assertIn(b"Setup Forming", response.data)
-        self.assertIn(b"Window Found", response.data)
-        self.assertIn(b"Window Closing", response.data)
+        self.assertIn(b"Subprime Improving", response.data)
+        self.assertIn(b"Prime", response.data)
+        self.assertIn(b"Subprime Weakening", response.data)
         self.assertIn(b"Not Eligible / Expired", response.data)
         self.assertIn(b"kairos-bar-map-axis", response.data)
         self.assertIn(b"kairos-bar-map-scroll", response.data)
@@ -241,8 +241,10 @@ class KairosRoutesTest(unittest.TestCase):
         self.assertIn(b"Countdown", response.data)
         self.assertIn(b"Total Scans Today", response.data)
         self.assertIn(b"Scan Interval", response.data)
-        self.assertIn(b"Last Scan", response.data)
+        self.assertNotIn(b"kairos-last-scan-inline", response.data)
         self.assertIn(b"Intraday Scan Log", response.data)
+        self.assertIn(b"Confidence", response.data)
+        self.assertIn(b"Fit Score", response.data)
         self.assertIn(b"Distance to Short", response.data)
         self.assertIn(b"EM Multiple", response.data)
         self.assertIn(b"kairos-live-trade-lock-panel", response.data)
@@ -299,9 +301,9 @@ class KairosRoutesTest(unittest.TestCase):
         self.assertIn(b"Full-Day Progression Simulator", response.data)
         self.assertIn(b"Kairos Session Tape Lab", response.data)
         self.assertIn(b"Simulation Scan Log", response.data)
-        self.assertIn(b"Pause on Setup Forming", response.data)
-        self.assertIn(b"Pause on Window Open", response.data)
-        self.assertIn(b"Pause on Window Closing", response.data)
+        self.assertIn(b"Pause on Subprime Improving", response.data)
+        self.assertIn(b"Pause on Prime", response.data)
+        self.assertIn(b"Pause on Subprime Weakening", response.data)
         self.assertIn(b"Trade Candidate Card", response.data)
         self.assertIn(b"Kairos Exit Status", response.data)
         self.assertIn(b"kairos-runner-trade-lock-panel", response.data)
@@ -1017,6 +1019,9 @@ class KairosRoutesTest(unittest.TestCase):
         self.assertIn("CHAIN SOURCE", summary_labels)
         self.assertIn("PRICE BASIS", summary_labels)
         self.assertIn("WIDTH SCAN", summary_labels)
+        candidate_card = payload["live_workspace"]["candidate_cards"][0]
+        self.assertEqual(len(candidate_card["header_stamps"]), 2)
+        self.assertIn(candidate_card["structure_label"], {"Prime", "Subprime", "Not Recommended"})
 
     def test_live_best_trade_endpoint_marks_schwab_unavailable_without_fallback(self):
         self.kairos_live_service.options_chain_service.get_spx_option_chain_summary = lambda expiration_date: {
@@ -1360,7 +1365,7 @@ class KairosRoutesTest(unittest.TestCase):
 
         self.assertEqual(payload["simulation_runner"]["pause_reason"], "pause_on_window-open")
         self.assertFalse(payload["simulation_runner"]["can_request_best_trade_override"])
-        self.assertIn("disabled at Window Open", payload["simulation_runner"]["best_trade_override_disabled_reason"])
+        self.assertIn("disabled at Prime", payload["simulation_runner"]["best_trade_override_disabled_reason"])
 
     def test_sim_best_trade_override_can_lock_trade_from_valid_non_window_open_pause(self):
         self.kairos_sim_service.now_provider = lambda: datetime(2026, 4, 4, 10, 0, tzinfo=ZoneInfo("America/Chicago"))
