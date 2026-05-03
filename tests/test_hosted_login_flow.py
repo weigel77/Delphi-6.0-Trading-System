@@ -132,7 +132,7 @@ class HostedLoginFlowTest(unittest.TestCase):
             )
 
             client = app.test_client()
-            response = client.post("/hosted/login/desktop", data={"email": "bill@example.com", "password": "secret123", "next": "/hosted/apollo"}, follow_redirects=False)
+            response = client.post("/hosted/login", data={"email": "bill@example.com", "password": "secret123", "next": "/hosted/apollo"}, follow_redirects=False)
 
             self.assertEqual(response.status_code, 302)
             self.assertEqual(response.headers["Location"], "/hosted/apollo")
@@ -181,12 +181,8 @@ class HostedLoginFlowTest(unittest.TestCase):
 
             response = app.test_client().get("/hosted/launch?next=/hosted/apollo&view=mobile")
 
-            self.assertEqual(response.status_code, 200)
-            self.assertIn(b"Selecting Your Command Portal", response.data)
-            self.assertIn(b"Delphi 6.4.1 is detecting the right login portal for this device before sign-in.", response.data)
-            self.assertIn(b'data-desktop-target="/hosted/login/desktop?next=/hosted/apollo"', response.data)
-            self.assertIn(b'data-mobile-target="/hosted/login/mobile?next=/hosted/apollo"', response.data)
-            self.assertIn(b'data-explicit-view="mobile"', response.data)
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(response.headers["Location"], "/hosted/login?view=mobile&next=/hosted/apollo")
 
     def test_hosted_launch_page_uses_current_hosted_identity_for_authenticated_users(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -207,8 +203,8 @@ class HostedLoginFlowTest(unittest.TestCase):
             client.set_cookie("delphi_hosted_access_token", "bill-token")
             response = client.get("/hosted/launch")
 
-            self.assertEqual(response.status_code, 200)
-            self.assertIn(b"Delphi 6.4.1 is preserving your active branch and routing you into the right command surface.", response.data)
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(response.headers["Location"], "/hosted")
 
     def test_hosted_desktop_login_page_renders_delphi_6_3_6_portal(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -217,12 +213,12 @@ class HostedLoginFlowTest(unittest.TestCase):
             response = app.test_client().get("/hosted/login/desktop")
 
             self.assertEqual(response.status_code, 200)
-            self.assertIn(b"DELPHI", response.data)
-            self.assertIn(b"Desktop hosted login", response.data)
+            self.assertIn(b"Hosted Access", response.data)
+            self.assertIn(b"Delphi 7.2.14 Hosted", response.data)
             self.assertIn(b"type=\"email\"", response.data)
             self.assertIn(b"type=\"password\"", response.data)
-            self.assertIn(b"Login", response.data)
-            self.assertIn(b"Delphi 6.4.1", response.data)
+            self.assertIn(b"Continue to Hosted Delphi", response.data)
+            self.assertIn(b"beigel77@gmail.com", response.data)
             self.assertIn(b'action="/hosted/login/desktop"', response.data)
             self.assertNotIn(b"delphi-pyramid.png", response.data)
             for fragment in self.RAW_JS_FRAGMENTS:
@@ -235,12 +231,12 @@ class HostedLoginFlowTest(unittest.TestCase):
             response = app.test_client().get("/hosted/login/mobile")
 
             self.assertEqual(response.status_code, 200)
-            self.assertIn(b"DELPHI", response.data)
-            self.assertIn(b"Mobile hosted login", response.data)
+            self.assertIn(b"Hosted Access", response.data)
+            self.assertIn(b"Delphi 7.2.14 Hosted", response.data)
             self.assertIn(b"type=\"email\"", response.data)
             self.assertIn(b"type=\"password\"", response.data)
-            self.assertIn(b"Login", response.data)
-            self.assertIn(b"Delphi 6.4.1", response.data)
+            self.assertIn(b"Continue to Hosted Delphi", response.data)
+            self.assertIn(b"beigel77@gmail.com", response.data)
             self.assertIn(b'action="/hosted/login/mobile"', response.data)
             self.assertNotIn(b"delphi-pyramid.png", response.data)
             for fragment in self.RAW_JS_FRAGMENTS:
@@ -273,7 +269,7 @@ class HostedLoginFlowTest(unittest.TestCase):
                 }
             )
 
-            response = app.test_client().post("/hosted/login/desktop", data={"email": "other@example.com", "password": "secret123"}, follow_redirects=False)
+            response = app.test_client().post("/hosted/login", data={"email": "other@example.com", "password": "secret123"}, follow_redirects=False)
 
             self.assertEqual(response.status_code, 403)
             self.assertIn(b"private_access_denied", response.data)
@@ -287,7 +283,7 @@ class HostedLoginFlowTest(unittest.TestCase):
             response = app.test_client().get("/hosted/manage-trades?trade_mode=all", follow_redirects=False)
 
             self.assertEqual(response.status_code, 302)
-            self.assertIn("/hosted/launch?next=/hosted/manage-trades?trade_mode%3Dall", response.headers["Location"])
+            self.assertIn("/hosted/login?next=/hosted/manage-trades?trade_mode%3Dall", response.headers["Location"])
 
     def test_hosted_browser_sign_out_redirects_to_login_and_clears_cookies(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -296,5 +292,5 @@ class HostedLoginFlowTest(unittest.TestCase):
             response = app.test_client().post("/hosted/sign-out", follow_redirects=False)
 
             self.assertEqual(response.status_code, 302)
-            self.assertEqual(response.headers["Location"], "/hosted/launch")
+            self.assertEqual(response.headers["Location"], "/hosted/login")
             self.assertTrue(any("delphi_hosted_access_token=" in header for header in response.headers.getlist("Set-Cookie")))
